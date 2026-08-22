@@ -78,7 +78,7 @@ One number covers both implementations. It lives in `rustcli/Cargo.toml` and
 agree — a mismatch is an error, not a warning, and packaging refuses to run:
 
 ```bash
-make version          # 0.1.0
+make version          # 1.0.0
 ```
 
 Nothing repeats that number anywhere else. The Rust binary reports
