@@ -9,7 +9,7 @@ from typing import Any
 
 import requests
 
-from . import errors
+from . import __version__, errors
 
 _REQUEST_IDS = itertools.count(1)
 
@@ -52,8 +52,13 @@ class RpcClient:
         self.url = url
         self.timeout = timeout
         self._session = requests.Session()
+        # Same string the Rust client sends, derived the same way — a node
+        # looking at its logs should not be able to tell the two apart.
         self._session.headers.update(
-            {"content-type": "application/json", "user-agent": "causewaybay-wallet/0.1.0"}
+            {
+                "content-type": "application/json",
+                "user-agent": f"causewaybay-wallet/{__version__}",
+            }
         )
 
     def call(self, method: str, params: list[Any] | None = None) -> Any:
