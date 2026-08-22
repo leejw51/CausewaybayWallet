@@ -1,0 +1,42 @@
+[package]
+name = "causewaybay-wallet"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+description = "Educational Cronos/EVM wallet with a CLI and a TUI, backed by an append-only JSONL store"
+license = "MIT"
+readme = "README.md"
+
+[[bin]]
+name = "cwbwallet"
+path = "src/main.rs"
+
+[lib]
+name = "causewaybay_wallet"
+path = "src/lib.rs"
+
+[dependencies]
+alloy-primitives = "1.6"
+k256 = { version = "0.13", features = ["ecdsa"] }
+sha2 = "0.10"
+hmac = "0.12"
+pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
+rand = "0.8"
+hex = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive", "env"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+ratatui = "0.29"
+crossterm = "0.28"
+unicode-normalization = "0.1"
+
+[dev-dependencies]
+assert_cmd = "2"
+predicates = "3"
+tempfile = "3"
+tiny_http = "0.12"
+
+[profile.release]
+strip = true

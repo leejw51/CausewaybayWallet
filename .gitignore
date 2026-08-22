@@ -1,0 +1,34 @@
+# ---------------------------------------------------------------- key material
+#
+# This is a public repository. Nothing that can hold a mnemonic or a private key
+# belongs in it, so the wallet's own storage and everything the export commands
+# write are ignored by name.
+
+# A wallet home, wherever it lands.
+.causewaybaywallet/
+**/accounts.jsonl
+**/config.jsonl
+**/history.jsonl
+**/recent.jsonl
+
+# What `account list --format` and the TUI's save/export commands write. The
+# default filenames are matched explicitly; a file named for its contents is
+# still your responsibility to keep out.
+wallets.jsonl
+wallets.csv
+wallets.txt
+wallets.md
+wallets-keys.jsonl
+*-keys.jsonl
+*.demo-home/
+
+# ------------------------------------------------------------- build artefacts
+/dist/
+
+# --------------------------------------------------------------- editor and OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Language-specific artefacts are ignored in rustcli/ and pythoncli/.

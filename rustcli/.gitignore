@@ -1,0 +1,17 @@
+# Packaging output
+/dist/
+
+# Rust build output
+/target/
+**/*.rs.bk
+*.pdb
+
+# Local demo/test wallet homes — these hold private keys
+/.demo-home/
+/.causewaybaywallet/
+*.jsonl
+
+# Editor and OS noise
+.DS_Store
+.idea/
+.vscode/
