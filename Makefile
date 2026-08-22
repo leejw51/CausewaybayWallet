@@ -35,6 +35,19 @@ help: ## Show this help
 	@echo "  Per-language targets live in $(RUST_DIR)/Makefile and $(PYTHON_DIR)/Makefile."
 	@echo
 
+# -------------------------------------------------------------------- version
+
+# The one number a release is allowed to carry, printed only once both
+# implementations claim it. Everything that stamps an artifact — packaging, the
+# tag check in .github/workflows/release.yml — reads it from here rather than
+# picking one manifest and hoping the other kept up.
+.PHONY: version
+version: ## Print the version both implementations agree on
+	@test "$(RS_VERSION)" = "$(PY_VERSION)" || { \
+		echo "ERROR: $(RUST_DIR)/Cargo.toml is $(RS_VERSION), $(PYTHON_DIR)/pyproject.toml is $(PY_VERSION)" >&2; \
+		exit 1; }
+	@echo "$(RS_VERSION)"
+
 # ---------------------------------------------------------------------- tests
 
 .PHONY: test
@@ -93,10 +106,7 @@ package-python: ## Only the Python binary (PyApp: embeds CPython and the wheel)
 # binary in ./dist stamped with a number nothing verified is the worst artifact
 # a release can carry.
 .PHONY: package-versions
-package-versions:
-	@test "$(RS_VERSION)" = "$(PY_VERSION)" || { \
-		echo "ERROR: $(RUST_DIR)/Cargo.toml is $(RS_VERSION), $(PYTHON_DIR)/pyproject.toml is $(PY_VERSION)"; \
-		exit 1; }
+package-versions: version
 	@echo "==> packaging $(RS_VERSION) into $(DIST_DIR)"
 
 # Prove the shipped artifacts are the ones that were tested, not just that the

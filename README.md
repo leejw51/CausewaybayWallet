@@ -71,11 +71,65 @@ notarizes. It deliberately stops short of stapling: a ticket cannot be attached
 to a bare Mach-O, so a notarized CLI still costs the first machine that runs it
 one online check with Apple.
 
+## Versioning and releases
+
+One number covers both implementations. It lives in `rustcli/Cargo.toml` and
+`pythoncli/pyproject.toml`, and `make version` prints it only when the two
+agree — a mismatch is an error, not a warning, and packaging refuses to run:
+
+```bash
+make version          # 0.1.0
+```
+
+Nothing repeats that number anywhere else. The Rust binary reports
+`CARGO_PKG_VERSION`, the Python one reads its own installed distribution
+metadata, and `scripts/parity.sh` checks that what the two binaries actually
+print — `cwbwallet --version` and the `version` field of `cwbwallet info` —
+matches the manifests. So a version a release claims is one that was verified.
+
+To cut a release, bump both manifests, then tag `main`:
+
+```bash
+git tag v0.2.0 && git push origin v0.2.0
+```
+
+[`.github/workflows/release.yml`](.github/workflows/release.yml) refuses the tag
+unless it matches `make version`, builds both binaries on macOS, signs and
+notarizes them with the repository's Apple credentials, runs the parity checks
+against `./dist`, and attaches the archives — plus `SHA256SUMS` — to a GitHub
+release:
+
+```
+cwbwallet-rust-<version>-<arch>-apple-darwin.tar.gz
+cwbwallet-python-<version>-<arch>-apple-darwin.tar.gz
+```
+
+Each archive holds the binary as `cwbwallet`, so either one installs the same
+way. `workflow_dispatch` runs the whole path as a dry run: it uploads the
+artifacts and creates no release.
+
+### Continuous integration
+
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on every push to
+`main` and every pull request, split so a failure names itself: `rust`
+(rustfmt, clippy, tests), `python` (ruff and pytest on 3.10 and 3.12 — the
+floor and the interpreter PyApp embeds), `parity` (vector reproducibility, the
+mutation check, and the cross-implementation script), and `version`. A fifth
+job packages on macOS with ad-hoc signing, skipped on pull requests because
+PyApp downloads a CPython distribution to do it — the release path should not
+be exercised for the first time at a tag, but a pull request should not pay for
+it either.
+
+The signing secrets the release needs: `MACOS_CERTIFICATE_P12_BASE64`,
+`MACOS_CERTIFICATE_PASSWORD`, `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD` and
+`TEAM_ID`. Without them everything still builds and signs ad-hoc.
+
 ## Layout
 
 | path | what it is |
 | ---- | ---------- |
 | `SPEC.md` | the shared specification both implementations follow |
+| `.github/workflows/` | CI on every push, and the tagged macOS release |
 | `rustcli/` | Rust CLI and TUI (`cwbwallet`), its own `Makefile` and `.gitignore` |
 | `pythoncli/` | Python CLI and TUI (`cwbwallet`), its own `Makefile` and `.gitignore` |
 | `testvectors/` | shared fixtures both implementations are tested against |
@@ -178,7 +232,7 @@ worst lose the last partial line, and the whole history stays readable with
   silently.
 * **Parity** — `scripts/parity.sh` points both binaries at one wallet, has each
   write and the other read, and checks they agree on addresses, account ids,
-  signatures, recall entries and error codes.
+  signatures, recall entries, error codes and the version they report.
 
 No test touches a real network or a real key.
 

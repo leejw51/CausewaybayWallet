@@ -1,0 +1,191 @@
+# Release — build both wallet binaries for macOS and attach them to a GitHub
+# release.
+#
+# Triggered by pushing a tag like `v0.1.0`, which must match the version of
+# record — `make version`, which prints the number only once rustcli/Cargo.toml
+# and pythoncli/pyproject.toml agree on it. Or manually via workflow_dispatch
+# for a dry run that uploads the artifacts without creating a release.
+#
+#   macos-latest → cwbwallet-rust-<version>-<arch>-apple-darwin.tar.gz
+#                  cwbwallet-python-<version>-<arch>-apple-darwin.tar.gz
+#
+# `make package-verify` drives everything: cargo builds the Rust binary, PyApp
+# wraps the Python wheel around an embedded CPython, scripts/codesign-binary.sh
+# signs (and notarizes) each one, and scripts/parity.sh then runs against ./dist
+# so what ships is what was checked — including that both binaries report the
+# version in the manifests, which this workflow has already matched to the tag.
+#
+# Signing uses the Developer ID certificate from the repository secrets
+# (MACOS_CERTIFICATE_P12_BASE64 / MACOS_CERTIFICATE_PASSWORD) and notarization
+# uses APPLE_ID / APPLE_APP_SPECIFIC_PASSWORD / TEAM_ID. Without the secrets
+# everything falls back to ad-hoc signing, so dry runs still produce binaries.
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  package:
+    name: Package (macOS)
+    runs-on: macos-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Pinned to the version development happens on — same as CI.
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+        with:
+          toolchain: 1.95.0
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          # Only used to build the wheel; PyApp embeds its own interpreter
+          # (PYAPP_PYTHON_VERSION in pythoncli/Makefile) into the binary.
+          python-version: "3.12"
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: rustcli
+
+      # `make version` fails outright when the two manifests disagree, so this
+      # settles both questions at once: one version, and it is the tagged one.
+      - name: Resolve the version
+        id: version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version=$(make version)
+          if [ "${{ github.ref_type }}" = "tag" ] && [ "${TAG#v}" != "$version" ]; then
+            echo "tag $TAG does not match the version of record $version" >&2
+            echo "bump rustcli/Cargo.toml and pythoncli/pyproject.toml, or retag" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "arch=$(uname -m)" >> "$GITHUB_OUTPUT"
+
+      # Imports the Developer ID certificate into a throwaway keychain and
+      # exports APPLE_SIGNING_IDENTITY for the build. Falls back to ad-hoc
+      # signing when the secret is absent (e.g. a fork's dry run).
+      - name: Import codesigning certificate
+        env:
+          P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          if [ -z "$P12_BASE64" ]; then
+            echo "::warning::MACOS_CERTIFICATE_P12_BASE64 not set, using ad-hoc signing"
+            echo "APPLE_SIGNING_IDENTITY=-" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          echo "$P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -base64 32)"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$RUNNER_TEMP/cert.p12" \
+            -k "$KEYCHAIN_PATH" \
+            -P "$P12_PASSWORD" \
+            -T /usr/bin/codesign \
+            -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
+          CERT_INFO=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | grep "Developer ID Application" || true)
+          if [ -n "$CERT_INFO" ]; then
+            CERT_ID=$(echo "$CERT_INFO" | head -1 | awk -F'"' '{print $2}')
+            echo "APPLE_SIGNING_IDENTITY=$CERT_ID" >> "$GITHUB_ENV"
+            echo "Found certificate: $CERT_ID"
+          else
+            echo "::warning::No Developer ID Application certificate found, using ad-hoc signing"
+            echo "APPLE_SIGNING_IDENTITY=-" >> "$GITHUB_ENV"
+          fi
+
+      # scripts/codesign-binary.sh reads APPLE_SIGNING_IDENTITY to sign each
+      # binary and APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID to notarize it.
+      - name: Package and verify
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.TEAM_ID }}
+        run: |
+          if [ "${APPLE_SIGNING_IDENTITY:--}" = "-" ]; then
+            # An ad-hoc-signed binary cannot be notarized.
+            unset APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID
+          fi
+          make package-verify
+
+      # One archive per implementation, each holding the binary under the name
+      # it is meant to be installed as, so either tarball gives you `cwbwallet`.
+      # COPYFILE_DISABLE keeps macOS from smuggling ._ resource-fork files in.
+      - name: Archive
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          ARCH: ${{ steps.version.outputs.arch }}
+        run: |
+          mkdir -p artifacts stage
+          for impl in rust python; do
+            rm -rf stage/*
+            cp "dist/cwbwallet-$impl" stage/cwbwallet
+            cp LICENSE README.md stage/
+            name="cwbwallet-$impl-$VERSION-$ARCH-apple-darwin.tar.gz"
+            COPYFILE_DISABLE=1 tar -czf "artifacts/$name" -C stage .
+            echo "  $name"
+          done
+          ( cd artifacts && shasum -a 256 *.tar.gz > SHA256SUMS )
+          cat artifacts/SHA256SUMS
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cwbwallet-macos-${{ steps.version.outputs.arch }}
+          path: artifacts/*
+          if-no-files-found: error
+
+      - name: Cleanup keychain
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/build.keychain-db" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/cert.p12"
+
+  release:
+    name: Create GitHub release
+    needs: package
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
+        with:
+          files: artifacts/*
+          generate_release_notes: true
+          body: |
+            Two implementations of one specification — pick either binary, they
+            share `~/.causewaybaywallet` and speak the same CLI.
+
+            | archive | what is inside |
+            | --- | --- |
+            | `cwbwallet-rust-…apple-darwin.tar.gz` | the Rust build of `cwbwallet` |
+            | `cwbwallet-python-…apple-darwin.tar.gz` | the Python build, CPython embedded |
+
+            Verify a download against `SHA256SUMS`, then:
+
+            ```sh
+            tar -xzf cwbwallet-rust-*-apple-darwin.tar.gz
+            ./cwbwallet --version
+            ```
+
+            ⚠️ Educational software. Keys are stored unencrypted on disk.
