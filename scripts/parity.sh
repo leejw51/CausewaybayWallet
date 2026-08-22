@@ -120,6 +120,15 @@ $PY --json --yes account remove rust-key > /dev/null
 expect "python restores from the rust recall entry" "$ADDRESS_0" \
   "$($PY --json account import-recent 1 -l restored | field address)"
 
+# --- Both binaries carry the version of record --------------------------------
+# The Makefile checks the two manifests agree before packaging; this checks the
+# artifacts that came out of it, which is the claim a release actually makes.
+VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' "$ROOT/rustcli/Cargo.toml" | head -1)"
+expect "rust reports the manifest version" "$VERSION" "$($RUST --json info | field version)"
+expect "python reports the manifest version" "$VERSION" "$($PY --json info | field version)"
+expect "rust --version banner" "cwbwallet $VERSION" "$($RUST --version)"
+expect "python --version banner" "cwbwallet $VERSION" "$($PY --version)"
+
 # --- Both agree on what is stored ---------------------------------------------
 expect "same account count" \
   "$($RUST --json info | field accounts)" \
