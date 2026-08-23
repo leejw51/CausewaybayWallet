@@ -1,6 +1,6 @@
 # Test vectors
 
-Shared fixtures that both implementations run against. They are what ties this
+Shared fixtures that every front end runs against. They are what ties this
 wallet to the outside world: if the Rust and Python sides ever disagreed with
 each other *and* with the published standards, these files would fail first.
 
@@ -70,11 +70,23 @@ document rather than against a library:
 
 ## Who reads them
 
-| implementation | test file |
-| -------------- | --------- |
-| Rust | `rustcli/tests/vectors.rs` |
+| front end | test file |
+| --------- | --------- |
+| Rust | `rustcli/core/tests/vectors.rs` |
 | Python | `pythoncli/tests/test_vectors.py` |
+| Lua | `luacli/tests/vectors_test.lua` |
 
-Both are run by `make test`, which also checks that regenerating the vectors
-produces byte-identical files — so a change to the generator cannot silently
-move the goalposts.
+All three are run by `make test`, which also checks that regenerating the
+vectors produces byte-identical files — so a change to the generator cannot
+silently move the goalposts.
+
+Rust and Python check the values directly. Lua reaches them through the C ABI,
+so what it adds is the trip across that boundary: a 256-bit integer that stays a
+string rather than becoming a double, an emoji that arrives as the bytes that
+were hashed, an error code that is the same word on both sides. It is exempt
+from two files whose mutated value no command exposes — see `LUA_EXEMPT` in
+`scripts/check-vector-coverage.py`.
+
+That script is the one that proves any of this: it corrupts one value per file
+in turn and requires every suite to notice. A suite that stays green is not
+reading the file, whatever its own coverage report says.

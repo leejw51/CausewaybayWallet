@@ -45,6 +45,68 @@ impl Code {
             Code::Internal => "internal",
         }
     }
+
+    /// The inverse of [`Code::as_str`], for reading an envelope back in.
+    ///
+    /// An unrecognised name becomes `Internal` rather than an error: a caller
+    /// parsing a reply from a newer library should still get something it can
+    /// branch on, and "something went wrong" is the honest fallback.
+    pub fn from_name(name: &str) -> Code {
+        Code::ALL
+            .iter()
+            .copied()
+            .find(|code| code.as_str() == name)
+            .unwrap_or(Code::Internal)
+    }
+
+    /// Every code, in the order `SPEC.md` lists them.
+    pub const ALL: [Code; 15] = [
+        Code::Usage,
+        Code::NotFound,
+        Code::AccountNotFound,
+        Code::DuplicateLabel,
+        Code::InvalidMnemonic,
+        Code::InvalidPrivateKey,
+        Code::InvalidAddress,
+        Code::InvalidAmount,
+        Code::NoActiveAccount,
+        Code::UnknownNetwork,
+        Code::RpcError,
+        Code::InsufficientFunds,
+        Code::ConfirmationRequired,
+        Code::IoError,
+        Code::Internal,
+    ];
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_code_round_trips_through_its_name() {
+        for code in Code::ALL {
+            assert_eq!(Code::from_name(code.as_str()), code);
+        }
+    }
+
+    #[test]
+    fn an_unknown_name_degrades_to_internal() {
+        assert_eq!(
+            Code::from_name("code_from_a_future_version"),
+            Code::Internal
+        );
+        assert_eq!(Code::from_name(""), Code::Internal);
+    }
+
+    #[test]
+    fn the_list_holds_every_variant_exactly_once() {
+        let mut names: Vec<_> = Code::ALL.iter().map(|c| c.as_str()).collect();
+        names.sort_unstable();
+        let count = names.len();
+        names.dedup();
+        assert_eq!(names.len(), count, "a code is listed twice");
+    }
 }
 
 #[derive(Debug, Clone)]

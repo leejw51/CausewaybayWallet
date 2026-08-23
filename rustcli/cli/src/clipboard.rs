@@ -9,7 +9,7 @@
 use std::io::Write;
 use std::process::{Command, Stdio};
 
-use crate::error::{self, Result};
+use causewaybay_core::error::{self, Result};
 
 /// The candidates, in the order they are tried: (program, arguments).
 fn candidates() -> Vec<(&'static str, Vec<&'static str>)> {
@@ -72,9 +72,11 @@ fn write_to(program: &str, args: &[&str], text: &str) -> std::result::Result<(),
 
 /// True when some clipboard helper is on PATH.
 ///
-/// Used to decide whether to offer the command at all, so a machine without one
-/// does not advertise something that cannot work.
-pub fn is_available() -> bool {
+/// Only the tests need this: a machine with no helper must not fail a suite
+/// over something it cannot do. At runtime the TUI just tries `copy` and shows
+/// whatever it says, which is the more useful answer for a user anyway.
+#[cfg(test)]
+fn is_available() -> bool {
     candidates().into_iter().any(|(program, _)| {
         Command::new(program)
             .stdin(Stdio::null())

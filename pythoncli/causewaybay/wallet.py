@@ -55,6 +55,11 @@ def validate_mnemonic(phrase: str) -> bool:
     return _MNEMONIC.check(normalize_mnemonic(phrase))
 
 
+def wordlist() -> list[str]:
+    """The 2048 English BIP-39 words, for telling a typo from a bad checksum."""
+    return _MNEMONIC.wordlist
+
+
 def normalize_mnemonic(phrase: str) -> str:
     """NFKD-normalise, collapse whitespace and lowercase, as BIP-39 requires.
 

@@ -1,4 +1,4 @@
-"""Command line surface. Kept in step with ``rustcli/src/cli.rs``."""
+"""Command line surface. Kept in step with ``rustcli/core/src/command.rs``."""
 
 from __future__ import annotations
 
@@ -315,6 +315,27 @@ def build_parser() -> argparse.ArgumentParser:
     )
     new_mnemonic.add_argument("-w", "--words", type=_word_count, default=12)
 
+    derive = utils_subs.add_parser(
+        "derive", help="derive an address and keys, storing nothing", **base
+    )
+    # Exactly one source of key material, which argparse can enforce itself.
+    derive_from = derive.add_mutually_exclusive_group(required=True)
+    derive_from.add_argument("-m", "--mnemonic", help="the mnemonic; `-` reads stdin")
+    derive_from.add_argument("-k", "--private-key", help="the private key; `-` reads stdin")
+    derive.add_argument("-i", "--index", type=_non_negative, default=0)
+    derive.add_argument("--passphrase", default="")
+
+    utils_sign = utils_subs.add_parser(
+        "sign", help="sign a message with a private key that is not stored", **base
+    )
+    utils_sign.add_argument("-k", "--private-key", required=True)
+    utils_sign.add_argument("-m", "--message", required=True)
+
+    validate = utils_subs.add_parser(
+        "validate-mnemonic", help="check whether a phrase is a valid BIP-39 mnemonic", **base
+    )
+    validate.add_argument("mnemonic")
+
     # ------------------------------------------------------------------- misc
     subs.add_parser("tui", help="launch the interactive terminal UI", **base)
     subs.add_parser("info", help="report where state lives and what is configured", **base)
@@ -477,6 +498,17 @@ def _dispatch_utils(app: App, args: argparse.Namespace) -> CommandOutput:
         return app.utils_from_wei(args.value, args.decimals)
     if sub == "new-mnemonic":
         return app.utils_new_mnemonic(args.words)
+    if sub == "derive":
+        if args.mnemonic is not None:
+            phrase = read_secret(args.mnemonic, "mnemonic", "CAUSEWAYBAY_MNEMONIC")
+            return app.utils_derive_mnemonic(phrase, args.index, args.passphrase)
+        key = read_secret(args.private_key, "private key", "CAUSEWAYBAY_PRIVATE_KEY")
+        return app.utils_derive_key(key)
+    if sub == "sign":
+        key = read_secret(args.private_key, "private key", "CAUSEWAYBAY_PRIVATE_KEY")
+        return app.utils_sign(key, read_message(args.message))
+    if sub == "validate-mnemonic":
+        return app.utils_validate_mnemonic(read_message(args.mnemonic))
     raise errors.usage("utils: pick a subcommand (see `utils --help`)")
 
 

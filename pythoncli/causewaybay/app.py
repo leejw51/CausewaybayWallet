@@ -1,7 +1,7 @@
 """Command implementations.
 
 Every command returns a ``CommandOutput`` so the caller decides between human
-text and the JSON envelope. This mirrors ``rustcli/src/app.rs`` one-for-one.
+text and the JSON envelope. This mirrors ``rustcli/core/src/app.rs`` one-for-one.
 """
 
 from __future__ import annotations
@@ -35,6 +35,29 @@ class SendPlan:
     data: bytes
     amount: str
     prompt: str
+
+
+def _mnemonic_problem(phrase: str, words: int) -> str | None:
+    """Why ``phrase`` is not a valid mnemonic, or None when it is.
+
+    Checked in the order a person would: the length, then the words, then the
+    checksum — so the message names the first thing actually wrong rather than
+    the last thing tested. The wording is this implementation's own; only
+    ``valid`` and ``words`` are part of the shared contract.
+    """
+    if not phrase.strip():
+        return "the mnemonic is empty"
+    if words not in (12, 15, 18, 21, 24):
+        return f"unsupported word count {words}; use 12, 15, 18, 21 or 24"
+
+    normalized = wallet.normalize_mnemonic(phrase)
+    vocabulary = set(wallet.wordlist())
+    unknown = [word for word in normalized.split() if word not in vocabulary]
+    if unknown:
+        return f"'{unknown[0]}' is not a BIP-39 word"
+    if not wallet.validate_mnemonic(phrase):
+        return "the checksum does not match"
+    return None
 
 
 class App:
@@ -1042,6 +1065,67 @@ class App:
     def utils_new_mnemonic(self, words: int = 12) -> CommandOutput:
         phrase = wallet.generate_mnemonic(words)
         return CommandOutput({"mnemonic": phrase, "words": words}, phrase)
+
+    def utils_derive_mnemonic(
+        self, phrase: str, index: int = 0, passphrase: str = ""
+    ) -> CommandOutput:
+        """Derive from a mnemonic and show the result, storing nothing.
+
+        The same derivation ``account import-mnemonic`` does, with the wallet
+        left out of it — for a caller that wants an address from a phrase
+        without acquiring an account and a recall entry as side effects.
+        """
+        keypair = wallet.Keypair.from_mnemonic(phrase, index, passphrase)
+        return self._derived(
+            keypair,
+            {
+                "source": "mnemonic",
+                "derivation_path": wallet.ethereum_path(index),
+                "index": index,
+            },
+        )
+
+    def utils_derive_key(self, private_key: str) -> CommandOutput:
+        """Derive from a private key and show the result, storing nothing."""
+        return self._derived(wallet.Keypair.from_private_key(private_key), {"source": "private_key"})
+
+    def _derived(self, keypair: wallet.Keypair, extra: dict) -> CommandOutput:
+        """The shared shape of a ``utils derive`` result, whatever it came from."""
+        data = {
+            "address": keypair.address,
+            "private_key": keypair.private_key,
+            "public_key": keypair.public_key,
+            "public_key_compressed": keypair.public_key_compressed,
+            **extra,
+        }
+        rows = [("Address", keypair.address), ("Source", data["source"])]
+        if "derivation_path" in data:
+            rows.append(("Path", data["derivation_path"]))
+            rows.append(("Address index", str(data["index"])))
+        rows.append(("Public key", keypair.public_key_compressed))
+        rows.append(("Private key", keypair.private_key))
+        return CommandOutput(data, output.table(rows))
+
+    def utils_sign(self, private_key: str, message: str) -> CommandOutput:
+        """Sign a message with a key the wallet does not hold."""
+        keypair = wallet.Keypair.from_private_key(private_key)
+        signature = keypair.sign_message(message)
+        return CommandOutput(
+            {"address": keypair.address, "message": message, "signature": signature},
+            signature,
+        )
+
+    def utils_validate_mnemonic(self, phrase: str) -> CommandOutput:
+        """Report whether a phrase is a valid mnemonic, and why not when it is not.
+
+        An invalid phrase is the answer here, not a failure — which is the
+        whole difference from ``account import-mnemonic``.
+        """
+        words = len(phrase.split())
+        reason = _mnemonic_problem(phrase, words)
+        valid = reason is None
+        human = f"Valid — {words} words" if valid else f"Not a valid mnemonic: {reason}"
+        return CommandOutput({"valid": valid, "words": words, "reason": reason}, human)
 
     def info(self) -> CommandOutput:
         from . import __version__

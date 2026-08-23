@@ -1,0 +1,22 @@
+[package]
+name = "causewaybay-ffi"
+description = "A C ABI over causewaybay-core: JSON in, JSON out, for LuaJIT/LÖVE and any other host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "causewaybay_ffi"
+path = "src/lib.rs"
+# cdylib for LuaJIT's ffi.load, staticlib for hosts that link it in, rlib so
+# the crate's own tests can call the exported functions directly.
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[dependencies]
+causewaybay-core.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -1654,3 +1654,156 @@ fn a_home_path_starting_with_a_tilde_is_expanded() {
     // Clean up whatever it created.
     let _ = std::fs::remove_dir_all(home);
 }
+
+// ============================================================ crypto utilities
+//
+// `utils derive`, `utils sign` and `utils validate-mnemonic` are the wallet
+// used as a calculator: they take key material as an argument and store
+// nothing. That last part is the property worth asserting, because it is the
+// one that could silently stop being true.
+
+#[test]
+fn utils_derive_reproduces_the_reference_addresses() {
+    let wallet = Wallet::new();
+    let derived = wallet.json(&["utils", "derive", "-m", TEST_MNEMONIC]);
+    assert_eq!(derived["address"], TEST_ADDRESS_0);
+    assert_eq!(derived["private_key"], TEST_PRIVATE_KEY);
+    assert_eq!(derived["derivation_path"], "m/44'/60'/0'/0/0");
+    assert_eq!(derived["source"], "mnemonic");
+    assert_eq!(derived["index"], 0);
+
+    let second = wallet.json(&["utils", "derive", "-m", TEST_MNEMONIC, "-i", "1"]);
+    assert_eq!(second["address"], TEST_ADDRESS_1);
+}
+
+#[test]
+fn utils_derive_stores_nothing() {
+    // The whole point of it: derivation without acquiring an account, and
+    // without the phrase turning up in the recall list afterwards.
+    let wallet = Wallet::new();
+    wallet.json(&["utils", "derive", "-m", TEST_MNEMONIC]);
+    wallet.json(&["utils", "derive", "-k", TEST_PRIVATE_KEY]);
+
+    assert_eq!(
+        wallet.json(&["account", "list"]).as_array().unwrap().len(),
+        0
+    );
+    assert_eq!(
+        wallet.json(&["recent", "list"]).as_array().unwrap().len(),
+        0
+    );
+    assert_eq!(wallet.json(&["info"])["accounts"], 0);
+    assert_eq!(wallet.json(&["info"])["remembered"], 0);
+}
+
+#[test]
+fn utils_derive_from_a_private_key_has_no_path() {
+    let wallet = Wallet::new();
+    let derived = wallet.json(&["utils", "derive", "-k", TEST_PRIVATE_KEY]);
+    assert_eq!(derived["address"], TEST_ADDRESS_0);
+    assert_eq!(derived["source"], "private_key");
+    assert!(derived.get("derivation_path").is_none());
+    // Both public key encodings, and the compressed one shares the X coordinate.
+    let full = derived["public_key"].as_str().unwrap();
+    let compressed = derived["public_key_compressed"].as_str().unwrap();
+    assert_eq!(full.len(), 2 + 128);
+    assert_eq!(compressed.len(), 2 + 66);
+    assert_eq!(&compressed[4..], &full[2..66]);
+}
+
+#[test]
+fn utils_derive_needs_exactly_one_source() {
+    let wallet = Wallet::new();
+    wallet.cmd(&["utils", "derive"]).assert().failure();
+    wallet
+        .cmd(&[
+            "utils",
+            "derive",
+            "-m",
+            TEST_MNEMONIC,
+            "-k",
+            TEST_PRIVATE_KEY,
+        ])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn utils_derive_rejects_bad_material_with_the_usual_codes() {
+    let wallet = Wallet::new();
+    assert_eq!(
+        wallet.json_error(&["utils", "derive", "-m", "not a real phrase"]),
+        "invalid_mnemonic"
+    );
+    assert_eq!(
+        wallet.json_error(&["utils", "derive", "-k", "0x1234"]),
+        "invalid_private_key"
+    );
+}
+
+#[test]
+fn utils_sign_matches_the_reference_signature() {
+    // The published EIP-191 vector for this key and message.
+    let wallet = Wallet::new();
+    let signed = wallet.json(&[
+        "utils",
+        "sign",
+        "-k",
+        "0x4646464646464646464646464646464646464646464646464646464646464646",
+        "-m",
+        "Hello World",
+    ]);
+    assert_eq!(
+        signed["address"],
+        "0x9d8A62f656a8d1615C1294fd71e9CFb3E4855A4F"
+    );
+    assert_eq!(
+        signed["signature"],
+        "0xf445005436439a4398409aee0e0b13702bdee4e3774b6aa67184f0732d3a270a1ef3802a2455afba1374fb2ad23345e89eb7366c9d567fe0e5338df934434e3b1c"
+    );
+    assert_eq!(
+        wallet.json(&["account", "list"]).as_array().unwrap().len(),
+        0
+    );
+}
+
+#[test]
+fn utils_sign_round_trips_through_verify() {
+    let wallet = Wallet::new();
+    let signed = wallet.json(&["utils", "sign", "-k", TEST_PRIVATE_KEY, "-m", "hello"]);
+    let signature = signed["signature"].as_str().unwrap();
+    let checked = wallet.json(&[
+        "verify",
+        "--message",
+        "hello",
+        "--signature",
+        signature,
+        "--address",
+        TEST_ADDRESS_0,
+    ]);
+    assert_eq!(checked["valid"], true);
+}
+
+#[test]
+fn utils_validate_mnemonic_reports_rather_than_refuses() {
+    // The difference from `account import-mnemonic`, which is an error path.
+    let wallet = Wallet::new();
+    let good = wallet.json(&["utils", "validate-mnemonic", TEST_MNEMONIC]);
+    assert_eq!(good["valid"], true);
+    assert_eq!(good["words"], 12);
+    assert!(good["reason"].is_null());
+
+    for (phrase, words) in [
+        ("abandon abandon", 2),
+        (
+            "abandon abandon abandon abandon abandon abandon abandon abandon \
+             abandon abandon abandon abandon",
+            12,
+        ),
+    ] {
+        let bad = wallet.json(&["utils", "validate-mnemonic", phrase]);
+        assert_eq!(bad["valid"], false, "{phrase}");
+        assert_eq!(bad["words"], words);
+        assert!(!bad["reason"].as_str().unwrap().is_empty());
+    }
+}

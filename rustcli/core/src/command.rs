@@ -1,13 +1,19 @@
-//! Command line surface. Kept in one place so it stays in step with the Python CLI.
+//! The command surface: the argument tree every front end shares.
+//!
+//! It lives in core rather than in the `cwbwallet` binary because it is not a
+//! terminal concern — it is the wallet's vocabulary. The Rust CLI parses argv
+//! into it, and so does a Lua or LÖVE caller reaching in over the C ABI, which
+//! is why there is exactly one definition of what `account new --words 24`
+//! means. Kept in step with the Python CLI by `scripts/parity.sh`.
 
 use std::path::PathBuf;
 
-use clap::{Args, Parser, Subcommand};
+use clap::{ArgGroup, Args, Parser, Subcommand};
 
 #[derive(Parser, Debug)]
 #[command(
     name = "cwbwallet",
-    version,
+    version = crate::VERSION,
     about = "Educational Cronos/EVM wallet — CLI and TUI over an append-only JSONL store",
     long_about = "Causewaybay Wallet manages EVM accounts for Cronos testnet and mainnet.\n\
                   State lives in ~/.causewaybaywallet as append-only JSONL files.\n\
@@ -20,7 +26,13 @@ pub struct Cli {
     pub json: bool,
 
     /// Override the wallet home directory.
-    #[arg(long, global = true, value_name = "PATH", env = "CAUSEWAYBAY_HOME")]
+    ///
+    /// `CAUSEWAYBAY_HOME` is deliberately *not* read by clap here. It is read
+    /// by `paths::resolve_home`, one step later, so the precedence stays
+    /// flag > request > environment > default. Letting clap fill this in from
+    /// the environment would make an ambient variable outrank a home a caller
+    /// asked for explicitly — a GUI would write to the wrong wallet.
+    #[arg(long, global = true, value_name = "PATH")]
     pub home: Option<PathBuf>,
 
     /// Use this network for one invocation, without changing the stored default.
@@ -359,6 +371,46 @@ pub enum UtilsCommand {
         /// Mnemonic length.
         #[arg(long, short, default_value_t = 12)]
         words: usize,
+    },
+    /// Derive an address and keys from a mnemonic or a private key.
+    ///
+    /// Nothing is stored and nothing is remembered: this is the calculator,
+    /// not the wallet. Use `account import-mnemonic` to keep what it shows.
+    #[command(group(ArgGroup::new("material").required(true)
+        .args(["mnemonic", "private_key"])))]
+    Derive {
+        /// The mnemonic; `-` reads it from stdin.
+        #[arg(long, short = 'm')]
+        mnemonic: Option<String>,
+        /// The private key; `-` reads it from stdin.
+        #[arg(long, short = 'k')]
+        private_key: Option<String>,
+        /// BIP-44 address index. Only meaningful with a mnemonic.
+        #[arg(long, short, default_value_t = 0)]
+        index: u32,
+        /// Optional BIP-39 passphrase (the "25th word").
+        #[arg(long, default_value = "")]
+        passphrase: String,
+    },
+    /// Sign a message with a private key that is not stored.
+    ///
+    /// `sign` uses an account this wallet holds; this one takes the key
+    /// itself, for a caller that has its own.
+    Sign {
+        /// The private key; `-` reads it from stdin.
+        #[arg(long, short = 'k')]
+        private_key: String,
+        /// The message to sign; `-` reads it from stdin.
+        #[arg(long, short = 'm')]
+        message: String,
+    },
+    /// Check whether a phrase is a valid BIP-39 mnemonic.
+    ///
+    /// An invalid phrase is an answer, not an error: this reports `valid:
+    /// false` and why, where `account import-mnemonic` would refuse.
+    ValidateMnemonic {
+        /// The phrase to check; `-` reads it from stdin.
+        mnemonic: String,
     },
 }
 

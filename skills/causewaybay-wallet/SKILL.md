@@ -1,25 +1,28 @@
 ---
 name: causewaybay-wallet
-description: Educational Cronos/EVM wallet CLI with matching Rust and Python implementations. Use to create and manage HD wallets, recall previously used mnemonics and private keys, derive addresses, check balances and nonces, send native CRO/TCRO and ERC-20 tokens, sign and verify EIP-191 messages, look up transactions, and run offline crypto utilities on Cronos testnet and mainnet. State lives in ~/.causewaybaywallet as append-only JSONL.
+description: Educational Cronos/EVM wallet CLI with matching Rust, Python and Lua front ends. Use to create and manage HD wallets, recall previously used mnemonics and private keys, derive addresses, check balances and nonces, send native CRO/TCRO and ERC-20 tokens, sign and verify EIP-191 messages, look up transactions, and run offline crypto utilities on Cronos testnet and mainnet. State lives in ~/.causewaybaywallet as append-only JSONL.
 ---
 
 # Causewaybay Wallet
 
-A Cronos EVM wallet you drive from the command line. Two interchangeable
-implementations share one on-disk format, so either can operate a wallet the
-other created.
+A Cronos EVM wallet you drive from the command line. Three interchangeable
+front ends share one on-disk format, so any of them can operate a wallet
+another created.
 
 ⚠️ **Educational software.** Private keys are stored unencrypted on disk. Use it
 on the testnet, and never with funds anyone would miss.
 
 ## Invoking it
 
-| Implementation | Command |
-| -------------- | ------- |
+| Front end | Command |
+| --------- | ------- |
 | Rust | `rustcli/target/debug/cwbwallet` (build with `make -C rustcli build`) |
 | Python | `pythoncli/.venv/bin/python -m causewaybay` (set up with `make -C pythoncli install`) |
+| Lua | `luacli/bin/cwbwallet-lua` (needs LuaJIT; build with `make -C luacli build`) |
 
-Both accept identical arguments. The examples below use `cwbwallet`.
+All three accept identical arguments — the argument tree is defined once, in
+Rust, and the Lua front end calls into it rather than re-parsing. The examples
+below use `cwbwallet`. Only the Rust one has `tui`.
 
 ## Always pass `--json`
 
@@ -212,6 +215,33 @@ cwbwallet --json utils from-wei 1500000000000000000
 cwbwallet --json utils new-mnemonic --words 24    # generated, not stored
 cwbwallet --json info                             # where state lives, what is configured
 ```
+
+### Crypto without touching the wallet
+
+These take key material as an argument and store nothing — no account, no
+recall entry. Reach for them when the side effects of the wallet commands are
+not wanted.
+
+```bash
+# Derive an address and keys. One of -m/-k, never both.
+cwbwallet --json utils derive -m "abandon … about" [-i 3] [--passphrase ""]
+cwbwallet --json utils derive -k 0x1ab42c…
+#   -> {address, private_key, public_key, public_key_compressed, source,
+#       derivation_path?, index?}
+
+# Sign with a key the wallet does not hold. `sign` needs a stored account;
+# this one does not.
+cwbwallet --json utils sign -k 0x1ab42c… -m "hello"
+#   -> {address, message, signature}
+
+# Ask about a phrase instead of being refused it: an invalid mnemonic is an
+# answer here, where `account import-mnemonic` fails with invalid_mnemonic.
+cwbwallet --json utils validate-mnemonic "abandon abandon"
+#   -> {valid: false, words: 2, reason: "unsupported word count 2; …"}
+```
+
+Every one of these accepts `-` in place of the value to read it from stdin,
+which keeps a phrase or a key out of the process list.
 
 ## Where state lives
 

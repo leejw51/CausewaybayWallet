@@ -1,21 +1,32 @@
-[package]
-name = "causewaybay-wallet"
+# Causewaybay Wallet — the Rust workspace.
+#
+#   core/  causewaybay-core  the wallet itself: keys, store, RPC, commands.
+#                            No terminal, no stdin, no process exit — every
+#                            command is a function returning data.
+#   ffi/   causewaybay-ffi   a C ABI over core, one JSON string in and one
+#                            JSON string out. This is what the Lua CLI and
+#                            the LÖVE GUI load.
+#   cli/   causewaybay-cli   the `cwbwallet` binary: clap, the TUI, and the
+#                            terminal behaviours core deliberately lacks.
+#
+# The version lives here so all three crates carry one number; the root
+# Makefile reads it from this file and refuses to package until the Python
+# implementation claims the same one.
+
+[workspace]
+resolver = "2"
+members = ["core", "ffi", "cli"]
+
+[workspace.package]
 version = "1.0.0"
 edition = "2021"
 rust-version = "1.85"
-description = "Educational Cronos/EVM wallet with a CLI and a TUI, backed by an append-only JSONL store"
 license = "MIT"
-readme = "README.md"
+repository = "https://github.com/leejw51/CausewaybayWallet"
 
-[[bin]]
-name = "cwbwallet"
-path = "src/main.rs"
+[workspace.dependencies]
+causewaybay-core = { path = "core", version = "1.0.0" }
 
-[lib]
-name = "causewaybay_wallet"
-path = "src/lib.rs"
-
-[dependencies]
 alloy-primitives = "1.6"
 k256 = { version = "0.13", features = ["ecdsa"] }
 sha2 = "0.10"
@@ -32,7 +43,6 @@ ratatui = "0.29"
 crossterm = "0.28"
 unicode-normalization = "0.1"
 
-[dev-dependencies]
 assert_cmd = "2"
 predicates = "3"
 tempfile = "3"

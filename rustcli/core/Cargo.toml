@@ -1,0 +1,31 @@
+[package]
+name = "causewaybay-core"
+description = "The Causewaybay wallet: key derivation, the JSONL store, RPC and every command, with no terminal attached"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "causewaybay_core"
+path = "src/lib.rs"
+
+[dependencies]
+alloy-primitives.workspace = true
+k256.workspace = true
+sha2.workspace = true
+hmac.workspace = true
+pbkdf2.workspace = true
+rand.workspace = true
+hex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+clap.workspace = true
+reqwest.workspace = true
+chrono.workspace = true
+unicode-normalization.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tiny_http.workspace = true

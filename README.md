@@ -5,6 +5,10 @@ interface and a terminal UI, implemented twice: once in Rust, once in Python.
 Both write the same append-only JSONL store, so either can drive a wallet the
 other created.
 
+A third front end, in Lua, calls the Rust core through a C ABI rather than
+reimplementing it — the same wallet reached differently, and the module a
+[LÖVE](https://love2d.org) GUI loads.
+
 > ⚠️ **Educational software.** Private keys are stored unencrypted on disk. Use
 > it on the testnet. For anything of value, use a hardware wallet.
 
@@ -12,11 +16,11 @@ other created.
 
 ```bash
 make                # list the targets
-make test           # run every test in both implementations
-make build          # build the Rust binary and install the Python package
+make test           # run every test in all three front ends
+make build          # build the Rust workspace and install the Python package
 ```
 
-Then, with either implementation:
+Then, with any of them:
 
 ```bash
 # Rust
@@ -26,25 +30,35 @@ rustcli/target/debug/cwbwallet balance
 # Python
 pythoncli/.venv/bin/python -m causewaybay account new --label main
 pythoncli/.venv/bin/python -m causewaybay balance
+
+# Lua (needs LuaJIT, and `make -C luacli build` for the shared library)
+luacli/bin/cwbwallet-lua account new --label main
+luacli/bin/cwbwallet-lua balance
+luacli/bin/cwbwallet-lua interactive   # a menu instead of flags
 ```
 
 ## Packaging
 
 ```bash
-make package          # both binaries into ./dist
-make package-rust     # only the Rust one
+make package          # every artifact into ./dist
+make package-rust     # only the Rust binary and shared library
 make package-python   # only the Python one
+make package-lua      # only the Lua bundle
 make package-verify   # package, then run the parity checks against ./dist
 ```
 
 | artifact | size | what it is |
 | -------- | ---- | ---------- |
-| `dist/cwbwallet-rust` | ~4.7 MB | the release binary; nothing to carry alongside it |
+| `dist/cwbwallet-rust` | ~4.8 MB | the release binary; nothing to carry alongside it |
 | `dist/cwbwallet-python` | ~17 MB | [PyApp](https://ofek.dev/pyapp/) wrapping the wheel and a redistributable CPython |
+| `dist/libcausewaybay_ffi.dylib` | ~4.2 MB | the wallet as a shared library, with `causewaybay.h` beside it |
+| `dist/cwbwallet-lua/` | ~4.4 MB | the Lua front end and its own copy of the library; needs LuaJIT |
 
-Both are the same CLI and share `~/.causewaybaywallet`, so they can be used
-interchangeably — `make package-verify` proves it by running the cross-
-implementation checks against the packaged artifacts rather than the source tree.
+All of them are the same CLI and share `~/.causewaybaywallet`, so they can be
+used interchangeably — `make package-verify` proves it by running the cross-
+implementation checks against the packaged artifacts rather than the source
+tree. The Lua bundle is self-contained: copy the directory anywhere and it finds
+the library beside it.
 
 Packaging the Python one needs a Rust toolchain, because PyApp is itself a Rust
 program. **Its first run downloads the Python dependencies** (eth-account and
@@ -73,19 +87,22 @@ one online check with Apple.
 
 ## Versioning and releases
 
-One number covers both implementations. It lives in `rustcli/Cargo.toml` and
-`pythoncli/pyproject.toml`, and `make version` prints it only when the two
-agree — a mismatch is an error, not a warning, and packaging refuses to run:
+One number covers everything. It lives in `rustcli/Cargo.toml` (the workspace
+manifest, which all three Rust crates inherit) and `pythoncli/pyproject.toml`,
+and `make version` prints it only when the two agree — a mismatch is an error,
+not a warning, and packaging refuses to run:
 
 ```bash
 make version          # 1.0.0
 ```
 
-Nothing repeats that number anywhere else. The Rust binary reports
+Nothing repeats that number anywhere else. The Rust crates report
 `CARGO_PKG_VERSION`, the Python one reads its own installed distribution
-metadata, and `scripts/parity.sh` checks that what the two binaries actually
-print — `cwbwallet --version` and the `version` field of `cwbwallet info` —
-matches the manifests. So a version a release claims is one that was verified.
+metadata, the Lua front end has no version of its own — it reports whatever
+library it loaded — and `scripts/parity.sh` checks that what each front end
+actually prints — `cwbwallet --version` and the `version` field of
+`cwbwallet info` — matches the manifests. So a version a release claims is one
+that was verified.
 
 To cut a release, bump both manifests, then tag `main`:
 
@@ -102,19 +119,22 @@ release:
 ```
 cwbwallet-rust-<version>-<arch>-apple-darwin.tar.gz
 cwbwallet-python-<version>-<arch>-apple-darwin.tar.gz
+cwbwallet-lua-<version>-<arch>-apple-darwin.tar.gz
 ```
 
-Each archive holds the binary as `cwbwallet`, so either one installs the same
-way. `workflow_dispatch` runs the whole path as a dry run: it uploads the
-artifacts and creates no release.
+The two compiled archives hold the binary as `cwbwallet`, so either installs the
+same way; the Lua one holds the whole bundle, since it is a script that needs
+its modules and its shared library beside it. `workflow_dispatch` runs the whole
+path as a dry run: it uploads the artifacts and creates no release.
 
 ### Continuous integration
 
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on every push to
 `main` and every pull request, split so a failure names itself: `rust`
-(rustfmt, clippy, tests), `python` (ruff and pytest on 3.10 and 3.12 — the
-floor and the interpreter PyApp embeds), `parity` (vector reproducibility, the
-mutation check, and the cross-implementation script), and `version`. A fifth
+(rustfmt, clippy, tests), `lua` (LuaJIT against the freshly built shared
+library), `python` (ruff and pytest on 3.10 and 3.12 — the floor and the
+interpreter PyApp embeds), `parity` (vector reproducibility, the mutation
+check, and the cross-implementation script), and `version`. A sixth
 job packages on macOS with ad-hoc signing, skipped on pull requests because
 PyApp downloads a CPython distribution to do it — the release path should not
 be exercised for the first time at a tag, but a pull request should not pay for
@@ -128,11 +148,12 @@ The signing secrets the release needs: `MACOS_CERTIFICATE_P12_BASE64`,
 
 | path | what it is |
 | ---- | ---------- |
-| `SPEC.md` | the shared specification both implementations follow |
+| `SPEC.md` | the shared specification every implementation follows |
 | `.github/workflows/` | CI on every push, and the tagged macOS release |
-| `rustcli/` | Rust CLI and TUI (`cwbwallet`), its own `Makefile` and `.gitignore` |
+| `rustcli/` | the Rust workspace: `core/` the wallet, `ffi/` the C ABI, `cli/` the `cwbwallet` binary and TUI |
 | `pythoncli/` | Python CLI and TUI (`cwbwallet`), its own `Makefile` and `.gitignore` |
-| `testvectors/` | shared fixtures both implementations are tested against |
+| `luacli/` | the Lua CLI over the C ABI, and the module a LÖVE GUI loads |
+| `testvectors/` | shared fixtures every implementation is tested against |
 | `skills/causewaybay-wallet/` | the skill definition that lets an AI agent drive the wallet |
 | `scripts/` | vector generation and cross-implementation checks run by `make test` |
 
@@ -172,6 +193,18 @@ format carries the address and both public key encodings (33- and 64-byte);
 built around a visible command list, so nothing has to be memorised: `Tab` moves
 between panes, `Enter` runs the highlighted command, `?` shows the full
 reference, and every command keeps a single-key shortcut.
+
+**Embeddable** — the Rust wallet is also a shared library with a C ABI, so a
+program in another language can hold the whole thing without shelling out to a
+binary. See [`rustcli/README.md`](rustcli/README.md) for the ABI and
+[`luacli/README.md`](luacli/README.md) for the Lua binding built on it.
+
+**Three ways to drive it** — flags for a script, the full-screen TUI for a
+terminal, and `cwbwallet-lua interactive`, which is a numbered menu and a REPL
+at one prompt: pick `1` to create a wallet, or type `account list` and get the
+same answer the CLI would give. Seed phrases are typed with terminal echo off,
+and the confirmation before anything irreversible is the wallet's own summary of
+a transaction it has already priced and funded — not a sentence the menu wrote.
 
 ## Driving it from a script or an agent
 
@@ -220,25 +253,35 @@ worst lose the last partial line, and the whole history stays readable with
 
 ## Testing
 
-`make test` runs four things:
+`make test` runs five things:
 
-* **Rust** — 240 tests. BIP-39, BIP-32 and BIP-44 are implemented from scratch
+* **Rust** — 375 tests. BIP-39, BIP-32 and BIP-44 are implemented from scratch
   and checked against the official vectors; the CLI is exercised end to end
-  against a scripted in-process JSON-RPC node.
+  against a scripted in-process JSON-RPC node, and the C ABI is called the way
+  a C host would call it.
 * **Python** — 450 tests covering the same ground, plus the Textual UI driven
   through its test pilot.
+* **Lua** — 187 tests. Not the cryptography again, but the path through the
+  boundary: that a 256-bit integer stays a string rather than becoming a
+  double, that an emoji arrives as the bytes that were hashed, that an error
+  code is the same word on both sides. Plus the interactive menu, driven by
+  scripted answers, and a coverage suite that reads the command list out of
+  the library and fails if any command has no Lua method.
 * **Vectors** — `scripts/check-vectors.sh` confirms the shared fixtures in
   `testvectors/` regenerate byte-identically, so the goalposts cannot move
-  silently.
-* **Parity** — `scripts/parity.sh` points both binaries at one wallet, has each
-  write and the other read, and checks they agree on addresses, account ids,
-  signatures, recall entries, error codes and the version they report.
+  silently; `scripts/check-vector-coverage.py` then corrupts one value per file
+  and requires every suite to notice, so a suite that quietly skips a file
+  cannot pass.
+* **Parity** — `scripts/parity.sh` points all three front ends at one wallet,
+  has each write and the others read, and checks they agree on addresses,
+  account ids, signatures, recall entries, error codes and the version they
+  report.
 
 No test touches a real network or a real key.
 
 ### Shared test vectors
 
-`testvectors/` holds generated fixtures that both implementations run against —
+`testvectors/` holds generated fixtures that every implementation runs against —
 the official BIP-39 and EIP-55 vectors, the worked example from EIP-155, and the
 mnemonics and keys that Anvil, Hardhat and Ganache print on startup:
 
