@@ -106,6 +106,25 @@ MUTATIONS = [
     ("login: an empty clipboard wipes the field", "login.lua",
      "  if not text or text:gsub(\"%s\", \"\") == \"\" then return false end", "", "login", None),
 
+    ("launch: never ends unless an outcome arrives", "ui/launch.lua",
+     "  if state.held then return state.held end\n  if not busy then return {} end",
+     "  if state.held then return state.held end", "launch", None),
+
+    ("launch: stays loud after the flight is over", "ui/launch.lua",
+     "  return state ~= nil and state.time < launch.FLOOR",
+     "  return state ~= nil", "launch", None),
+
+    ("launch: thrust is not capped", "ui/launch.lua",
+     "local thrust = math.min(1, state.time / launch.FLOOR)",
+     "local thrust = state.time / launch.FLOOR", "launch", None),
+
+    ("launch: an early outcome is announced immediately", "ui/launch.lua",
+     "  if state.time < launch.FLOOR then return nil end", "", "launch", None),
+
+    ("launch: an empty drain counts as held", "ui/launch.lua",
+     "  if not state or #events == 0 then return false end",
+     "  if not state then return false end", "launch", None),
+
     ("boot: a missing library no longer halts", "boot.lua",
      "self.halted = true", "self.halted = false", "boot", None),
 

@@ -14,7 +14,7 @@ There is no cryptography in this directory, no store, and no argument parsing.
 ```sh
 make run       # opens the window
 make app       # a double-clickable macOS .app with LÖVE inside it
-make test      # 174 headless tests, no LÖVE required
+make test      # 191 headless tests, no LÖVE required
 make shots     # writes a PNG of each screen, for review from a terminal
 make sfx       # re-synthesises the sound effects
 ```
@@ -493,6 +493,25 @@ same instant.
 `make shots` captures two frames of it, because the first half and the second
 half of an exponential look nothing alike.
 
+### Two clocks, which is a fix rather than a design
+
+The flight is 1.25 seconds and always the same length. The wait is however long
+the wallet takes, and it is **not an animation** — once the flight is done the
+screen is calm whether or not an answer has arrived, and all the launch has
+left to do is hold the outcome.
+
+That separation is there because it was once missing. The launch ended on
+exactly one condition, an outcome arriving, so when nothing came back it never
+ended: the screen shook for the rest of the session — the thrust term re-pinned
+the shake every frame and overwrote its decay — the exhaust kept burning at a
+rocket that had left, and SEND stayed disabled.
+
+It lived in `main.lua`, which needs a window and is therefore never tested. The
+state machine is now `ui/launch.lua`: it takes `dt` and one boolean, touches no
+`love.*` call, and `tests/launch_test.lua` drives it to every state including
+the one that shipped broken. The property underneath it — **an animation must
+not depend on a network reply to stop** — is a test now, not a hope.
+
 ## Controls
 
 | | |
@@ -530,6 +549,7 @@ luajit tests/init.lua anim       # one suite
 | `card` | that a face is deterministic, spread across every scheme, and survives a malformed address |
 | `login` | that the phrase is never drawn, the word count, and what submitting does |
 | `boot` | that every figure on the boot screen is the wallet's own, and that a missing library halts |
+| `launch` | that the rocket always ends, caps its thrust, and holds an early outcome |
 | `model` | wallets, screens, networks, the session, the list window, the send flow and the form, against a real store |
 
 ### Whether the tests would actually fail

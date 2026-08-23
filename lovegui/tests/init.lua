@@ -21,7 +21,7 @@ package.path = table.concat({
 local t = require("tests.runner")
 local support = require("tests.support")
 
-local SUITES = { "anim", "particles", "sound", "card", "login", "boot", "model" }
+local SUITES = { "anim", "particles", "sound", "card", "launch", "login", "boot", "model" }
 
 local wanted = {}
 for i = 1, #arg do wanted[arg[i]] = true end

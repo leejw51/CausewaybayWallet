@@ -25,6 +25,7 @@ local widgets = require("ui.widgets")
 local particles = require("ui.particles")
 local sound = require("ui.sound")
 local card = require("ui.card")
+local Launch = require("ui.launch")
 local Boot = require("boot")
 local Login = require("login")
 local Model = require("model")
@@ -73,15 +74,6 @@ local game = {
 --- was gone before the eye found it, and the whole thing read as a new card
 --- appearing rather than two cards moving.
 local CARD_SWIPE = 0.42
-
---- How long the launch plays before an outcome is allowed to land.
----
---- A node can answer in 80ms, and an effect that is over before the eye finds
---- it may as well not have happened — the transfer would read as a number that
---- silently changed. So the rocket always gets its second and a quarter, and a
---- result that arrives early waits behind it. The wait is animation, not
---- latency: nothing is being delayed except the telling.
-local LAUNCH_FLOOR = 1.25
 
 -- Positions the drawing code publishes and the update code reads. Declared
 -- here because `love.update` is defined above the screens that set them, and a
@@ -211,21 +203,16 @@ end
 
 --- Start the rocket. Called the moment a transfer is confirmed.
 local function begin_launch()
-  game.launch = { time = 0, held = nil }
+  game.launch = Launch.new()
   game.shake = 2
   -- 1.3 seconds of motor, generated to cover LAUNCH_FLOOR with a little over,
   -- and its pitch climbs on the same exponential curve as the sprite.
   sound.play("launch")
 end
 
---- Where the rocket is, and how hard it is burning, 0..1 through the flight.
----
---- `expo_in` is the whole character of it: almost nothing for the first third,
---- then it is gone. A linear rise reads as an elevator; this reads as thrust.
+--- Where the rocket is, and how hard it is burning. See `ui/launch.lua`.
 local function flight()
-  if not game.launch then return 0, 0 end
-  local t = math.min(1, game.launch.time / LAUNCH_FLOOR)
-  return anim.expo_in(t), t
+  return Launch.flight(game.launch)
 end
 
 --- Which row a card belongs to, for deciding whether it is a different card.
@@ -304,7 +291,11 @@ local function celebrate(event)
     game.fx:burst(cx, 40, { count = 30, speed = 220, colour = { 1, 0.85, 0.3 },
       sprite = "spark", size = 5, life = 1.0 })
     game.toast = { text = "SENT", colour = theme.colour.green, life = 2.6 }
-    game.shake = 4
+    -- A tap, not another shake. This lands at the end of a second and a
+    -- quarter of the screen shaking with the thrust, and repeating the same
+    -- gesture louder makes the arrival read as more of the flight rather than
+    -- as the end of it. The confetti says it arrived; the screen goes still.
+    game.shake = 1.2
   elseif event == "error" then
     sound.play("error")
     game.shake = 6
@@ -381,37 +372,35 @@ function love.update(dt)
   end
 
   if game.launch then
-    game.launch.time = game.launch.time + dt
+    local finished = Launch.step(game.launch, dt, game.model:busy())
     local risen, t = flight()
 
-    -- Exhaust, thickening as the throttle opens. Emitted from where the
-    -- rocket actually is, so the plume stays attached to it.
-    local burn = 1 + math.floor(t * 6)
-    for _ = 1, burn do
-      game.fx:embers(rocket.x + (math.random() - 0.5) * 6,
-        rocket.y - risen * 260 + 18, 10, 1, 1)
+    -- Only while it is actually flying. Everything loud used to be gated on
+    -- the launch existing at all, so a launch waiting on a slow node went on
+    -- shaking the screen and burning fuel at a rocket that had left.
+    if Launch.flying(game.launch) then
+      -- Exhaust, thickening as the throttle opens. Emitted from where the
+      -- rocket actually is, so the plume stays attached to it.
+      local burn = 1 + math.floor(t * 6)
+      for _ = 1, burn do
+        game.fx:embers(rocket.x + (math.random() - 0.5) * 6,
+          rocket.y - risen * 260 + 18, 10, 1, 1)
+      end
+      game.fx:trail(rocket.x, rocket.y - risen * 260 + 14, 0, -risen * 700,
+        { 0.5, 0.85, 1 })
+
+      -- The shake builds with the thrust rather than being a one-off thump.
+      game.shake = math.max(game.shake, t * t * 5)
     end
-    game.fx:trail(rocket.x, rocket.y - risen * 260 + 14, 0, -risen * 700,
-      { 0.5, 0.85, 1 })
 
-    -- The shake builds with the thrust rather than being a one-off thump.
-    game.shake = math.max(game.shake, t * t * 5)
-
-    if game.launch.time >= LAUNCH_FLOOR and game.launch.held then
-      for _, event in ipairs(game.launch.held) do celebrate(event) end
+    if finished then
+      for _, event in ipairs(finished) do celebrate(event) end
       game.launch = nil
     end
   end
 
   local events = game.model:drain()
-  if game.launch and #events > 0 then
-    -- Held until the rocket has had its moment. The transfer already
-    -- happened; this only decides when it is announced.
-    game.launch.held = game.launch.held or {}
-    for _, event in ipairs(events) do
-      game.launch.held[#game.launch.held + 1] = event
-    end
-  else
+  if not Launch.hold(game.launch, events) then
     for _, event in ipairs(events) do celebrate(event) end
   end
 
