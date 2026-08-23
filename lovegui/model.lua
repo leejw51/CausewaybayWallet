@@ -101,6 +101,14 @@ function Model:drain()
   return taken
 end
 
+--- The label of the wallet being spent from, if it has one.
+function Model:active_label()
+  for _, account in ipairs(self.wallets) do
+    if account.address == self.active then return account.label end
+  end
+  return nil
+end
+
 function Model:busy()
   return next(self.pending) ~= nil
 end
@@ -761,7 +769,17 @@ function Model:begin_send(to, amount)
     end
     local err = (envelope or {}).error or {}
     if err.code ~= "confirmation_required" then return self:fail(err) end
-    self.confirm = { summary = Model.plan_summary(err.message), to = to, amount = amount }
+    -- Who is paying, captured with the plan rather than read again when the
+    -- dialog draws. It is the wallet that was active when the wallet priced
+    -- this, which is the one that will be debited, and it is the single most
+    -- important thing on a confirmation to be sure of.
+    self.confirm = {
+      summary = Model.plan_summary(err.message),
+      from = self.active,
+      from_label = self:active_label(),
+      to = to,
+      amount = amount,
+    }
     self.status = nil
     self:emit("confirm")
   end)

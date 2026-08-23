@@ -136,9 +136,31 @@ function widgets.field(springs, key, box, value, label, focused, options)
 
   local font = theme.font.small
   local shown = value
+  local room = box.w - 8
+
+  -- A finished address is shown from both ends: `0x6Fac4D…4Ab9C0`.
+  --
+  -- Scrolling to the tail is right while somebody is typing, and wrong the
+  -- moment they paste — a pasted address is not being composed, it is being
+  -- *checked*, and what you check are the first characters and the last. The
+  -- middle of an address is not something anyone reads.
+  --
+  -- Only when it is a whole address, so the field goes back to showing the
+  -- tail as soon as there is something half-typed in it.
+  if options.ellipsis and value:match("^0[xX]%x+$") and theme.width(value, font) > room then
+    -- Shrunk until it fits rather than trusting one keep length. A fixed eight
+    -- was a shade too wide for this box, and the overflow loop below then took
+    -- the characters off the *front* — leaving `x6Fac4D…4Ab9C0`, an address
+    -- missing the one character that says what it is.
+    local keep = options.ellipsis
+    repeat
+      shown = theme.ellipsis(value, keep, keep)
+      keep = keep - 1
+    until keep < 3 or theme.width(shown, font) <= room
+  end
+
   -- Show the tail once it overflows, because that is where the cursor is and
   -- what a person is checking as they type.
-  local room = box.w - 8
   while theme.width(shown, font) > room and #shown > 0 do
     shown = shown:sub(2)
   end

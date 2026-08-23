@@ -216,7 +216,16 @@ MUTATIONS = [
 
     ("shake: a settled shake still moves the screen", "ui/anim.lua",
      "if not amount or amount < SETTLED then return 0, 0 end",
-     "if amount <= 0 then return 0, 0 end", "anim", None),
+     "if amount <= 0 then return 0, 0 end", "anim",
+     # Equivalent once the offset is rounded, which is the load-bearing half of
+     # that fix: a shake of 1e-39 rounds to zero whether or not this guard
+     # stops it first. The guard skips the arithmetic and says in the code that
+     # settled means settled, but on its own it changes nothing visible.
+     #
+     # Worth keeping straight: with *both* halves reverted the tremble comes
+     # back, and the tests catch it. Neither reverted alone is enough, which is
+     # why the rounding is the fix and this is the belt.
+     "rounding already sends a settled shake to zero"),
 
     ("shake: the offset is floored instead of rounded", "ui/anim.lua",
      "  return math.floor(x + 0.5), math.floor(y + 0.5)",

@@ -216,13 +216,26 @@ antialiased, which puts grey pixels on every edge that a 3× nearest upscale the
 turns into 3×3 grey blocks; or with `"mono"` hinting, which has no greys but
 drops stems, so `WALLET` comes out with holes in it.
 
-So `tools/generate-font.py` bakes Menlo at 11pt with antialiasing off into an
-image font. Two things it learned the hard way, both recorded in its comments:
-trimming each glyph to its ink and re-padding bottom-aligns the *ink* rather than
-the *baseline*, so a `y` sits a pixel low — Menlo is monospace and needed no
-trimming at all. And a glyph the generator cannot draw must be a hard failure,
-because a skipped one shifts every letter after it and the font renders fluent
-nonsense instead of visibly breaking.
+So `tools/generate-font.py` bakes Menlo at 12pt with antialiasing off into an
+image font. Three things it learned the hard way, all recorded in its comments.
+
+Trimming each glyph to its ink and re-padding bottom-aligns the *ink* rather
+than the *baseline*, so a `y` sits a pixel low — Menlo is monospace and needed
+no trimming at all.
+
+A glyph the generator cannot draw must be a hard failure, because a skipped one
+shifts every letter after it and the font renders fluent nonsense instead of
+visibly breaking.
+
+And a glyph it *can* draw is not necessarily a letter. At 11pt, which shipped,
+lowercase `m` has three stems and about five pixels to put them in: with
+antialiasing off it fills in and bakes as a solid block. Every "from" in the
+interface read as "fro" followed by a smudge, and nothing downstream could tell
+that from a character meant to be solid. It is caught now at the one moment the
+intended character is known — a glyph whose ink fills its own bounding box is
+refused, `|` and `.` excepted — so the next face or size that cannot draw a
+letter says so instead of shipping. 12pt is one pixel wider and resolves it;
+13pt would have moved every row in the layout.
 
 Anything outside the baked set becomes `?` rather than a silent gap, since the
 wallet's own messages can contain any UTF-8.

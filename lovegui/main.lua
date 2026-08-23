@@ -1097,25 +1097,48 @@ local function draw_send(model, state, x)
 
   local form = widgets.frame(x + L.right, L.top, L.right_w, height, "TRANSFER")
 
+  -- Which wallet the money leaves, at the top, before anything about where it
+  -- is going. A transfer reads from-then-to, and the wallet being spent from
+  -- is the one thing on this screen that is not typed here — it was chosen on
+  -- another screen, possibly a while ago, and the send screen used to say
+  -- nothing about it at all.
+  local from
+  for _, account in ipairs(model.wallets) do
+    if account.address == model.active then from = account end
+  end
+
+  theme.text("FROM", form.x, form.y + 2, theme.colour.faint, theme.font.small)
+  if from then
+    theme.text(from.label, form.x + 38, form.y + 2, theme.colour.text, theme.font.small)
+    theme.text_right(theme.ellipsis(from.address, 8, 6), form.x + form.w, form.y + 2,
+      theme.colour.cyan, theme.font.small)
+  else
+    -- No active wallet means the send would be refused anyway. Saying so here
+    -- beats letting somebody fill the form in first.
+    theme.text("no wallet in use", form.x + 38, form.y + 2,
+      theme.colour.red, theme.font.small)
+  end
+  theme.rule(form.x, form.y + 16, form.w, theme.colour.raised, 0.6)
+
   -- The recipient field gives up room to its own buttons: pasting is how an
   -- address realistically gets in here, and typing 42 hex characters is not.
-  local to = { x = form.x, y = form.y + 18, w = form.w - 108, h = 19 }
+  local to = { x = form.x, y = form.y + 32, w = form.w - 108, h = 19 }
   widgets.field(game.springs, "to", to, model.form.to, "RECIPIENT",
-    model.focus == "to", { placeholder = "0x…" })
+    model.focus == "to", { placeholder = "0x…", ellipsis = 8 })
 
-  local paste = { x = form.x + form.w - 104, y = form.y + 18, w = 56, h = 19 }
+  local paste = { x = form.x + form.w - 104, y = form.y + 32, w = 56, h = 19 }
   if widgets.button(game.springs, "paste", paste, "PASTE", state,
       { colour = theme.colour.cyan }) then
     paste_from_clipboard(model, "to")
   end
 
-  local clear = { x = form.x + form.w - 44, y = form.y + 18, w = 44, h = 19 }
+  local clear = { x = form.x + form.w - 44, y = form.y + 32, w = 44, h = 19 }
   if widgets.button(game.springs, "clear", clear, "CLR", state,
       { colour = theme.colour.red, disabled = model.form.to == "" }) then
     model:clear_field("to")
   end
 
-  local amount = { x = form.x, y = form.y + 60, w = 120, h = 19 }
+  local amount = { x = form.x, y = form.y + 74, w = 120, h = 19 }
   widgets.field(game.springs, "amount", amount, model.form.amount, "AMOUNT",
     model.focus == "amount", { placeholder = "0.0" })
 
@@ -1131,19 +1154,21 @@ local function draw_send(model, state, x)
     local name = model.info.network or "?"
     local width = theme.width(name, theme.font.small) + 10
     local _ = width
-    theme.text("SENDING ON", form.x, form.y + 90, theme.colour.faint, theme.font.small)
-    widgets.chip(form.x + 88, form.y + 88, name, theme.colour.cyan)
+    theme.text("SENDING ON", form.x, form.y + 104, theme.colour.faint, theme.font.small)
+    widgets.chip(form.x + 88, form.y + 102, name, theme.colour.cyan)
   end
 
-  local send = { x = form.x, y = form.y + height - 46, w = form.w, h = 21 }
+  local send = { x = form.x, y = form.y + height - 36, w = form.w, h = 21 }
   if widgets.button(game.springs, "send", send,
       game.launch and "LAUNCHING…" or "SEND >", state,
-      { colour = theme.colour.gold, disabled = model:busy() or game.launch ~= nil }) then
+      { colour = theme.colour.gold,
+        -- Nothing to send *from* is as good a reason to refuse as being busy.
+        disabled = model:busy() or game.launch ~= nil or from == nil }) then
     model:begin_send(model.form.to, model.form.amount)
   end
 
   theme.text_centred("CTRL+V pastes · ENTER sends",
-    form.x + form.w / 2, form.y + height - 22, theme.colour.faint, theme.font.small)
+    form.x + form.w / 2, form.y + height - 16, theme.colour.faint, theme.font.small)
 end
 
 local function draw_network(model, state, x)
@@ -1210,17 +1235,57 @@ end
 local function draw_confirm(model, state)
   if game.confirm_t < 0.01 then return end
   local plan = model.confirm
-  local box = widgets.dialog({ x = 60, y = 70, w = theme.WIDTH - 120, h = 110 },
+  local box = widgets.dialog({ x = 34, y = 44, w = theme.WIDTH - 68, h = 184 },
     game.confirm_t, "CONFIRM TRANSFER")
   if not plan then return end
 
-  sprite.draw_glowing("key", box.x + box.w / 2, box.y + 40, 26, {
+  sprite.draw_glowing("key", box.x + box.w - 26, box.y + 14, 22, {
     angle = math.sin(game.time * 3) * 0.12,
     glow = 0.7, glow_colour = theme.colour.amber,
   })
 
-  -- The wallet's own summary of a transaction it has already priced.
-  local words, line, y = {}, "", box.y + 58
+  -- Labelled rows, not a sentence to be read carefully.
+  --
+  -- This used to be the wallet's summary alone, centred and wrapped: "Send 1
+  -- TCRO from account-2 to 0xB32d…" — where the only thing identifying the
+  -- payer is a label, and the one full address on screen is the *recipient*,
+  -- sitting directly under the word "from". Two wallets with similar labels,
+  -- or a glance rather than a read, and it says the opposite of what it means.
+  --
+  -- So who pays and who is paid are two rows, both spelled out in full, and
+  -- neither is inferred from the other.
+  local alpha = box.eased
+  local y = box.y + 20
+
+  local function party(label, colour, name, address)
+    theme.text(label, box.x + 12, y, theme.colour.faint, theme.font.small, alpha)
+    if name then
+      theme.text(name, box.x + 58, y, colour, theme.font.small, alpha)
+    end
+    theme.text(address or "?", box.x + 12, y + 13, colour, theme.font.small, alpha)
+    y = y + 32
+  end
+
+  party("FROM", theme.colour.amber, plan.from_label, plan.from)
+  -- The direction as a picture rather than a word, on the left where the two
+  -- labels line up, so it reads down the column instead of floating.
+  theme.text("|", box.x + 20, y - 14, theme.colour.faint, theme.font.small, alpha * 0.7)
+  theme.text("v", box.x + 20, y - 8, theme.colour.faint, theme.font.small, alpha * 0.7)
+  party("TO", theme.colour.cyan, nil, plan.to)
+
+  theme.rule(box.x + 12, y - 4, box.w - 24, theme.colour.raised, 0.6 * alpha)
+  theme.text("AMOUNT", box.x + 12, y + 4, theme.colour.faint, theme.font.small, alpha)
+  theme.text(plan.amount or "?", box.x + 76, y + 4, theme.colour.text,
+    theme.font.body, alpha)
+  if model.info then
+    theme.text_right(model.info.network or "?", box.x + box.w - 12, y + 4,
+      theme.colour.dim, theme.font.small, alpha)
+  end
+
+  -- The wallet's own words underneath, still. It priced this — the nonce, the
+  -- gas, the balance check are all behind that sentence — and the rows above
+  -- are a reading of it, not a replacement for it.
+  local words, line = {}, ""
   for word in plan.summary:gmatch("%S+") do
     local candidate = line == "" and word or (line .. " " .. word)
     if theme.width(candidate, theme.font.small) > box.w - 24 then
@@ -1231,10 +1296,11 @@ local function draw_confirm(model, state)
     end
   end
   words[#words + 1] = line
+  local note = y + 22
   for _, text in ipairs(words) do
-    theme.text_centred(text, box.x + box.w / 2, y, theme.colour.text, theme.font.small,
-      box.eased)
-    y = y + 10
+    theme.text_centred(text, box.x + box.w / 2, note, theme.colour.faint,
+      theme.font.small, alpha * 0.9)
+    note = note + 10
   end
 
   local no = { x = box.x + 16, y = box.y + box.h - 24, w = 70, h = 16 }
@@ -1470,6 +1536,22 @@ local function advance_replay(dt)
     elseif pause then
       shot.hold = tonumber(pause) or 0
       return
+    elseif step == "confirm" then
+      -- The confirmation needs a funded account and a node that answers, so
+      -- the dialog was the one screen no picture could be taken of. The plan
+      -- is planted directly; every field in it is what the real one carries.
+      if game.model then
+        game.model.confirm = {
+          summary = "Send " .. tostring(game.model.form.amount) .. " TCRO from "
+            .. tostring(game.model:active_label())
+            .. " to " .. tostring(game.model.form.to)
+            .. " on Cronos EVM Testnet, fee about 0.000021 TCRO",
+          from = game.model.active,
+          from_label = game.model:active_label(),
+          to = game.model.form.to,
+          amount = game.model.form.amount,
+        }
+      end
     elseif step == "mint" then
       -- NEW MNEMONIC has no key, only a button, so a shot of the
       -- mint-then-unlock path cannot be replayed without this.

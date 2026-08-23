@@ -219,14 +219,26 @@ t.suite("anim / shake", function()
   t.case("it is rounded, not floored", function()
     -- Flooring biases a symmetric offset half a pixel left and up for the
     -- whole duration, and turns any infinitesimal negative into a whole pixel.
-    local low, high = 0, 0
-    for step = 0, 400 do
-      local x = anim.shake_offset(step * 0.011, 4)
-      if x < 0 then low = low + 1 elseif x > 0 then high = high + 1 end
+    --
+    -- Measured at a small amplitude, which is where the two differ completely
+    -- rather than merely a little: at 4 pixels flooring is only slightly
+    -- skewed and a tolerance test lets it through — that is exactly how this
+    -- got past the first version of this test. At one pixel, flooring never
+    -- produces a positive offset at all, because everything in [0, 1) floors
+    -- to zero while everything in [-1, 0) floors to -1.
+    for _, amount in ipairs({ 0.6, 1.0, 4.0 }) do
+      local low, high = 0, 0
+      for step = 0, 400 do
+        local x = anim.shake_offset(step * 0.011, amount)
+        if x < 0 then low = low + 1 elseif x > 0 then high = high + 1 end
+      end
+      t.ok(high > 0,
+        ("a symmetric shake of %s must go both ways: %d left, %d right")
+          :format(amount, low, high))
+      local bias = math.abs(low - high) / math.max(1, low + high)
+      t.ok(bias < 0.15,
+        ("and evenly at %s: %d left, %d right"):format(amount, low, high))
     end
-    local bias = math.abs(low - high) / (low + high)
-    t.ok(bias < 0.2,
-      ("a symmetric shake should not favour one side: %d left, %d right"):format(low, high))
   end)
 
   t.case("the offsets are whole pixels", function()

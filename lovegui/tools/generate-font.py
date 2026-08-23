@@ -43,13 +43,24 @@ TARGET = ASSETS / "font.png"
 # Mono; Menlo keeps the most shape at this size, and its zero is slashed, which
 # matters for a screen full of addresses.
 #
-# 11pt bakes to a 15px strip with a 7px cap. 8pt was tried first because it fit
-# the rows the layout already had, and it is simply not legible — at a 6px cap
-# Menlo drops enough of each letterform that "SEND" reads as "SEID". So the
-# layout gives the font room instead: fewer rows on screen, each taller. A
-# wallet showing addresses needs more pixels per character than a platformer.
+# 12pt bakes to a 16px strip with a 7px cap. Two sizes were tried and rejected
+# before it, in both directions:
+#
+# 8pt fit the rows the layout already had and is simply not legible — at a 6px
+# cap Menlo drops enough of each letterform that "SEND" reads as "SEID".
+#
+# 11pt looked right and shipped, and was wrong in one specific place: lowercase
+# `m` has three stems and about five pixels to put them in, so with
+# antialiasing off it fills in and bakes as a solid block. Every "from" in the
+# interface read as "fro" followed by a smudge. One pixel more of width is all
+# it needed, and 13pt is a whole pixel wider and three taller, which would move
+# every row in the layout.
+#
+# `check` below is the part that matters more than the number: a glyph that
+# bakes into a solid rectangle is now a hard failure, so the next face or size
+# that cannot draw a letter says so instead of shipping.
 FONT = "/System/Library/Fonts/Menlo.ttc"
-POINTSIZE = 11
+POINTSIZE = 12
 
 # The separator, and a colour no glyph can contain.
 MARKER = "#FF00FF"
@@ -110,6 +121,39 @@ def render(magick: str, glyph: str) -> Path:
     return out
 
 
+def unreadable(path: Path) -> bool:
+    """Is this glyph a solid rectangle rather than a letterform?
+
+    The failure mode that shipped. A face asked for more stems than it has
+    pixels does not fail, and does not render nothing — it renders a filled
+    blob, which looks deliberate at a glance and is unreadable in a word.
+    Nothing downstream can tell that from a glyph that is *supposed* to be
+    solid, so it has to be caught here, at the one moment the intended
+    character is known.
+
+    Measured as ink over its own bounding box. A letterform leaves holes; a
+    blob does not. `|`, `.` and `_` are solid by nature and are exempt.
+    """
+    dump = subprocess.run(["magick", str(path), "txt:-"],
+                          check=True, capture_output=True, text=True).stdout
+    on = []
+    for line in dump.splitlines()[1:]:
+        position, rest = line.split(":", 1)
+        x, y = (int(n) for n in position.split(","))
+        if "none" not in rest.lower() and "00000000" not in rest:
+            on.append((x, y))
+    if not on:
+        return False
+    xs = [x for x, _ in on]
+    ys = [y for _, y in on]
+    area = (max(xs) - min(xs) + 1) * (max(ys) - min(ys) + 1)
+    return area >= 9 and len(on) / area > 0.95
+
+
+#: Characters that really are solid, and must not trip the check above.
+SOLID = "|.,_-'`:;!"
+
+
 def main() -> int:
     magick = require("magick")
     ASSETS.mkdir(parents=True, exist_ok=True)
@@ -134,6 +178,15 @@ def main() -> int:
                 f"could not render {glyph!r} (U+{ord(glyph):04X}): "
                 f"{exc.stderr.decode(errors='replace')}"
             ) from exc
+
+        if glyph not in SOLID and unreadable(Path(pieces[-1])):
+            raise SystemExit(
+                f"{glyph!r} (U+{ord(glyph):04X}) baked as a solid block at "
+                f"{POINTSIZE}pt: the face has more stems than pixels here. "
+                "Raise POINTSIZE until it resolves — every glyph has to be a "
+                "letter, and a blob is worse than a missing one because it "
+                "looks deliberate."
+            )
 
     # A marker column before each glyph and one after the last, which is the
     # arrangement LÖVE's parser expects.
