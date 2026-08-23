@@ -142,6 +142,44 @@ package-c: ## Only the C binary (the static library compiled in)
 package-versions: version
 	@echo "==> packaging $(RS_VERSION) into $(DIST_DIR)"
 
+# The packaging a pull request can afford.
+#
+# `package-verify` is the real thing and takes minutes, almost all of it PyApp
+# downloading a CPython distribution — which is why CI runs it on main and not
+# on pull requests. That gap has now let two breaks through: a macOS link that
+# lost its libraries, and before it a build that only ever ran after merge.
+#
+# So this is the same path without the expensive part. It covers what actually
+# broke — the compiled artifacts, the static link, whether the binaries in
+# ./dist run at all, and whether they still read one store — in about a minute,
+# which a pull request can pay for. What it does not cover is Python, and so
+# not the full cross-implementation parity run; that stays on `package-verify`,
+# which main and every tag still go through.
+.PHONY: package-smoke
+package-smoke: package-versions package-rust package-lua package-c ## Package everything but the Python binary, and check it runs
+	@$(MAKE) --no-print-directory -C $(C_DIR) verify-static
+	@echo "==> Checking each packaged artifact runs"
+	@for bin in "$(DIST_DIR)/cwbwallet-rust" "$(DIST_DIR)/cwbwallet-c" \
+	            "$(DIST_DIR)/cwbwallet-lua/cwbwallet-lua"; do \
+		printf '  %-46s ' "$$(basename "$$bin")"; \
+		"$$bin" --version || { echo "FAILED to run" >&2; exit 1; }; \
+	done
+	@echo "==> Checking the packaged artifacts agree with each other"
+	@home=$$(mktemp -d); \
+	 phrase="abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"; \
+	 "$(DIST_DIR)/cwbwallet-rust" --home "$$home" --json account import-mnemonic \
+	   -m "$$phrase" -l smoke > /dev/null; \
+	 want="0x9858EfFD232B4033E47d90003D41EC34EcaEda94"; \
+	 for bin in "$(DIST_DIR)/cwbwallet-c" "$(DIST_DIR)/cwbwallet-lua/cwbwallet-lua"; do \
+	   got=$$("$$bin" --home "$$home" --json account show smoke \
+	          | sed -n 's/.*"address":"\([^"]*\)".*/\1/p'); \
+	   printf '  %-46s ' "$$(basename "$$bin") reads the shared store"; \
+	   test "$$got" = "$$want" && echo ok || { echo "want $$want, got $$got" >&2; exit 1; }; \
+	 done; \
+	 rm -rf "$$home"
+	@echo
+	@echo "  The full parity run needs the Python build; it stays on package-verify."
+
 # Prove the shipped artifacts are the ones that were tested, not just that the
 # source tree passes. Runs the parity checks against ./dist.
 .PHONY: package-verify
