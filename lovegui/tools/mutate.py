@@ -155,6 +155,10 @@ MUTATIONS = [
      # not whether it happens, so removing it changes nothing observable.
      "use_account already refuses an address the store does not hold"),
 
+    ("send: a second one can start under an open confirmation", "model.lua",
+     "  if self.confirm then return false end\n\n  if to == \"\" or amount == \"\" then",
+     "  if to == \"\" or amount == \"\" then", "model", None),
+
     ("boot: a missing library no longer halts", "boot.lua",
      "self.halted = true", "self.halted = false", "boot", None),
 

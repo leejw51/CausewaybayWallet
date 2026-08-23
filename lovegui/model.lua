@@ -751,6 +751,15 @@ function Model.plan_summary(message)
 end
 
 function Model:begin_send(to, amount)
+  -- The dialog owns the decision while it is up. Starting a second transfer
+  -- from underneath an open confirmation is never what anyone meant, and it
+  -- is how a confirmed send came back asking to be confirmed again — the
+  -- click that approved one also reached the button that began another.
+  --
+  -- The view is supposed to prevent that and now does; this is the guard that
+  -- does not depend on the view getting its layout right.
+  if self.confirm then return false end
+
   if to == "" or amount == "" then
     return self:fail({ code = "usage", message = "a recipient and an amount are needed" })
   end

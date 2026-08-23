@@ -14,7 +14,7 @@ There is no cryptography in this directory, no store, and no argument parsing.
 ```sh
 make run       # opens the window
 make app       # a double-clickable macOS .app with LÖVE inside it
-make test      # 221 headless tests, no LÖVE required
+make test      # 228 headless tests, no LÖVE required
 make shots     # writes a PNG of each screen, for review from a terminal
 make sfx       # re-synthesises the sound effects
 ```
@@ -542,6 +542,16 @@ round trip, and doing that on the main thread freezes everything — the animati
 stops, the particles hang in the air, and a person reasonably concludes it has
 crashed. It opens its own wallet over the same home, because the FFI handle
 cannot cross a thread boundary and the store is append-only by design.
+
+**A dialog is modal for the mouse, not only the keyboard.** One mouse state
+used to reach both the screen and the dialog, and the dialog is drawn last —
+so every widget underneath saw the same click first. The screen's own SEND
+button sits directly beneath the dialog's SEND IT and overlaps it by a few
+pixels, which meant confirming a transfer *also* started a second one: the
+wallet priced it again and the confirmation reappeared on top of a send that
+had already gone through. The keyboard had this right from the start; clicks
+now follow the same rule, and `begin_send` refuses outright while a
+confirmation is pending, so it does not depend on the layout being safe.
 
 **The confirmation is the wallet's own.** The GUI does not compose the sentence
 it asks you to approve. It sends once *without* `yes`, which makes the wallet

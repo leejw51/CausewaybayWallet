@@ -915,6 +915,30 @@ t.suite("model / the form", function()
     t.equal(model.form.to, "")
   end)
 
+  t.case("a second send cannot start under an open confirmation", function()
+    -- What went wrong: the dialog's SEND IT overlapped the screen's own SEND
+    -- button by a few pixels, and both saw the same click. Confirming a
+    -- transfer also began another, so a send that had gone through came back
+    -- asking to be confirmed.
+    --
+    -- The view now blocks clicks behind a dialog. This is the guard that does
+    -- not depend on the view getting its layout right.
+    local model = model_over()
+    model.confirm = { summary = "pretend", to = support.ADDRESS_1, amount = "1" }
+
+    t.equal(model:begin_send(support.ADDRESS_1, "2"), false,
+      "it must refuse while a confirmation is pending")
+    t.equal(model.confirm.amount, "1",
+      "and must not have replaced the plan that was on screen")
+  end)
+
+  t.case("sending again is fine once the dialog is gone", function()
+    local model = model_over()
+    model.confirm = { summary = "pretend", to = support.ADDRESS_1, amount = "1" }
+    model:cancel_send()
+    t.ok(model:begin_send(support.ADDRESS_1, "2"), "cancelled, so the way is clear")
+  end)
+
   t.case("the dialog owns the keyboard while it is up", function()
     -- Typing behind a modal is how a person edits a transaction they think
     -- they are confirming.

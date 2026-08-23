@@ -1403,6 +1403,23 @@ function love.draw()
     else
       local model = game.model
       local state = mouse_state()
+
+      -- A dialog is modal for the mouse as well as for the keyboard.
+      --
+      -- One `state` used to reach both the screen and the dialog, and the
+      -- dialog is drawn last — so every widget underneath saw the same click
+      -- first. The screen's own SEND button sits directly under the dialog's
+      -- SEND IT, overlapping by a few pixels, which meant confirming a
+      -- transfer *also* started a second one: the wallet priced it again and
+      -- the confirmation reappeared, on top of a send that had gone through.
+      --
+      -- The keyboard had this right already — `love.keypressed` gives the
+      -- dialog the keys and returns. This is the same rule for clicks.
+      local behind = state
+      if model and model.confirm then
+        behind = { mouse_x = state.mouse_x, mouse_y = state.mouse_y, clicked = false }
+      end
+
       -- The entrance eases everything down from above on the first frames.
       local drop = (1 - game.entrance.value) * -30
       local slide = game.screen_slide.value * 26
@@ -1411,14 +1428,14 @@ function love.draw()
       love.graphics.translate(0, drop)
       draw_header(model)
       if model then
-        draw_header_buttons(model, state)
-        draw_tabs(model, state)
+        draw_header_buttons(model, behind)
+        draw_tabs(model, behind)
         if model.screen == "wallets" then
-          draw_wallets(model, state, slide)
+          draw_wallets(model, behind, slide)
         elseif model.screen == "send" then
-          draw_send(model, state, slide)
+          draw_send(model, behind, slide)
         else
-          draw_network(model, state, slide)
+          draw_network(model, behind, slide)
         end
         draw_status(model)
       end
