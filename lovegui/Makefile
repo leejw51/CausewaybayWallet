@@ -325,6 +325,12 @@ shots: require-love build ## Write a PNG of each screen into ./shots
 		CWB_SHOT_KEYS="type:$(SHOT_ADDRESS),tab,type:0.5" $(LOVE) lovegui
 	@cd .. && CWB_SHOT="$(CURDIR)/shots/network.png" CWB_SHOT_AFTER=2.4 \
 		CWB_SHOT_SCREEN=network $(LOVE) lovegui
+	@# The boot sequence and its title card — reachable now that the harness can
+	@# be told to stay on it rather than dismissing it first.
+	@cd .. && CWB_SHOT="$(CURDIR)/shots/boot.png" CWB_SHOT_AFTER=1.4 \
+		CWB_SHOT_SCREEN=boot $(LOVE) lovegui
+	@cd .. && CWB_SHOT="$(CURDIR)/shots/title.png" CWB_SHOT_AFTER=3.2 \
+		CWB_SHOT_SCREEN=boot $(LOVE) lovegui
 	@# Its own throwaway home. Unlocking with a phrase the store does not know
 	@# *imports* it, so a login shot against the real home would quietly add an
 	@# account to somebody's wallet every time this ran.

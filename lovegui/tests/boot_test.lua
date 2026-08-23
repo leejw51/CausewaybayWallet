@@ -146,6 +146,55 @@ t.suite("boot / the sequence", function()
   end)
 end)
 
+t.suite("boot / replaying it", function()
+  -- `0` on the title screen plays the whole thing again from black, so the
+  -- intro can be recorded without restarting the process.
+
+  t.case("nothing happens while the black runs", function()
+    local boot = Boot.new(support.wallet(), nil, Boot.REPLAY_HOLD)
+    play(boot, Boot.REPLAY_HOLD - 0.5)
+    t.equal(boot:visible(), 0, "no text during the hold")
+    t.equal(boot.done, false)
+    t.ok(boot.hold > 0, "and it is still holding")
+  end)
+
+  t.case("the sequence runs once the black is over", function()
+    local boot = Boot.new(support.wallet(), nil, Boot.REPLAY_HOLD)
+    play(boot, Boot.REPLAY_HOLD + 6)
+    t.ok(boot.hold <= 0, "the hold is spent")
+    t.equal(boot.done, true, "and the sequence played")
+    t.equal(boot:visible(), #boot.lines)
+  end)
+
+  t.case("a key during the black does not cut the take short", function()
+    -- The hold exists to be recorded. A stray press must not skip it, or the
+    -- recording starts mid-warm-up.
+    local boot = Boot.new(support.wallet(), nil, Boot.REPLAY_HOLD)
+    play(boot, 0.5)
+    boot:skip()
+    boot:skip()
+    t.equal(boot.done, false, "skipping during the hold does nothing")
+    t.equal(boot.finished, false)
+    t.equal(boot:complete(), false, "and it certainly cannot hand over")
+  end)
+
+  t.case("it replays the same screen it showed the first time", function()
+    local wallet = support.wallet()
+    local first = play(Boot.new(wallet, nil), 8)
+    local again = play(Boot.new(wallet, nil, Boot.REPLAY_HOLD), Boot.REPLAY_HOLD + 8)
+    t.equal(text_of(again), text_of(first), "a replay is the same sequence")
+  end)
+
+  t.case("the boot at startup does not hold", function()
+    -- Those frames are spent opening the wallet; there is nothing to wait for
+    -- and a three second black at every launch would be a bug.
+    local boot = Boot.new(support.wallet(), nil)
+    t.equal(boot.hold, 0)
+    play(boot, 0.6)
+    t.ok(boot:visible() > 0, "it should be underway already")
+  end)
+end)
+
 t.suite("boot / skipping", function()
   t.case("the first key finishes the sequence, the second hands over", function()
     -- Two presses, not one: somebody hammering the keyboard during the

@@ -37,13 +37,24 @@ local LINE_DELAY = 0.14
 --- Characters per second, once a line starts typing.
 local TYPE_RATE = 90
 
+--- Seconds of black before a replayed sequence begins.
+---
+--- For recording the intro. A capture wants a moment of nothing at the head of
+--- it — somewhere to cut, and somewhere for the recorder to settle before the
+--- tube comes on. Three seconds is long enough to hit record and stop moving.
+boot.REPLAY_HOLD = 3
+
 --- Build the sequence from what the wallet actually reports.
 ---
 --- `wallet` may be nil — that is the case where the library did not load, and
 --- the boot screen is then the only thing that will ever be shown, so it has to
 --- carry the failure rather than hand off to a UI that cannot work.
-function boot.new(wallet, failure)
+--- `hold` is seconds of black to sit through before any of it starts, for
+--- replays. Zero on the boot that happens at startup: the wallet is being
+--- opened during those frames and there is nothing to wait for.
+function boot.new(wallet, failure, hold)
   local self = setmetatable({
+    hold = hold or 0,
     time = 0,
     lines = {},
     shown = 0,       -- how many lines have started
@@ -104,6 +115,9 @@ end
 --- Skip to the end. Any key does this; a second one hands over.
 function boot:skip()
   if self.halted then return end
+  -- A stray key during the black must not cut the take short. The hold is
+  -- there to be recorded; it runs to the end.
+  if self.hold > 0 then return end
   if not self.done then
     self.shown = #self.lines
     self.typed = math.huge
@@ -117,6 +131,12 @@ function boot:skip()
 end
 
 function boot:update(dt)
+  -- Nothing happens, and nothing is heard, until the black has run out.
+  if self.hold > 0 then
+    self.hold = self.hold - dt
+    return
+  end
+
   -- The speaker thump as the tube comes on. Fired from `update` rather than
   -- from `new`, because `new` runs while the wallet is still being opened and
   -- the sound would play against a black screen a beat before the picture.
@@ -185,6 +205,13 @@ end
 
 function boot:draw()
   local width, height = theme.WIDTH, theme.HEIGHT
+
+  -- Black, not the palette's near-black: this is the head of a recording and
+  -- it should be the same colour as no signal.
+  if self.hold > 0 then
+    theme.rect({ 0, 0, 0 }, 0, 0, width, height, 1)
+    return
+  end
 
   -- The tube coming on: a bright band that opens vertically out of nothing.
   local warm = math.min(1, self.time / POWER_ON)

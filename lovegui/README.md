@@ -43,6 +43,12 @@ WALLETS           2
 Ok
 ```
 
+Pressing **`0`** on the title screen plays the whole thing again, after three
+seconds of black. That is for recording it: a capture wants somewhere to cut
+and a moment for the recorder to settle before the tube comes on, and an intro
+you can only see once per launch is an intro nobody gets a clean take of. A
+stray key during the black does not cut it short.
+
 **Everything on that screen is true.** The ABI number is what `cwb_abi_version`
 returned, the version is the library's, the network and the wallet count come
 from `info`, and if the library did not load it says so in red and halts rather
@@ -500,6 +506,7 @@ half of an exponential look nothing alike.
 | `Ctrl/Cmd+V` | paste into the focused field |
 | `M` | sound on or off |
 | `F11` · `Alt+Enter` | fullscreen, or the **FULL/WIN** button |
+| `0` | on the title screen: replay the intro from black |
 | `Esc` | cancel a confirmation, or quit |
 
 Everything is clickable too — **COPY** under the card, **PASTE** beside the

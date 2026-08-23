@@ -482,6 +482,14 @@ function love.keypressed(key)
     -- Any key: the first skips the sequence, the second hands over. Escape
     -- still quits, because being trapped in a boot screen is not charming.
     if key == "escape" then love.event.quit() end
+    -- `0` plays the whole intro again from black, for recording it. A capture
+    -- wants to be able to go round twice without restarting the process, and
+    -- a boot sequence you can only see once per launch is a boot sequence
+    -- nobody gets a clean take of.
+    if key == "0" then
+      game.boot = Boot.new(game.model and game.model.wallet, game.error, Boot.REPLAY_HOLD)
+      return
+    end
     game.boot:skip()
     return
   end
@@ -1307,6 +1315,17 @@ local shot = {
 --- empty form. It is dismissed outright here instead: a screenshot of a screen
 --- is not the place to also exercise the boot sequence.
 local function replay()
+  -- `CWB_SHOT_SCREEN=boot` photographs the boot sequence itself, which is the
+  -- one screen the harness could not reach: it used to dismiss the boot before
+  -- doing anything, so there was no way to take a picture of the thing that
+  -- happens first.
+  if shot.screen == "boot" then
+    for step in (shot.keys or ""):gmatch("[^,]+") do
+      shot.queue[#shot.queue + 1] = step
+    end
+    return
+  end
+
   game.boot = nil
   game.entrance:restart()
   -- `CWB_SHOT_SCREEN=login` photographs the gate; anything else goes straight
