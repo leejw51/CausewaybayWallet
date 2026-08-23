@@ -8,6 +8,8 @@
 #
 #   macos-latest → cwbwallet-rust-<version>-<arch>-apple-darwin.tar.gz
 #                  cwbwallet-python-<version>-<arch>-apple-darwin.tar.gz
+#                  cwbwallet-lua-<version>-<arch>-apple-darwin.tar.gz
+#                  cwbwallet-c-<version>-<arch>-apple-darwin.tar.gz
 #
 # `make package-verify` drives everything: cargo builds the Rust binary, PyApp
 # wraps the Python wheel around an embedded CPython, scripts/codesign-binary.sh
@@ -57,6 +59,11 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: rustcli
+
+      # The Lua front end ships as source plus the shared library, but the
+      # parity run inside `make package-verify` has to be able to execute it.
+      - name: Install LuaJIT
+        run: brew install luajit
 
       # `make version` fails outright when the two manifests disagree, so this
       # settles both questions at once: one version, and it is the tagged one.
@@ -125,8 +132,10 @@ jobs:
           fi
           make package-verify
 
-      # One archive per implementation, each holding the binary under the name
-      # it is meant to be installed as, so either tarball gives you `cwbwallet`.
+      # One archive per front end. The two compiled ones hold the binary under
+      # the name it is meant to be installed as, so either tarball gives you
+      # `cwbwallet`; the Lua one holds the whole self-contained bundle, since
+      # it is a script that needs its modules and its shared library beside it.
       # COPYFILE_DISABLE keeps macOS from smuggling ._ resource-fork files in.
       - name: Archive
         env:
@@ -134,7 +143,7 @@ jobs:
           ARCH: ${{ steps.version.outputs.arch }}
         run: |
           mkdir -p artifacts stage
-          for impl in rust python; do
+          for impl in rust python c; do
             rm -rf stage/*
             cp "dist/cwbwallet-$impl" stage/cwbwallet
             cp LICENSE README.md stage/
@@ -142,6 +151,14 @@ jobs:
             COPYFILE_DISABLE=1 tar -czf "artifacts/$name" -C stage .
             echo "  $name"
           done
+
+          rm -rf stage/*
+          cp -R dist/cwbwallet-lua/. stage/
+          cp LICENSE README.md stage/ && cp luacli/README.md stage/README-lua.md
+          name="cwbwallet-lua-$VERSION-$ARCH-apple-darwin.tar.gz"
+          COPYFILE_DISABLE=1 tar -czf "artifacts/$name" -C stage .
+          echo "  $name"
+
           ( cd artifacts && shasum -a 256 *.tar.gz > SHA256SUMS )
           cat artifacts/SHA256SUMS
 
@@ -180,6 +197,8 @@ jobs:
             | --- | --- |
             | `cwbwallet-rust-…apple-darwin.tar.gz` | the Rust build of `cwbwallet` |
             | `cwbwallet-python-…apple-darwin.tar.gz` | the Python build, CPython embedded |
+            | `cwbwallet-lua-…apple-darwin.tar.gz` | the Lua front end plus `libcausewaybay_ffi.dylib` (needs LuaJIT) |
+            | `cwbwallet-c-…apple-darwin.tar.gz` | the C build, the wallet statically linked in |
 
             Verify a download against `SHA256SUMS`, then:
 

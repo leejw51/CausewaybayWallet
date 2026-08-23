@@ -1,14 +1,25 @@
 //! `cwbwallet` — the command line entry point.
+//!
+//! Everything the wallet *does* lives in `causewaybay-core`. What is left here
+//! is what only a terminal has: argv, a tty to prompt on, stdin to read a
+//! secret from, an exit status, and the TUI.
+
+mod clipboard;
+mod terminal;
+mod tui;
 
 use std::io::Write;
 use std::process::ExitCode;
+use std::sync::Arc;
 
 use clap::Parser;
 
-use causewaybay_wallet::app::App;
-use causewaybay_wallet::cli::{Cli, Command};
-use causewaybay_wallet::error::{Code, Error};
-use causewaybay_wallet::output;
+use causewaybay_core::app::App;
+use causewaybay_core::command::{Cli, Command};
+use causewaybay_core::error::{Code, Error};
+use causewaybay_core::output;
+
+use terminal::TerminalHost;
 
 fn main() -> ExitCode {
     let cli = match Cli::try_parse() {
@@ -38,17 +49,25 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: Cli) -> Result<(), Error> {
-    let interactive = matches!(cli.command, Command::Tui);
-    let app = App::new(cli.home, cli.network.as_deref(), cli.json, cli.yes)?;
-    let output = app.run(cli.command)?;
+    // `--json` means nobody is watching to answer a prompt, so a confirmation
+    // must be refused rather than asked for — which also stops an automated
+    // caller from spending funds by accident.
+    let host = Arc::new(TerminalHost::new(cli.yes, !cli.json));
+    let app = App::new(cli.home, cli.network.as_deref(), host)?;
 
+    // The TUI is the one command core will not run: it takes over the screen,
+    // so it belongs to the front end that owns one.
+    if matches!(cli.command, Command::Tui) {
+        // It has already drawn its own farewell; do not repeat the banner.
+        println!("{}", tui::run(app)?.human);
+        return Ok(());
+    }
+
+    let output = app.run(cli.command)?;
     if cli.json {
         println!("{}", output::success_envelope(&output.data));
     } else {
-        // The TUI has already drawn its own farewell; do not repeat the banner.
-        if !interactive {
-            eprintln!("{}", output::WARNING);
-        }
+        eprintln!("{}", output::WARNING);
         println!("{}", output.human);
     }
     Ok(())

@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
-"""Prove both implementations really read the shared vectors.
+"""Prove every suite really reads the shared vectors.
 
-Two suites that both pass is not evidence they consume the same data — one could
-be silently skipping a file. So corrupt one value in each vector file in turn and
-require *both* suites to notice. A suite that stays green is not reading it.
+Suites that all pass is not evidence they consume the same data — one could be
+silently skipping a file. So corrupt one value in each vector file in turn and
+require every suite to notice. A suite that stays green is not reading it.
+
+Three suites are checked: Rust, Python, and Lua. Lua is exempt from a named few
+(see LUA_EXEMPT) where the mutated field is one no Lua test can reach; the
+exemptions are listed rather than inferred, so adding one is a decision someone
+made on purpose.
 
 The vector files are restored afterwards, including when a run is interrupted.
 
@@ -13,6 +18,7 @@ The vector files are restored afterwards, including when a run is interrupted.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -22,6 +28,17 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 VECTORS = ROOT / "testvectors"
 PYTEST = ROOT / "pythoncli" / ".venv" / "bin" / "pytest"
+LUAJIT = os.environ.get("LUAJIT", "luajit")
+
+# Files whose mutation the Lua suite cannot be expected to catch, and why.
+#
+# Both are values the wallet does not expose through any command, so a front end
+# that only speaks the CLI surface has no way to assert on them. The Rust suite
+# calls the library directly and does check them; that is what it is for.
+LUA_EXEMPT = {
+    "bip39.json": "the BIP-39 seed is internal; no command prints it",
+    "transactions.json": "signing needs a node, which the Rust suite mocks",
+}
 
 VALID_PHRASE = (
     "abandon abandon abandon abandon abandon abandon abandon abandon "
@@ -85,6 +102,24 @@ def run_python() -> bool:
     return result.returncode == 0
 
 
+def lua_available() -> bool:
+    """True when LuaJIT is installed and the shared library is built."""
+    if shutil.which(LUAJIT) is None:
+        return False
+    result = subprocess.run(
+        [LUAJIT, "tests/init.lua", "json"], cwd=ROOT / "luacli", capture_output=True
+    )
+    return result.returncode == 0
+
+
+def run_lua() -> bool:
+    """True when the Lua vector suite passes."""
+    result = subprocess.run(
+        [LUAJIT, "tests/init.lua", "vectors"], cwd=ROOT / "luacli", capture_output=True
+    )
+    return result.returncode == 0
+
+
 def main() -> int:
     if not PYTEST.exists():
         print("missing the Python virtualenv — run 'make build-python' first", file=sys.stderr)
@@ -96,13 +131,24 @@ def main() -> int:
         print(f"  no mutation defined for: {', '.join(sorted(unmutated))}", file=sys.stderr)
         return 1
 
+    unknown_exempt = LUA_EXEMPT.keys() - on_disk
+    if unknown_exempt:
+        print(f"  LUA_EXEMPT names a file that is gone: {', '.join(sorted(unknown_exempt))}",
+              file=sys.stderr)
+        return 1
+
+    with_lua = lua_available()
+    if not with_lua:
+        print("  note: LuaJIT or the shared library is missing — Lua is not checked",
+              file=sys.stderr)
+
     backup = Path(tempfile.mkdtemp())
     for path in VECTORS.glob("*.json"):
         shutil.copy(path, backup / path.name)
 
     failures = 0
     try:
-        if not (run_rust() and run_python()):
+        if not (run_rust() and run_python() and (not with_lua or run_lua())):
             print("  baseline is not green; fix the suites before mutating", file=sys.stderr)
             return 1
 
@@ -114,18 +160,20 @@ def main() -> int:
                 json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
             )
 
-            rust_caught = not run_rust()
-            python_caught = not run_python()
+            missed = []
+            if run_rust():
+                missed.append("rust")
+            if run_python():
+                missed.append("python")
+            # An exempt file is not asked about at all, so a suite cannot be
+            # blamed for a value it has no way to see.
+            if with_lua and name not in LUA_EXEMPT and run_lua():
+                missed.append("lua")
             shutil.copy(backup / name, path)  # restore before the next one
 
-            if rust_caught and python_caught:
+            if not missed:
                 continue
             failures += 1
-            missed = []
-            if not rust_caught:
-                missed.append("rust")
-            if not python_caught:
-                missed.append("python")
             print(f"  {name}: not checked by {' and '.join(missed)}", file=sys.stderr)
     finally:
         for path in backup.glob("*.json"):
@@ -133,10 +181,14 @@ def main() -> int:
         shutil.rmtree(backup)
 
     if failures:
-        print(f"  {failures} vector file(s) are not read by both implementations", file=sys.stderr)
+        print(f"  {failures} vector file(s) are not read by every suite", file=sys.stderr)
         return 1
-    print(f"  {len(MUTATIONS)} vector files are read by both implementations "
-          f"(each corruption was caught twice)")
+
+    suites = "rust and python" if not with_lua else "rust, python and lua"
+    exempt = len(LUA_EXEMPT) if with_lua else 0
+    note = f", {exempt} exempt for lua" if exempt else ""
+    print(f"  {len(MUTATIONS)} vector files are read by {suites} "
+          f"(every corruption was caught{note})")
     return 0
 
 

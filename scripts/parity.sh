@@ -2,9 +2,20 @@
 #
 # Cross-implementation parity check.
 #
-# Both CLIs are pointed at one throwaway wallet home. Each writes, the other
-# reads, and the results must agree — that is what "one specification, two
-# implementations" has to mean in practice.
+# Every CLI is pointed at one throwaway wallet home. Each writes, the others
+# read, and the results must agree — that is what "one specification, several
+# front ends" has to mean in practice.
+#
+# Rust and Python are independent implementations, so agreement between them is
+# the real evidence. Lua and C are front ends over the Rust core, so what they
+# prove is different but still worth checking: that the ABI and the argument
+# passing on either side of it do not corrupt anything on the way through. They
+# are two different routes to the same library — Lua loads the cdylib at run
+# time, C has the staticlib compiled in — so a difference between them is a
+# difference in the front end, which is the only place it could be.
+#
+# Lua is skipped, loudly, when LuaJIT is not installed; C when it has not been
+# built.
 
 set -euo pipefail
 
@@ -15,6 +26,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # not merely the source tree they were built from.
 RUST="${CWB_RUST_BIN:-$ROOT/rustcli/target/debug/cwbwallet}"
 PY="${CWB_PYTHON_BIN:-$ROOT/pythoncli/.venv/bin/python -m causewaybay}"
+LUA="${CWB_LUA_BIN:-$ROOT/luacli/bin/cwbwallet-lua}"
+C="${CWB_C_BIN:-$ROOT/ccli/cwbwallet-c}"
 
 VERBOSE=0
 [[ "${1:-}" == "--verbose" ]] && VERBOSE=1
@@ -34,6 +47,30 @@ fi
 if [[ ! -x "${PY%% *}" ]]; then
   echo "missing ${PY%% *} — run 'make build-python' first" >&2
   exit 1
+fi
+
+# Lua is checked only when it can run at all. Skipping is announced rather than
+# silent: a parity run that quietly covered less than it looked like is worse
+# than one that failed.
+LUA_READY=1
+if ! command -v "${LUAJIT:-luajit}" > /dev/null 2>&1; then
+  LUA_READY=0
+  LUA_SKIP="LuaJIT is not installed"
+elif [[ ! -x "$LUA" ]]; then
+  LUA_READY=0
+  LUA_SKIP="missing $LUA"
+elif ! "$LUA" --json info > /dev/null 2>&1; then
+  LUA_READY=0
+  LUA_SKIP="the shared library is not built — run 'make -C rustcli ffi'"
+fi
+
+C_READY=1
+if [[ ! -x "$C" ]]; then
+  C_READY=0
+  C_SKIP="missing $C — run 'make -C ccli build'"
+elif ! "$C" --json info > /dev/null 2>&1; then
+  C_READY=0
+  C_SKIP="$C does not run"
 fi
 
 HOME_DIR="$(mktemp -d)"
@@ -72,6 +109,16 @@ print(value if not isinstance(value, bool) else str(value).lower())
 
 echo "  rust:        $RUST"
 echo "  python:      $PY"
+if [[ $LUA_READY -eq 1 ]]; then
+  echo "  lua:         $LUA"
+else
+  echo "  lua:         SKIPPED — $LUA_SKIP"
+fi
+if [[ $C_READY -eq 1 ]]; then
+  echo "  c:           $C"
+else
+  echo "  c:           SKIPPED — $C_SKIP"
+fi
 echo "  wallet home: $HOME_DIR"
 
 # --- Rust writes, Python reads ------------------------------------------------
@@ -184,7 +231,151 @@ expect "same error code for a missing account" \
   "$($RUST --json account show ghost | field)" \
   "$($PY --json account show ghost | field)"
 
+# --- The crypto utilities agree, and store nothing ----------------------------
+# `utils derive`, `utils sign` and `utils validate-mnemonic` take key material
+# as an argument and are expected to leave no trace. Both implementations
+# compute them independently, so agreement here is real evidence — and the
+# counts afterwards are the check that neither quietly kept a copy.
+BEFORE_ACCOUNTS="$($RUST --json info | field accounts)"
+BEFORE_RECALL="$($RUST --json info | field remembered)"
+
+expect "same derived address from one phrase" \
+  "$($RUST --json utils derive -m "$MNEMONIC" -i 2 | field address)" \
+  "$($PY --json utils derive -m "$MNEMONIC" -i 2 | field address)"
+expect "same derived private key" \
+  "$($RUST --json utils derive -m "$MNEMONIC" -i 2 | field private_key)" \
+  "$($PY --json utils derive -m "$MNEMONIC" -i 2 | field private_key)"
+expect "same public key from one private key" \
+  "$($RUST --json utils derive -k "$PRIVATE_KEY" | field public_key)" \
+  "$($PY --json utils derive -k "$PRIVATE_KEY" | field public_key)"
+expect "same ad-hoc signature" \
+  "$($RUST --json utils sign -k "$PRIVATE_KEY" -m "off the books" | field signature)" \
+  "$($PY --json utils sign -k "$PRIVATE_KEY" -m "off the books" | field signature)"
+expect "both accept a valid mnemonic" \
+  "$($RUST --json utils validate-mnemonic "$MNEMONIC" | field valid)" \
+  "$($PY --json utils validate-mnemonic "$MNEMONIC" | field valid)"
+expect "both reject the same bad one" \
+  "$($RUST --json utils validate-mnemonic "abandon abandon" | field valid)" \
+  "$($PY --json utils validate-mnemonic "abandon abandon" | field valid)"
+
+expect "deriving stored no account" "$BEFORE_ACCOUNTS" "$($RUST --json info | field accounts)"
+expect "deriving remembered nothing" "$BEFORE_RECALL" "$($PY --json info | field remembered)"
+
+# --- The Lua front end reads the same store -----------------------------------
+# Not an independent implementation — it is the Rust core reached over the C
+# ABI. What these checks cover is the trip through that boundary: strings that
+# could be truncated, big integers that could become floats, an envelope that
+# could be reshaped by a JSON codec written in Lua.
+if [[ $LUA_READY -eq 1 ]]; then
+  expect "lua reads an account rust wrote" "$ADDRESS_0" \
+    "$($LUA --json account show from-rust | field address)"
+  expect "lua agrees on the account id" \
+    "$($RUST --json account show from-python | field id)" \
+    "$($LUA --json account show from-python | field id)"
+  expect "lua agrees on the account count" \
+    "$($RUST --json info | field accounts)" \
+    "$($LUA --json info | field accounts)"
+
+  LUA_SIG="$($LUA --json sign "cross-check" --account from-rust | field signature)"
+  expect "lua produces the same signature" "$RUST_SIG" "$LUA_SIG"
+  expect "rust verifies the lua signature" "true" \
+    "$($RUST --json verify --message cross-check --signature "$LUA_SIG" --address "$ADDRESS_0" | field valid)"
+  expect "lua verifies the python signature" "true" \
+    "$($LUA --json verify --message cross-check --signature "$PY_SIG" --address "$ADDRESS_0" | field valid)"
+
+  expect "lua derives the same address" \
+    "$($RUST --json utils derive -m "$MNEMONIC" -i 2 | field address)" \
+    "$($LUA --json utils derive -m "$MNEMONIC" -i 2 | field address)"
+  expect "lua agrees on keccak256" \
+    "$($RUST --json utils keccak hello | field keccak256)" \
+    "$($LUA --json utils keccak hello | field keccak256)"
+  # The value every layer between here and Rust would like to make a double.
+  expect "lua carries a 256-bit integer intact" \
+    "115792089237316195423570985008687907853269984665640564039457584007913129639935" \
+    "$($LUA --json utils to-wei 115792089237316195423570985008687907853269984665640564039457.584007913129639935 | field value)"
+
+  expect "lua reports the manifest version" "$VERSION" "$($LUA --json info | field version)"
+  expect "lua shares the error vocabulary" \
+    "$($RUST --json account show ghost | field)" \
+    "$($LUA --json account show ghost | field)"
+
+  # Lua writes; the other two must see it, which is the direction that proves
+  # the store is genuinely shared rather than merely readable.
+  $LUA --json account new -l seq-lua > /dev/null
+  expect "rust sees the account lua added" "4" \
+    "$($RUST --json account show seq-lua | field index)"
+  expect "python sees it too" \
+    "$($LUA --json account show seq-lua | field address)" \
+    "$($PY --json account show seq-lua | field address)"
+fi
+
+# --- The C front end reads the same store -------------------------------------
+# Same library as Lua, reached the other way: compiled in rather than loaded.
+# What that makes worth checking is the C side of the boundary — the JSON it
+# builds from argv, and the four fields it reads back out by hand.
+if [[ $C_READY -eq 1 ]]; then
+  expect "c reads an account rust wrote" "$ADDRESS_0" \
+    "$($C --json account show from-rust | field address)"
+  expect "c agrees on the account id" \
+    "$($RUST --json account show from-python | field id)" \
+    "$($C --json account show from-python | field id)"
+
+  C_SIG="$($C --json sign "cross-check" --account from-rust | field signature)"
+  expect "c produces the same signature" "$RUST_SIG" "$C_SIG"
+  expect "python verifies the c signature" "true" \
+    "$($PY --json verify --message cross-check --signature "$C_SIG" --address "$ADDRESS_0" | field valid)"
+
+  # The escaping the C front end does by hand, checked against the one serde
+  # does for the Rust CLI. A quote or a backslash mangled on the way in would
+  # hash differently here and nowhere else.
+  TRICKY='a "quoted" \ argument'
+  expect "c escapes arguments exactly as rust does" \
+    "$($RUST --json utils keccak "$TRICKY" | field keccak256)" \
+    "$($C --json utils keccak "$TRICKY" | field keccak256)"
+  expect "c derives the same address" \
+    "$($RUST --json utils derive -m "$MNEMONIC" -i 2 | field address)" \
+    "$($C --json utils derive -m "$MNEMONIC" -i 2 | field address)"
+  expect "c carries a 256-bit integer intact" \
+    "115792089237316195423570985008687907853269984665640564039457584007913129639935" \
+    "$($C --json utils to-wei 115792089237316195423570985008687907853269984665640564039457.584007913129639935 | field value)"
+
+  expect "c reports the manifest version" "$VERSION" "$($C --json info | field version)"
+  expect "c --version banner" "cwbwallet $VERSION" "$($C --version)"
+  expect "c shares the error vocabulary" \
+    "$($RUST --json account show ghost | field)" \
+    "$($C --json account show ghost | field)"
+
+  # C writes; everything else must see it.
+  $C --json account new -l seq-c > /dev/null
+  expect "rust sees the account c added" \
+    "$($C --json account show seq-c | field address)" \
+    "$($RUST --json account show seq-c | field address)"
+  expect "python sees it too" \
+    "$($C --json account show seq-c | field address)" \
+    "$($PY --json account show seq-c | field address)"
+
+  # The two ABI front ends must be byte-identical in --json mode: they are the
+  # same library, so any difference is one of them mishandling the envelope.
+  if [[ $LUA_READY -eq 1 ]]; then
+    expect "c and lua emit the same envelope" \
+      "$($LUA --json account show from-rust)" \
+      "$($C --json account show from-rust)"
+    expect "…and the same one for a failure" \
+      "$($LUA --json account show ghost)" \
+      "$($C --json account show ghost)"
+  fi
+  expect "c and rust emit the same envelope" \
+    "$($RUST --json account show from-rust)" \
+    "$($C --json account show from-rust)"
+fi
+
 echo
+if [[ $LUA_READY -eq 0 ]]; then
+  echo "  note: the Lua checks were skipped — $LUA_SKIP" >&2
+fi
+if [[ $C_READY -eq 0 ]]; then
+  echo "  note: the C checks were skipped — $C_SKIP" >&2
+fi
 if [[ $failures -eq 0 ]]; then
   echo "  $checks parity checks passed"
 else

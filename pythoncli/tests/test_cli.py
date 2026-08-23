@@ -540,3 +540,114 @@ def test_a_saved_file_holding_secrets_is_not_world_readable(jrun, home):
 def test_the_networks_are_named_for_the_evm_chains(jrun):
     names = [n["name"] for n in data(jrun, "network", "list")]
     assert names == ["Cronos EVM Testnet", "Cronos EVM Mainnet"]
+
+
+# =========================================================== crypto utilities
+#
+# `utils derive`, `utils sign` and `utils validate-mnemonic` are the wallet used
+# as a calculator: key material goes in as an argument and nothing is stored.
+# That last part is the property worth asserting, because it is the one that
+# could silently stop being true.
+
+
+def test_utils_derive_reproduces_the_reference_addresses(jrun):
+    derived = data(jrun, "utils", "derive", "-m", TEST_MNEMONIC)
+    assert derived["address"] == TEST_ADDRESS_0
+    assert derived["private_key"] == TEST_PRIVATE_KEY
+    assert derived["derivation_path"] == "m/44'/60'/0'/0/0"
+    assert derived["source"] == "mnemonic"
+    assert derived["index"] == 0
+
+    second = data(jrun, "utils", "derive", "-m", TEST_MNEMONIC, "-i", "1")
+    assert second["address"] == TEST_ADDRESS_1
+
+
+def test_utils_derive_stores_nothing(jrun):
+    data(jrun, "utils", "derive", "-m", TEST_MNEMONIC)
+    data(jrun, "utils", "derive", "-k", TEST_PRIVATE_KEY)
+
+    assert data(jrun, "account", "list") == []
+    assert data(jrun, "recent", "list") == []
+    info = data(jrun, "info")
+    assert info["accounts"] == 0
+    assert info["remembered"] == 0
+
+
+def test_utils_derive_from_a_private_key_has_no_path(jrun):
+    derived = data(jrun, "utils", "derive", "-k", TEST_PRIVATE_KEY)
+    assert derived["address"] == TEST_ADDRESS_0
+    assert derived["source"] == "private_key"
+    assert "derivation_path" not in derived
+    # Both encodings, and the compressed one shares the X coordinate.
+    assert len(derived["public_key"]) == 2 + 128
+    assert len(derived["public_key_compressed"]) == 2 + 66
+    assert derived["public_key_compressed"][4:] == derived["public_key"][2:66]
+
+
+def test_utils_derive_needs_exactly_one_source(run):
+    # argparse enforces the group itself and exits rather than returning, which
+    # is the same shape every other bad-arguments case here takes.
+    for args in (
+        ("utils", "derive"),
+        ("utils", "derive", "-m", TEST_MNEMONIC, "-k", TEST_PRIVATE_KEY),
+    ):
+        with pytest.raises(SystemExit) as excinfo:
+            run(*args)
+        assert excinfo.value.code == 2
+
+
+def test_utils_derive_rejects_bad_material_with_the_usual_codes(jrun):
+    assert error_code(jrun, "utils", "derive", "-m", "not a real phrase") == "invalid_mnemonic"
+    assert error_code(jrun, "utils", "derive", "-k", "0x1234") == "invalid_private_key"
+
+
+def test_utils_sign_matches_the_reference_signature(jrun):
+    # The published EIP-191 vector for this key and message.
+    signed = data(
+        jrun,
+        "utils",
+        "sign",
+        "-k",
+        "0x4646464646464646464646464646464646464646464646464646464646464646",
+        "-m",
+        "Hello World",
+    )
+    assert signed["address"] == "0x9d8A62f656a8d1615C1294fd71e9CFb3E4855A4F"
+    assert signed["signature"] == (
+        "0xf445005436439a4398409aee0e0b13702bdee4e3774b6aa67184f0732d3a270a"
+        "1ef3802a2455afba1374fb2ad23345e89eb7366c9d567fe0e5338df934434e3b1c"
+    )
+    assert data(jrun, "account", "list") == []
+
+
+def test_utils_sign_round_trips_through_verify(jrun):
+    signed = data(jrun, "utils", "sign", "-k", TEST_PRIVATE_KEY, "-m", "hello")
+    checked = data(
+        jrun,
+        "verify",
+        "--message",
+        "hello",
+        "--signature",
+        signed["signature"],
+        "--address",
+        TEST_ADDRESS_0,
+    )
+    assert checked["valid"] is True
+
+
+def test_utils_validate_mnemonic_reports_rather_than_refuses(jrun):
+    # The difference from `account import-mnemonic`, which is an error path.
+    good = data(jrun, "utils", "validate-mnemonic", TEST_MNEMONIC)
+    assert good["valid"] is True
+    assert good["words"] == 12
+    assert good["reason"] is None
+
+    for phrase, words in [
+        ("abandon abandon", 2),
+        (" ".join(["abandon"] * 12), 12),
+        (" ".join(["abandon"] * 11 + ["notaword"]), 12),
+    ]:
+        bad = data(jrun, "utils", "validate-mnemonic", phrase)
+        assert bad["valid"] is False, phrase
+        assert bad["words"] == words
+        assert bad["reason"]

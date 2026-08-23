@@ -1,0 +1,18 @@
+# Nothing here is compiled — the only build output is the shared library, and
+# that belongs to ../rustcli/target. What is left to ignore is what a run
+# leaves behind.
+
+# Local demo/test wallet homes — these hold private keys
+/.demo-home/
+/.causewaybaywallet/
+*.jsonl
+
+# A shared library copied in by hand, or staged for a bundle
+*.dylib
+*.so
+*.dll
+
+# Editor and OS noise
+.DS_Store
+.idea/
+.vscode/

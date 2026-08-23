@@ -1,25 +1,32 @@
 //! Command implementations. Every command returns a `CommandOutput` so the
 //! caller decides between human text and the JSON envelope.
+//!
+//! Nothing here prints, reads stdin, or exits: a command is a function from a
+//! [`Command`] to a [`CommandOutput`]. Where one genuinely needs the outside
+//! world — a secret passed as `-`, a yes before spending — it goes through
+//! [`Host`], so the same code backs the terminal, the TUI and the C ABI.
 
-use std::io::{IsTerminal, Read, Write};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use alloy_primitives::{keccak256, Address, U256};
 use serde_json::{json, Value};
 
-use crate::cli::*;
+use crate::bip39;
+use crate::command::*;
 use crate::erc20;
 use crate::error::{self, Code, Error, Result};
+use crate::host::{Headless, Host};
 use crate::network::{self, Network};
 use crate::output::{self, CommandOutput};
 use crate::paths;
+use crate::request::{Parsed, Request};
 use crate::rpc::RpcClient;
 use crate::store::{self, Account, Source, Store, TxRecord};
 use crate::tx::LegacyTransaction;
 use crate::units;
 use crate::wallet::{self, Keypair};
-use crate::{bip39, tui};
 
 /// How long `--wait` polls for a receipt before giving up.
 const RECEIPT_TIMEOUT: Duration = Duration::from_secs(180);
@@ -44,16 +51,15 @@ pub struct SendPlan {
 pub struct App {
     pub store: Store,
     pub network: Network,
-    pub json: bool,
-    pub assume_yes: bool,
+    /// Where a `-` argument and a confirmation prompt are answered.
+    pub host: Arc<dyn Host>,
 }
 
 impl App {
     pub fn new(
         home: Option<PathBuf>,
         network_override: Option<&str>,
-        json: bool,
-        assume_yes: bool,
+        host: Arc<dyn Host>,
     ) -> Result<Self> {
         let home = paths::resolve_home(home.as_deref())?;
         let store = Store::open(home)?;
@@ -64,9 +70,49 @@ impl App {
         Ok(App {
             store,
             network,
-            json,
-            assume_yes,
+            host,
         })
+    }
+
+    /// Open the wallet a [`Request`] describes, with a host built from it.
+    ///
+    /// The one call a foreign front end needs: it turns `home`, `network`,
+    /// `yes` and `stdin` into an `App` without the caller having to know that
+    /// hosts exist.
+    pub fn open(request: &Request) -> Result<App> {
+        let host = Headless::new()
+            .assume_yes(request.yes)
+            .with_input(request.stdin.clone());
+        App::new(
+            request.home.clone(),
+            request.network.as_deref(),
+            Arc::new(host),
+        )
+    }
+
+    /// Parse a request's arguments and run them, in one step.
+    ///
+    /// Returns `None` when clap had something to say instead — `--help` and
+    /// `--version` are not commands and produce no wallet state.
+    pub fn execute(request: &Request) -> Result<CommandOutput> {
+        match request.parse()? {
+            Parsed::Message(text) => Ok(CommandOutput::message(text)),
+            Parsed::Command(cli) => {
+                let host = Headless::new()
+                    .assume_yes(cli.yes)
+                    .with_input(request.stdin.clone());
+                let app = App::new(cli.home.clone(), cli.network.as_deref(), Arc::new(host))?;
+                app.run(cli.command)
+            }
+        }
+    }
+
+    /// The same wallet answering to a different host.
+    ///
+    /// The TUI uses it: it puts its own confirmation dialog on the screen, so
+    /// by the time a command runs the question has already been asked.
+    pub fn with_host(self, host: Arc<dyn Host>) -> App {
+        App { host, ..self }
     }
 
     /// A second `App` over the same home, for when the network changes.
@@ -74,8 +120,7 @@ impl App {
         App::new(
             Some(self.store.home().to_path_buf()),
             Some(self.network.key),
-            self.json,
-            self.assume_yes,
+            Arc::clone(&self.host),
         )
     }
 
@@ -105,26 +150,10 @@ impl App {
 
     /// Ask before doing something irreversible.
     ///
-    /// In `--json` mode there is nobody to ask, so `--yes` becomes mandatory —
-    /// which also stops an automated caller from spending funds by accident.
+    /// Whether that means a terminal prompt, a GUI dialog, or a flat refusal
+    /// is the host's business; a command only needs the yes or the error.
     fn confirm(&self, prompt: &str) -> Result<()> {
-        if self.assume_yes {
-            return Ok(());
-        }
-        if self.json || !std::io::stdin().is_terminal() {
-            return Err(error::confirmation_required(format!(
-                "{prompt} — re-run with --yes to confirm"
-            )));
-        }
-        eprint!("{prompt} [y/N]: ");
-        let _ = std::io::stderr().flush();
-        let mut answer = String::new();
-        std::io::stdin().read_line(&mut answer)?;
-        if matches!(answer.trim().to_lowercase().as_str(), "y" | "yes") {
-            Ok(())
-        } else {
-            Err(error::confirmation_required("cancelled"))
-        }
+        self.host.confirm(prompt)
     }
 
     // ================================================================ dispatch
@@ -149,7 +178,12 @@ impl App {
             } => self.verify(&message, &signature, address.as_deref()),
             Command::Erc20 { command } => self.erc20(command),
             Command::Utils { command } => self.utils(command),
-            Command::Tui => tui::run(self.reopen()?),
+            // The TUI is a terminal front end and lives in the CLI crate; a
+            // library has no business seizing the screen. `cwbwallet`
+            // intercepts this before it reaches here.
+            Command::Tui => Err(error::usage(
+                "the terminal UI is not available through this front end",
+            )),
             Command::Info => self.info(),
         }
     }
@@ -234,7 +268,7 @@ impl App {
                 label,
                 passphrase,
             } => {
-                let phrase = read_secret(mnemonic, "mnemonic")?;
+                let phrase = read_secret(self.host.as_ref(), mnemonic, "mnemonic")?;
                 let keypair = Keypair::from_mnemonic(&phrase, index, &passphrase)?;
                 let normalized = bip39::normalize(&phrase);
                 let account = self.store.create_account(
@@ -255,7 +289,7 @@ impl App {
             }
 
             AccountCommand::ImportKey { private_key, label } => {
-                let raw = read_secret(private_key, "private key")?;
+                let raw = read_secret(self.host.as_ref(), private_key, "private key")?;
                 let keypair = Keypair::from_hex(&raw)?;
                 let account = self.store.create_account(
                     label.as_deref(),
@@ -1147,7 +1181,7 @@ impl App {
     fn sign(&self, message: &str, account: Option<&str>) -> Result<CommandOutput> {
         let account = self.pick_account(account)?;
         let keypair = Keypair::from_hex(&account.private_key)?;
-        let text = read_message(message)?;
+        let text = read_message(self.host.as_ref(), message)?;
         let signature = keypair.sign_message(text.as_bytes())?;
         let encoded = format!("0x{}", hex::encode(signature));
         Ok(CommandOutput::new(
@@ -1167,7 +1201,7 @@ impl App {
         signature: &str,
         address: Option<&str>,
     ) -> Result<CommandOutput> {
-        let text = read_message(message)?;
+        let text = read_message(self.host.as_ref(), message)?;
         let bytes = wallet::parse_hex(signature)?;
         let recovered = wallet::recover_message(text.as_bytes(), &bytes)?;
         let expected = address.map(wallet::parse_address).transpose()?;
@@ -1382,7 +1416,111 @@ impl App {
                     phrase,
                 ))
             }
+            UtilsCommand::Derive {
+                mnemonic,
+                private_key,
+                index,
+                passphrase,
+            } => self.utils_derive(mnemonic, private_key, index, &passphrase),
+            UtilsCommand::Sign {
+                private_key,
+                message,
+            } => self.utils_sign(private_key, &message),
+            UtilsCommand::ValidateMnemonic { mnemonic } => self.utils_validate_mnemonic(&mnemonic),
         }
+    }
+
+    /// Derive key material and show it, storing nothing.
+    ///
+    /// The same derivation `account import-mnemonic` does, with the wallet
+    /// left out of it — for a caller that wants an address from a phrase
+    /// without acquiring an account and a recall entry as side effects.
+    fn utils_derive(
+        &self,
+        mnemonic: Option<String>,
+        private_key: Option<String>,
+        index: u32,
+        passphrase: &str,
+    ) -> Result<CommandOutput> {
+        // clap's ArgGroup guarantees exactly one of the two is present.
+        let (keypair, data) = match (mnemonic, private_key) {
+            (Some(phrase), _) => {
+                let phrase = read_secret(self.host.as_ref(), Some(phrase), "mnemonic")?;
+                let keypair = Keypair::from_mnemonic(&phrase, index, passphrase)?;
+                let path = crate::bip32::ethereum_path(index);
+                (
+                    keypair,
+                    json!({
+                        "source": "mnemonic",
+                        "derivation_path": path,
+                        "index": index,
+                    }),
+                )
+            }
+            (None, Some(key)) => {
+                let key = read_secret(self.host.as_ref(), Some(key), "private key")?;
+                (Keypair::from_hex(&key)?, json!({"source": "private_key"}))
+            }
+            (None, None) => return Err(error::usage("pass either --mnemonic or --private-key")),
+        };
+
+        let address = keypair.address().to_checksum(None);
+        let mut payload = json!({
+            "address": address,
+            "private_key": keypair.private_key_hex(),
+            "public_key": keypair.public_key_hex(),
+            "public_key_compressed": keypair.public_key_compressed_hex(),
+        });
+        // Merge the source-specific half in, so both shapes share one schema.
+        if let (Some(target), Some(extra)) = (payload.as_object_mut(), data.as_object()) {
+            for (key, value) in extra {
+                target.insert(key.clone(), value.clone());
+            }
+        }
+
+        let mut rows = vec![("Address", address), ("Source", source_of(&payload))];
+        if let Some(path) = payload["derivation_path"].as_str() {
+            rows.push(("Path", path.to_string()));
+            rows.push(("Address index", index.to_string()));
+        }
+        rows.push(("Public key", keypair.public_key_compressed_hex()));
+        rows.push(("Private key", keypair.private_key_hex()));
+        Ok(CommandOutput::new(payload.clone(), output::table(&rows)))
+    }
+
+    /// Sign a message with a key the wallet does not hold.
+    fn utils_sign(&self, private_key: String, message: &str) -> Result<CommandOutput> {
+        let key = read_secret(self.host.as_ref(), Some(private_key), "private key")?;
+        let keypair = Keypair::from_hex(&key)?;
+        let text = read_message(self.host.as_ref(), message)?;
+        let signature = format!("0x{}", hex::encode(keypair.sign_message(text.as_bytes())?));
+        let address = keypair.address().to_checksum(None);
+        Ok(CommandOutput::new(
+            json!({"address": address, "message": text, "signature": signature}),
+            signature,
+        ))
+    }
+
+    /// Report whether a phrase is a valid mnemonic, and why not when it is not.
+    fn utils_validate_mnemonic(&self, mnemonic: &str) -> Result<CommandOutput> {
+        let phrase = read_message(self.host.as_ref(), mnemonic)?;
+        let words = phrase.split_whitespace().count();
+
+        // An invalid phrase is the answer here, not a failure — which is the
+        // whole difference from `account import-mnemonic`.
+        let reason = match bip39::mnemonic_to_entropy(&phrase) {
+            Ok(_) => None,
+            Err(e) => Some(e.message),
+        };
+        let valid = reason.is_none();
+        let human = match &reason {
+            None => format!("Valid — {words} words"),
+            Some(why) => format!("Not a valid mnemonic: {why}"),
+        };
+        Ok(CommandOutput::new(
+            json!({"valid": valid, "words": words, "reason": reason}),
+            human,
+        ))
     }
 
     fn info(&self) -> Result<CommandOutput> {
@@ -1432,22 +1570,27 @@ impl App {
     }
 }
 
+/// The `source` field of a derive payload, for its human rendering.
+fn source_of(payload: &Value) -> String {
+    payload["source"].as_str().unwrap_or("unknown").to_string()
+}
+
 /// Add 25 % headroom to an estimate so a slightly heavier execution still fits.
 fn with_headroom(estimate: u64) -> u64 {
     estimate.saturating_mul(125) / 100
 }
 
-/// Read a secret from the flag, or from stdin when it is `-` or absent.
-fn read_secret(value: Option<String>, what: &str) -> Result<String> {
+/// Read a secret from the flag, or from the host when it is `-` or absent.
+fn read_secret(host: &dyn Host, value: Option<String>, what: &str) -> Result<String> {
     match value.as_deref().map(str::trim) {
         Some("-") | None => {
-            let mut buffer = String::new();
-            std::io::stdin().read_to_string(&mut buffer)?;
-            let trimmed = buffer.trim().to_string();
-            if trimmed.is_empty() {
-                Err(error::usage(format!("no {what} supplied on stdin")))
+            // Surrounding whitespace is never part of a mnemonic or a key, and
+            // a trailing newline is what a shell pipe always adds.
+            let text = host.read_input(what)?.trim().to_string();
+            if text.is_empty() {
+                Err(error::usage(format!("no {what} supplied")))
             } else {
-                Ok(trimmed)
+                Ok(text)
             }
         }
         Some("") => Err(error::usage(format!("the {what} is empty"))),
@@ -1455,13 +1598,12 @@ fn read_secret(value: Option<String>, what: &str) -> Result<String> {
     }
 }
 
-/// `-` means "the message is on stdin"; anything else is the message itself.
-fn read_message(message: &str) -> Result<String> {
+/// `-` means "the message comes from the host"; anything else is the message.
+fn read_message(host: &dyn Host, message: &str) -> Result<String> {
     if message == "-" {
-        let mut buffer = String::new();
-        std::io::stdin().read_to_string(&mut buffer)?;
+        let text = host.read_input("message")?;
         // Strip only the trailing newline a shell adds, not meaningful whitespace.
-        Ok(buffer.strip_suffix('\n').unwrap_or(&buffer).to_string())
+        Ok(text.strip_suffix('\n').unwrap_or(&text).to_string())
     } else {
         Ok(message.to_string())
     }
@@ -1482,13 +1624,18 @@ mod tests {
 
     #[test]
     fn secrets_come_from_the_flag_when_given() {
-        assert_eq!(read_secret(Some("  abc  ".into()), "key").unwrap(), "abc");
-        assert!(read_secret(Some("".into()), "key").is_err());
+        let host = Headless::new();
+        assert_eq!(
+            read_secret(&host, Some("  abc  ".into()), "key").unwrap(),
+            "abc"
+        );
+        assert!(read_secret(&host, Some("".into()), "key").is_err());
     }
 
     #[test]
     fn a_literal_message_is_used_as_is() {
-        assert_eq!(read_message("hello world").unwrap(), "hello world");
-        assert_eq!(read_message("  spaced  ").unwrap(), "  spaced  ");
+        let host = Headless::new();
+        assert_eq!(read_message(&host, "hello world").unwrap(), "hello world");
+        assert_eq!(read_message(&host, "  spaced  ").unwrap(), "  spaced  ");
     }
 }

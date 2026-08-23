@@ -19,8 +19,19 @@ wallets.csv
 wallets.txt
 wallets.md
 wallets-keys.jsonl
-*-keys.jsonl
 *.demo-home/
+
+# `account list --format` writes jsonl, csv, txt or md, and `-o` takes any
+# path — so the name-based patterns cover all four rather than only the one
+# they started with. Anything holding key material under a name not matched
+# here is still your responsibility to keep out.
+*-keys.jsonl
+*-keys.csv
+*-keys.txt
+*-keys.md
+*secret*.jsonl
+*secret*.csv
+*secret*.txt
 
 # ------------------------------------------------------------- build artefacts
 /dist/

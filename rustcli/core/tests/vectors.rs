@@ -13,17 +13,25 @@ use std::path::PathBuf;
 use alloy_primitives::{keccak256, U256};
 use serde_json::Value;
 
-use causewaybay_wallet::error::Code;
-use causewaybay_wallet::tx::LegacyTransaction;
-use causewaybay_wallet::wallet::Keypair;
-use causewaybay_wallet::{bip39, erc20, units, wallet};
+use causewaybay_core::error::Code;
+use causewaybay_core::tx::LegacyTransaction;
+use causewaybay_core::wallet::Keypair;
+use causewaybay_core::{bip39, erc20, units, wallet};
+
+/// Where the shared vectors live, relative to this crate.
+///
+/// One definition: the directory moved once already when the workspace split,
+/// and the two copies that existed then did not move together.
+fn vectors_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("testvectors")
+}
 
 /// Load one vector file, failing with a hint rather than a bare panic.
 fn load(name: &str) -> Value {
-    let path: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("testvectors")
-        .join(name);
+    let path: PathBuf = vectors_dir().join(name);
     let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
         panic!(
             "cannot read {}: {e}\nrun `make vectors` from the repository root",
@@ -80,9 +88,7 @@ fn every_vector_file_is_consumed_by_this_suite() {
         "units.json",
     ];
 
-    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("testvectors");
+    let dir = vectors_dir();
     let mut on_disk: Vec<String> = std::fs::read_dir(&dir)
         .unwrap_or_else(|e| panic!("cannot list {}: {e}", dir.display()))
         .filter_map(|entry| entry.ok())
@@ -216,7 +222,7 @@ fn derivation_matches_well_known_wallets() {
                 "{name} index {index} private key"
             );
             assert_eq!(
-                causewaybay_wallet::bip32::ethereum_path(index),
+                causewaybay_core::bip32::ethereum_path(index),
                 text(account, "path"),
                 "{name} index {index} derivation path"
             );

@@ -6,7 +6,7 @@ calls leave the wallet in the same state — and the two front ends cannot drift
 The screen is built around a command list that is always visible: nothing has to
 be memorised, the arrow keys move, Enter runs the highlighted command, and every
 command also has a single-key shortcut. ``?`` opens a full reference. This
-mirrors ``rustcli/src/tui.rs``.
+mirrors ``rustcli/cli/src/tui.rs``.
 """
 
 from __future__ import annotations

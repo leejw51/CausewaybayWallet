@@ -1,0 +1,22 @@
+#!/bin/sh
+# `cwbwallet-lua` — the Lua CLI, wrapped so it can be put on PATH.
+#
+# LuaJIT rather than Lua: the wallet reaches the Rust core through LuaJIT's
+# `ffi`, which plain Lua does not have. LÖVE embeds LuaJIT, which is why the
+# GUI can load the same modules unchanged.
+set -eu
+here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+
+# In the checkout this script sits in bin/; in a packaged bundle it sits beside
+# cwbwallet.lua. Looking for both means one wrapper serves each without a
+# rewriting step at package time.
+if [ -f "$here/cwbwallet.lua" ]; then
+  entry="$here/cwbwallet.lua"
+elif [ -f "$here/../cwbwallet.lua" ]; then
+  entry="$here/../cwbwallet.lua"
+else
+  echo "cwbwallet-lua: cannot find cwbwallet.lua next to $here" >&2
+  exit 1
+fi
+
+exec "${LUAJIT:-luajit}" "$entry" "$@"

@@ -26,15 +26,16 @@ use serde_json::json;
 
 use alloy_primitives::U256;
 
-use crate::app::{App, SendPlan};
-use crate::cli::{AccountCommand, SendArgs, TargetArgs};
-use crate::error::{self, Result};
-use crate::export::{self, Format};
-use crate::network;
-use crate::output::CommandOutput;
-use crate::store::{Account, RecentSecret};
-use crate::units;
-use crate::wallet::{self, Keypair};
+use causewaybay_core::app::{App, SendPlan};
+use causewaybay_core::command::{AccountCommand, SendArgs, TargetArgs};
+use causewaybay_core::error::{self, Result};
+use causewaybay_core::export::{self, Format};
+use causewaybay_core::host::Headless;
+use causewaybay_core::network;
+use causewaybay_core::output::CommandOutput;
+use causewaybay_core::store::{Account, RecentSecret};
+use causewaybay_core::units;
+use causewaybay_core::wallet::{self, Keypair};
 
 // ============================================================== the commands
 
@@ -402,6 +403,10 @@ impl State {
 
 /// Run the TUI until the user quits, then restore the terminal.
 pub fn run(app: App) -> Result<CommandOutput> {
+    // The TUI asks its own questions on screen, so the wallet underneath it
+    // must not ask again — and has no terminal left to ask on anyway.
+    let app = app.with_host(std::sync::Arc::new(Headless::new().assume_yes(true)));
+
     enable_raw_mode().map_err(|e| error::internal(format!("cannot enter raw mode: {e}")))?;
     let mut out = stdout();
     execute!(out, EnterAlternateScreen)
@@ -442,8 +447,7 @@ fn event_loop<B: ratatui::backend::Backend>(
             app = App::new(
                 Some(app.store.home().to_path_buf()),
                 Some(&state.current_network),
-                false,
-                true,
+                std::sync::Arc::clone(&app.host),
             )?;
             refresh_detail(&app, &mut state);
         }
@@ -900,7 +904,7 @@ fn export_accounts_with_keys(app: &App, state: &State, path: &str) -> Result<Str
 
     let target = std::path::Path::new(path);
     // Born 0600: the file holds private keys from its first byte.
-    crate::paths::write_private(target, &rendered)
+    causewaybay_core::paths::write_private(target, &rendered)
         .map_err(|e| error::internal(format!("cannot write {path}: {e}")))?;
     Ok(std::fs::canonicalize(target)
         .map(|p| p.display().to_string())
@@ -928,7 +932,7 @@ fn export_accounts(app: &App, state: &State, format: Format, path: &str) -> Resu
     let target = std::path::Path::new(path);
     if state.show_secrets {
         // Born 0600: the file holds private keys from its first byte.
-        crate::paths::write_private(target, &rendered)
+        causewaybay_core::paths::write_private(target, &rendered)
             .map_err(|e| error::internal(format!("cannot write {path}: {e}")))?;
     } else {
         std::fs::write(target, rendered)
@@ -1047,7 +1051,7 @@ fn set_active(app: &App, state: &mut State) {
     };
     match app
         .store
-        .config_set(crate::store::KEY_ACTIVE_ACCOUNT, &account.id)
+        .config_set(causewaybay_core::store::KEY_ACTIVE_ACCOUNT, &account.id)
     {
         Ok(()) => state.info(format!("{} is now active", account.label)),
         Err(e) => state.fail(e.message),
@@ -1195,7 +1199,10 @@ fn select_network(app: &App, state: &mut State, key: &'static str) {
         state.info(format!("Already on {}", target.name));
         return;
     }
-    match app.store.config_set(crate::store::KEY_NETWORK, target.key) {
+    match app
+        .store
+        .config_set(causewaybay_core::store::KEY_NETWORK, target.key)
+    {
         Ok(()) => {
             state.current_network = target.key.to_string();
             state.network_changed = true;
@@ -1691,7 +1698,7 @@ fn truncate(text: &str, width: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::Source;
+    use causewaybay_core::store::Source;
 
     fn account(id: &str, label: &str) -> Account {
         Account {

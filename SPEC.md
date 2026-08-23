@@ -5,6 +5,11 @@ write the same on-disk store, expose the same command surface, and emit the same
 JSON envelope. A store written by the Rust CLI can be driven by the Python CLI and
 vice versa.
 
+Sections 1–7 are what an implementation must do. Section 8 describes the C ABI
+the Rust implementation additionally exposes, which is not a third
+implementation but a way of reaching the first one from another language —
+`luacli/` is built on it.
+
 ## 1. Storage
 
 Root directory (the "home"), in precedence order:
@@ -166,3 +171,81 @@ from `eth_estimateGas` plus a 25 % headroom, falling back to 100000.
 
 EIP-191 personal messages: `keccak256("\x19Ethereum Signed Message:\n" + len + msg)`,
 signed with secp256k1; signatures are `0x` + 65 bytes (r‖s‖v) with `v` in {27,28}.
+
+## 8. The C ABI
+
+`rustcli/ffi/` exposes the Rust implementation as a shared library
+(`libcausewaybay_ffi.{dylib,so}`, `causewaybay_ffi.dll`) whose header is
+`rustcli/ffi/include/causewaybay.h`. It is an embedding surface, not a second
+specification: everything above still holds, because the code behind it is the
+same code the `cwbwallet` binary runs.
+
+```c
+int   cwb_abi_version(void);
+char *cwb_version(void);
+char *cwb_describe(void);
+char *cwb_commands(void);
+char *cwb_execute(const char *request_json);
+void  cwb_string_free(char *s);
+```
+
+`cwb_commands` reports the command tree — one entry per leaf, with `path`,
+`about`, and an `args` list carrying `long`, `short`, `positional`,
+`takes_value`, `required` and `default`. It is read out of the argument parser
+rather than written down, so it is always the surface §8.1 accepts.
+
+### 8.1 The request
+
+`cwb_execute` takes a NUL-terminated JSON object. Unknown fields are rejected
+rather than ignored, so a misspelled `yes` cannot silently disable a
+confirmation.
+
+| field | type | meaning |
+| --- | --- | --- |
+| `argv` | array of strings | the command, without the program name |
+| `home` | string or null | the wallet home; else `$CAUSEWAYBAY_HOME`, else `~/.causewaybaywallet` |
+| `network` | string or null | the network for this call only |
+| `yes` | boolean | answer confirmations with yes |
+| `stdin` | string or null | what an argument written as `-` stands for |
+
+`home`, `network` and `yes` are defaults: a flag inside `argv` wins, except
+`yes`, which is a floor — a caller that has already asked cannot have its answer
+overridden by an argument.
+
+### 8.2 The reply
+
+The envelope of §4, plus the human rendering the CLI would have printed:
+
+```json
+{"ok":true,"data": ..., "human":"* main  0x9858…  mnemonic"}
+{"ok":false,"error":{"code":"account_not_found","message":"no account matching 'bob'"}}
+```
+
+`human` exists so a front end in another language prints what `cwbwallet`
+prints without knowing its formatting rules. It is **not** part of §4: a CLI
+built on this ABI must drop it before emitting a `--json` envelope, or its
+output will differ from the two implementations'.
+
+### 8.3 Guarantees
+
+* Every returned `char *` belongs to the caller and is released with
+  `cwb_string_free`. Passing null to it is a no-op.
+* No entry point unwinds. A panic inside the wallet is reported as an envelope
+  with code `internal`; a null or non-UTF-8 request as one with code `usage`.
+* Nothing reads standard input or writes to a terminal. An argument of `-`
+  resolves from the request's `stdin` field or fails with `usage`.
+* A confirmation that was not pre-answered fails with `confirmation_required`.
+  A library cannot prompt, so it refuses rather than assumes.
+* `tui` is refused with `usage`. A library does not seize its host's screen.
+
+### 8.4 Versioning
+
+`cwb_abi_version` returns the version of *this contract*, currently `1`, and is
+bumped when the request or envelope shape changes incompatibly. Within one
+version the functions never change meaning, but the list may grow — and a host
+that declares a function an older library does not export fails when it first
+calls it, not when it loads, which is the other reason to check this number. A host that
+loads the library at runtime must compare it against the number it was written
+for and refuse a mismatch rather than guess. The wallet version — the number of
+§ "Versioning" in the README — is separate and moves independently;
+`cwb_version` and `cwb_describe` report it.

@@ -584,21 +584,34 @@ dependencies = [
 ]
 
 [[package]]
-name = "causewaybay-wallet"
+name = "causewaybay-cli"
 version = "1.0.0"
 dependencies = [
  "alloy-primitives",
  "assert_cmd",
- "chrono",
+ "causewaybay-core",
  "clap",
  "crossterm",
+ "hex",
+ "predicates",
+ "ratatui",
+ "serde_json",
+ "tempfile",
+ "tiny_http",
+]
+
+[[package]]
+name = "causewaybay-core"
+version = "1.0.0"
+dependencies = [
+ "alloy-primitives",
+ "chrono",
+ "clap",
  "hex",
  "hmac",
  "k256",
  "pbkdf2",
- "predicates",
  "rand 0.8.7",
- "ratatui",
  "reqwest",
  "serde",
  "serde_json",
@@ -606,6 +619,15 @@ dependencies = [
  "tempfile",
  "tiny_http",
  "unicode-normalization",
+]
+
+[[package]]
+name = "causewaybay-ffi"
+version = "1.0.0"
+dependencies = [
+ "causewaybay-core",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
