@@ -109,6 +109,12 @@ fmt-check: lint ## Fail if a file does not compile
 .PHONY: check
 check: lint sfx-check test ## Everything CI would run
 
+# Not in `check`: it copies the tree and runs the suite twenty-odd times, which
+# is a thing to do when the tests change rather than on every build.
+.PHONY: mutate
+mutate: require-luajit build ## Break the code on purpose and check the tests notice
+	@python3 tools/mutate.py $(ARGS)
+
 # -------------------------------------------------------------------- package
 
 # What ships: a .love archive, the shared library beside it, and a launcher.

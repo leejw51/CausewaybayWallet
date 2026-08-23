@@ -1,0 +1,205 @@
+#!/usr/bin/env python3
+"""Break the code on purpose and check the tests notice.
+
+    python3 lovegui/tools/mutate.py [name fragment ...]
+
+A green suite says nothing about whether it would catch a regression — a test
+that cannot fail is decoration. So each mutation below is a plausible edit: a
+dropped clamp, a removed guard, an off-by-one, the kind of thing a refactor
+does by accident. It is applied to a copy of the tree, the suite is run, and
+the copy is thrown away.
+
+A mutation that survives is a hole in the tests. That is the finding; the
+number of tests is not.
+
+## Equivalent mutants
+
+Some mutations change no observable behaviour, and no test can or should catch
+them. Those are marked `equivalent=` with the reason, and reported separately
+from real gaps — otherwise the honest response to a stubborn survivor is to
+write a test that asserts an implementation detail, which is worse than the
+hole it papers over.
+
+## Not run by `make check`
+
+It copies the tree and runs the suite twenty-odd times. That is a thing to do
+when the tests change, not on every build.
+"""
+
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+GUI = Path(__file__).resolve().parent.parent
+ROOT = GUI.parent
+
+# (name, file, find, replace, suite, equivalent-reason-or-None)
+MUTATIONS = [
+    ("refresh: never aims at the active account", "model.lua",
+     "if not self.aimed and self.active then", "if false then", "model", None),
+
+    ("create: leaves the selection behind", "model.lua",
+     "  for index, entry in ipairs(self.wallets) do\n    if entry.address == account.address then self.selected = index end\n  end\n  self:say(\"Created \"",
+     "  for index, entry in ipairs(self.wallets) do\n    local _ = index, entry\n  end\n  self:say(\"Created \"", "model", None),
+
+    ("scroll_by: loses its upper clamp", "model.lua",
+     "self.scroll = math.max(0, math.min(most, self.scroll + delta))",
+     "self.scroll = math.max(0, self.scroll + delta)", "model", None),
+
+    ("reveal: off by one at the bottom", "model.lua",
+     "self.scroll = index - visible", "self.scroll = index - visible + 1", "model", None),
+
+    ("set_field: drops the confirmation guard", "model.lua",
+     "function Model:set_field(field, text)\n  if self.confirm then return false end",
+     "function Model:set_field(field, text)", "model", None),
+
+    ("set_field: drops the type check", "model.lua",
+     "  if type(text) ~= \"string\" then return false end\n", "", "model", None),
+
+    ("logout: forgets to drop the balance", "model.lua",
+     "function Model:logout()\n  self.session = nil\n  self.balance = nil",
+     "function Model:logout()\n  self.session = nil", "model", None),
+
+    ("login: skips validation", "model.lua",
+     "  if not check.valid then", "  if false then", "model",
+     # Checked by hand: `validate_mnemonic` and `derive` reject exactly the
+     # same phrases with the same code and the same message. They differ only
+     # on an empty one — `invalid_mnemonic` versus `usage` — and `Model:login`
+     # refuses an empty phrase before reaching either. So dropping the check
+     # changes nothing anyone can see, and the call is defence in depth rather
+     # than the thing producing the message.
+     "validate_mnemonic and derive reject the same phrases identically"),
+
+    ("boot: a missing library no longer halts", "boot.lua",
+     "self.halted = true", "self.halted = false", "boot", None),
+
+    ("boot: one key press hands straight over", "boot.lua",
+     "  if not self.done then\n    self.shown = #self.lines",
+     "  if false then\n    self.shown = #self.lines", "boot", None),
+
+    ("boot: reports a made-up wallet count", "boot.lua",
+     '("WALLETS %10d"):format(#accounts)', '("WALLETS %10d"):format(42)', "boot", None),
+
+    ("login: the mask is dropped", "login.lua",
+     'return (self.phrase:gsub("%S", MASK))', "return self.phrase", "login", None),
+
+    ("login: typing no longer clears minted", "login.lua",
+     "  -- A pasted mnemonic often arrives with newlines in it.\n  self.minted = false\n",
+     "  -- A pasted mnemonic often arrives with newlines in it.\n", "login", None),
+
+    ("login: tidy stops collapsing runs", "login.lua",
+     'return (text:gsub("^%s+", ""):gsub("%s+$", ""):gsub("%s+", " "))',
+     'return (text:gsub("^%s+", ""):gsub("%s+$", ""))', "login", None),
+
+    ("card: the sigil stops being mirrored", "ui/card.lua",
+     "grid[row][4] = grid[row][2]\n    grid[row][5] = grid[row][1]",
+     "grid[row][4] = bit_of(bits, 3)\n    grid[row][5] = bit_of(bits, 4)", "card", None),
+
+    ("card: the design ignores the address", "ui/card.lua",
+     "scheme  = card.SCHEMES[b[1] % #card.SCHEMES + 1],",
+     "scheme  = card.SCHEMES[1],", "card", None),
+
+    ("card: the number drops a group", "ui/card.lua",
+     "groups[#groups + 1] = hex:sub(i, i + 3)",
+     "if i > 1 then groups[#groups + 1] = hex:sub(i, i + 3) end", "card", None),
+
+    ("card: the turn swaps early", "ui/card.lua",
+     "return math.cos(eased * math.pi), eased >= 0.5",
+     "return math.cos(eased * math.pi), eased >= 0.3", "card", None),
+
+    ("card: the swing does not return to rest", "ui/card.lua",
+     "local along = math.sin(eased * math.pi)",
+     "local along = math.sin(eased * math.pi) + 0.2", "card", None),
+
+    ("sound: mute stops muting", "ui/sound.lua",
+     "if not sound.enabled then return false end", "", "sound", None),
+
+    ("sound: the throttle is removed", "ui/sound.lua",
+     "if last and sound.clock - last < gate then return false end", "", "sound", None),
+
+    ("anim: decay becomes frame-dependent", "ui/anim.lua",
+     "function anim.approach(current, target, rate, dt)",
+     "function anim.approach(current, target, rate, dt)\n  return current + (target - current) * 0.1 --[[mutant]]",
+     "anim", None),
+]
+
+
+# The copied tree has no rustcli/target for the binding to search, so the
+# library is named explicitly. It is the real build — only the Lua is mutated.
+LIB = ROOT / "rustcli" / "target" / "release" / "libcausewaybay_ffi.dylib"
+
+
+def run(tree: Path, suite: str) -> bool:
+    """True if the suite passes."""
+    env = dict(os.environ, CAUSEWAYBAY_LIB=str(LIB))
+    result = subprocess.run(
+        ["luajit", "tests/init.lua", suite],
+        cwd=tree / "lovegui", capture_output=True, text=True, env=env,
+    )
+    return result.returncode == 0
+
+
+def main() -> int:
+    only = sys.argv[1:]
+    caught, survived, equivalent = [], [], []
+
+    with tempfile.TemporaryDirectory() as tmp:
+        base = Path(tmp) / "tree"
+        shutil.copytree(ROOT, base, symlinks=True,
+                        ignore=shutil.ignore_patterns(".git", "target", "build", "shots"))
+
+        # Baseline: the suites must pass before anything is broken, or every
+        # "caught" below would be meaningless.
+        for suite in sorted({m[4] for m in MUTATIONS}):
+            if not run(base, suite):
+                print(f"  BASELINE FAILS for '{suite}' — fix that first", file=sys.stderr)
+                return 2
+        print(f"  baseline: every suite passes\n")
+
+        for name, rel, find, replace, suite, known in MUTATIONS:
+            if only and not any(o in name for o in only):
+                continue
+            path = base / "lovegui" / rel
+            original = path.read_text()
+            if find not in original:
+                # The code moved and the mutation no longer applies. Reported
+                # as a failure: a stale mutation silently tests nothing.
+                print(f"  STALE     {name}  (pattern gone from {rel})")
+                survived.append(name)
+                continue
+            path.write_text(original.replace(find, replace, 1))
+            passed = run(base, suite)
+            path.write_text(original)
+
+            if passed and known:
+                print(f"  equivalent {name}  ({known})")
+                equivalent.append(name)
+            elif passed:
+                print(f"  SURVIVED  {name}  [{suite}]")
+                survived.append(name)
+            elif known:
+                # It was expected to be unobservable and the tests caught it
+                # anyway, which means the reasoning behind `equivalent` is
+                # wrong. Worth knowing.
+                print(f"  caught    {name}  [{suite}]  (marked equivalent — re-check that)")
+                caught.append(name)
+            else:
+                print(f"  caught    {name}  [{suite}]")
+                caught.append(name)
+
+    print()
+    print(f"  {len(caught)} caught, {len(survived)} survived, "
+          f"{len(equivalent)} equivalent")
+    if survived:
+        print("\n  Not covered:")
+        for name in survived:
+            print(f"    - {name}")
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -14,7 +14,7 @@ There is no cryptography in this directory, no store, and no argument parsing.
 ```sh
 make run       # opens the window
 make app       # a double-clickable macOS .app with LÖVE inside it
-make test      # 84 headless tests, no LÖVE required
+make test      # 143 headless tests, no LÖVE required
 make shots     # writes a PNG of each screen, for review from a terminal
 make sfx       # re-synthesises the sound effects
 ```
@@ -409,7 +409,34 @@ luajit tests/init.lua anim       # one suite
 | `particles` | that effects die, the cap holds, and homing coins actually arrive |
 | `sound` | the throttle, mute, and the voice pool — the parts with decisions in them |
 | `card` | that a face is deterministic, spread across every scheme, and survives a malformed address |
-| `model` | wallets, screens, networks, the send flow and the form, against a real store |
+| `login` | that the phrase is never drawn, the word count, and what submitting does |
+| `boot` | that every figure on the boot screen is the wallet's own, and that a missing library halts |
+| `model` | wallets, screens, networks, the session, the list window, the send flow and the form, against a real store |
+
+### Whether the tests would actually fail
+
+A green suite says nothing about whether it would catch a regression — a test
+that cannot fail is decoration. So `make mutate` breaks the code on purpose:
+
+```sh
+make mutate                 # every mutation
+make mutate ARGS=login      # just the ones about the login screen
+```
+
+Each mutation is a plausible edit — a dropped clamp, a removed guard, an
+off-by-one, the kind of thing a refactor does by accident — applied to a copy
+of the tree. Twenty-one of them, and the suite has to notice every one. It
+found two real holes when it was first run: `reveal` could scroll one row too
+far without any test minding, and creating a wallet could stop selecting it.
+
+One mutation is marked **equivalent**: removing the `validate-mnemonic` call
+from `Model:login` changes nothing observable, because `derive` rejects exactly
+the same phrases with the same code and message. That is recorded with its
+reasoning rather than papered over with a test asserting an implementation
+detail — which would be worse than the hole it hid.
+
+It is not part of `make check`; it copies the tree and runs the suite twenty-odd
+times, which is a thing to do when the tests change.
 
 They run without LÖVE, which is the payoff of keeping the logic free of `love.`
 calls. What is left untested is drawing — a test could only check that by

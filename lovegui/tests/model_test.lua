@@ -132,6 +132,196 @@ t.suite("model / wallets", function()
   end)
 end)
 
+t.suite("model / the session", function()
+  t.case("a phrase the store does not know is imported once", function()
+    local model = model_over()
+    local account = model:login(support.MNEMONIC)
+    t.ok(account, "should have got in")
+    t.equal(account.address, support.ADDRESS_0)
+    t.equal(#model.wallets, 1, "and the phrase should now be a wallet")
+    t.ok(model:logged_in())
+
+    -- Again with the same phrase: recognised, not imported a second time.
+    local again = model:login(support.MNEMONIC)
+    t.ok(again, "should have got in again")
+    t.equal(#model.wallets, 1, "without adding a duplicate")
+    t.contains(model.status.text, "Welcome back")
+  end)
+
+  t.case("logging in points the card at the wallet that was unlocked", function()
+    local model = model_over()
+    model:create("one")
+    model:create("two")
+    model:login(support.MNEMONIC)
+    t.equal(model.wallets[model.selected].address, support.ADDRESS_0,
+      "the selection should be on the wallet just unlocked")
+  end)
+
+  t.case("an empty phrase is refused before the wallet is asked", function()
+    local model = model_over()
+    t.equal(model:login(""), false)
+    t.equal(model:login("   "), false)
+    t.equal(model:login(nil), false)
+    t.equal(model.status.kind, "error")
+    t.equal(#model.wallets, 0, "and nothing should have been written")
+  end)
+
+  t.case("a phrase that is not a phrase is refused", function()
+    local model = model_over()
+    t.equal(model:login("abandon abandon banana"), false)
+    t.equal(model.status.kind, "error")
+    t.equal(#model.wallets, 0, "a bad phrase must never reach the store")
+    t.ok(not model:logged_in())
+  end)
+
+  t.case("logging out forgets the session and not the store", function()
+    local model = model_over()
+    model:login(support.MNEMONIC)
+    model.balance = { balance = "5", symbol = "TCRO" }
+    model:go("send")
+    model:set_field("to", support.ADDRESS_1)
+
+    t.ok(model:logout())
+    t.ok(not model:logged_in(), "the session should be gone")
+    t.equal(model.balance, nil, "and the balance with it")
+    t.equal(model.screen, "wallets", "back to the first screen")
+    t.equal(model.form.to, "", "with nothing left in the form")
+
+    model:refresh()
+    t.equal(#model.wallets, 1, "but the wallet is still on disk")
+  end)
+
+  t.case("a minted phrase is handed over and not stored", function()
+    -- The point of `offer_mnemonic`: it is shown so it can be written down,
+    -- and only becomes an account if it is used to log in. A wallet whose
+    -- phrase was never seen cannot be recovered.
+    local model = model_over()
+    local phrase = model:offer_mnemonic(12)
+    t.ok(phrase, "should have been handed a phrase")
+
+    local words = 0
+    for _ in phrase:gmatch("%S+") do words = words + 1 end
+    t.equal(words, 12)
+    t.equal(#model.wallets, 0, "offering one must write nothing")
+
+    t.ok(model:login(phrase), "and it should work as a login")
+    t.equal(#model.wallets, 1, "which is the point at which it is stored")
+  end)
+
+  t.case("two offered phrases differ", function()
+    local model = model_over()
+    t.not_equal(model:offer_mnemonic(12), model:offer_mnemonic(12))
+  end)
+end)
+
+t.suite("model / the list window", function()
+  local function model_with(count)
+    local model = model_over()
+    for i = 1, count do model:create("w" .. i) end
+    return model
+  end
+
+  t.case("scrolling stops at both ends", function()
+    local model = model_with(10)
+    t.equal(model:scroll_by(-5, 6), 0, "it cannot scroll above the first row")
+    t.equal(model:scroll_by(100, 6), 4, "nor past the last screenful")
+    t.equal(model:scroll_by(2, 6), 4, "and staying there is not an error")
+  end)
+
+  t.case("a list that fits does not scroll at all", function()
+    local model = model_with(3)
+    t.equal(model:scroll_by(5, 6), 0)
+  end)
+
+  t.case("revealing pulls the row into view from either side", function()
+    local model = model_with(20)
+
+    model:reveal(15, 6)
+    t.ok(model.scroll + 1 <= 15 and 15 <= model.scroll + 6,
+      "row 15 should be on screen, scroll is " .. model.scroll)
+
+    model:reveal(2, 6)
+    t.ok(model.scroll + 1 <= 2 and 2 <= model.scroll + 6,
+      "row 2 should be on screen, scroll is " .. model.scroll)
+  end)
+
+  t.case("revealing a row already on screen does not move the list", function()
+    -- Otherwise the list jumps under the cursor for no reason on every press.
+    local model = model_with(20)
+    model:reveal(10, 6)
+    local settled = model.scroll
+    model:reveal(settled + 2, 6)
+    t.equal(model.scroll, settled)
+  end)
+
+  t.case("stepping down moves the window by exactly one row", function()
+    -- The precision the clamps hide. `reveal` scrolling one row too far is
+    -- invisible at the ends of the list and invisible in the middle — the row
+    -- asked for is still on screen either way — but it means holding the down
+    -- arrow scrolls the list twice as fast as the cursor moves.
+    local model = model_with(20)
+    model:reveal(6, 6)
+    t.equal(model.scroll, 0, "six rows fit, so nothing should have moved yet")
+
+    model:reveal(7, 6)
+    t.equal(model.scroll, 1, "the seventh row costs exactly one row of scroll")
+    model:reveal(8, 6)
+    t.equal(model.scroll, 2, "and the eighth exactly one more")
+  end)
+
+  t.case("stepping up moves the window by exactly one row", function()
+    local model = model_with(20)
+    model:reveal(20, 6)
+    local bottom = model.scroll
+    model:reveal(bottom, 6)
+    t.equal(model.scroll, bottom - 1, "one row up is one row of scroll")
+  end)
+
+  t.case("the last row can be reached", function()
+    local model = model_with(20)
+    model:reveal(20, 6)
+    t.equal(model.scroll, 14, "the window should end on the last row")
+  end)
+end)
+
+t.suite("model / setting fields directly", function()
+  t.case("a pasted value is trimmed and takes focus", function()
+    local model = model_over()
+    t.ok(model:set_field("to", "  " .. support.ADDRESS_1 .. "  "))
+    t.equal(model.form.to, support.ADDRESS_1, "surrounding space must not survive")
+    t.equal(model.focus, "to")
+  end)
+
+  t.case("clearing empties the field", function()
+    local model = model_over()
+    model:set_field("amount", "1.5")
+    t.ok(model:clear_field("amount"))
+    t.equal(model.form.amount, "")
+  end)
+
+  t.case("neither touches the form while a confirmation is up", function()
+    -- The dialog owns the keyboard, and a paste that edited the amount
+    -- underneath a confirmation would change what was approved.
+    local model = model_over()
+    model:set_field("to", support.ADDRESS_1)
+    model.confirm = { summary = "pretend" }
+
+    t.equal(model:set_field("to", "0xdeadbeef"), false)
+    t.equal(model:clear_field("to"), false)
+    t.equal(model.form.to, support.ADDRESS_1, "the form must be untouched")
+  end)
+
+  t.case("a non-string is refused rather than stored", function()
+    -- `love.system.getClipboardText` returns nil when there is nothing on the
+    -- clipboard, and that nil reaches here.
+    local model = model_over()
+    model:set_field("to", support.ADDRESS_1)
+    t.equal(model:set_field("to", nil), false)
+    t.equal(model:set_field("to", 42), false)
+    t.equal(model.form.to, support.ADDRESS_1)
+  end)
+end)
+
 t.suite("model / screens", function()
   t.case("goes to each named screen", function()
     local model = model_over()
