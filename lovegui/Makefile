@@ -234,6 +234,8 @@ app: build ## Build a double-clickable macOS .app with LÖVE embedded
 	@# LÖVE ships this as an editable document type so a .love dropped on the
 	@# icon runs. This bundle *is* one game and must not open somebody else's.
 	@plutil -remove CFBundleDocumentTypes "$(APP)/Contents/Info.plist" 2>/dev/null || true
+	@plutil -remove UTExportedTypeDeclarations "$(APP)/Contents/Info.plist" 2>/dev/null || true
+	@plutil -replace CFBundleExecutable -string "love" "$(APP)/Contents/Info.plist"
 	@plutil -replace NSHighResolutionCapable -bool true "$(APP)/Contents/Info.plist"
 
 	@$(MAKE) --no-print-directory app-icon
@@ -326,6 +328,13 @@ app-icon:
 # Signed inside-out: nested binaries first, then the executable, then the
 # bundle. Signing the outer bundle first invalidates itself the moment anything
 # inside it is signed afterwards.
+#
+# Every stage gets the entitlements, which follows bfvegas — a LÖVE game that
+# is signed, notarised and shipping. Apple's own guidance is that entitlements
+# belong on the main executable and putting them on a framework does nothing at
+# run time, so this is redundant rather than wrong; it is kept because matching
+# a recipe known to pass notarisation is worth more than tidiness in a place
+# where the failures are opaque and arrive days later.
 .PHONY: app-sign
 app-sign:
 	@test -d "$(APP)" || { echo "  no $(APP); run \`make app\`" >&2; exit 1; }
@@ -339,8 +348,14 @@ app-sign:
 		'  <key>com.apple.security.cs.disable-library-validation</key><true/>' \
 		'</dict></plist>' \
 		> "$(BUILD)/entitlements.plist"
-	@identity=$$(security find-identity -v -p codesigning 2>/dev/null \
-		| grep "Developer ID Application" | head -1 | awk -F'"' '{print $$2}'); \
+	@# `APPLE_SIGNING_IDENTITY` wins when it is set, because that is what the
+	@# release workflow exports after importing the certificate into a keychain
+	@# it made for the job. Falling back to a keychain search is for a laptop.
+	@identity="$${APPLE_SIGNING_IDENTITY:-}"; \
+	if [ -z "$$identity" ] || [ "$$identity" = "-" ]; then \
+		identity=$$(security find-identity -v -p codesigning 2>/dev/null \
+			| grep "Developer ID Application" | head -1 | awk -F'"' '{print $$2}'); \
+	fi; \
 	if [ -z "$$identity" ]; then \
 		identity="-"; \
 		echo "  no Developer ID found - signing ad-hoc (runs here, not elsewhere)"; \
@@ -365,7 +380,85 @@ app-sign:
 	codesign --force --options runtime --sign "$$identity" \
 		--entitlements "$(BUILD)/entitlements.plist" $$stamp "$(APP)" || exit 1
 	@rm -f "$(BUILD)/entitlements.plist"
-	@codesign --verify --strict "$(APP)" && echo "  signature verifies"
+	@codesign --verify --deep --strict "$(APP)" && echo "  signature verifies"
+
+# ---------------------------------------------------------------- notarize
+
+# Signing is not enough on its own, and this is the part that finishes it.
+#
+# A Developer ID signature with the hardened runtime and a secure timestamp is
+# necessary and not sufficient: since macOS 10.15 anything distributed outside
+# the App Store must also be notarised by Apple. Without it, a *downloaded*
+# copy is refused —
+#
+#     spctl -a -t open --context context:primary-signature CausewaybayBank.app
+#     rejected  (source=Unnotarized Developer ID)
+#
+# — and the person who downloaded it gets "Apple could not verify…".
+#
+# Not part of `make app`, for two reasons: it needs credentials this repository
+# must not carry, and it uploads the bundle to Apple and waits, which is not
+# something a build should do without being asked.
+#
+# The variables are `scripts/codesign-binary.sh`'s, because that script already
+# notarises the four CLI binaries in this repository and a second set of names
+# for the same three secrets is a trap. The release workflow exports them from
+# `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD` and `TEAM_ID`, which is how bfvegas
+# and bfagent name them too — so a machine set up for either already works.
+#
+#     export APPLE_ID=you@example.com
+#     export APPLE_PASSWORD=abcd-efgh-ijkl-mnop   # app-specific
+#     export APPLE_TEAM_ID=ABCDE12345
+#     make notarize
+.PHONY: notarize
+notarize: ## Notarize and staple the built .app (needs Apple credentials)
+	@test -d "$(APP)" || { echo "  no $(APP); run 'make app' first" >&2; exit 1; }
+	@for name in APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do \
+		eval "value=\$$$$name"; \
+		[ -n "$$value" ] || { \
+			echo "  $$name is not set." >&2; \
+			echo "  Notarising needs an Apple ID, an app-specific password" >&2; \
+			echo "  from appleid.apple.com, and the team id. None is kept here." >&2; \
+			exit 1; }; \
+	done
+
+	@# Ad-hoc cannot be notarised, and finding that out from Apple takes
+	@# minutes. The signature says which it is, so ask it first.
+	@codesign -dv --verbose=2 "$(APP)" 2>&1 | grep -q "Authority=Developer ID Application" || { 		echo "  $(APP) is not signed with a Developer ID." >&2; 		echo "  Apple will refuse an ad-hoc signature; there is nothing to submit." >&2; 		exit 1; }
+
+	@echo "  submitting to Apple - this takes minutes, not seconds"
+	@ditto -c -k --sequesterRsrc --keepParent "$(APP)" "$(BUILD)/notarize.zip"
+	@xcrun notarytool submit "$(BUILD)/notarize.zip" \
+		--apple-id "$$APPLE_ID" \
+		--password "$$APPLE_PASSWORD" \
+		--team-id "$$APPLE_TEAM_ID" \
+		--wait --timeout 20m
+	@rm -f "$(BUILD)/notarize.zip"
+
+	@# Stapled, so the ticket travels with the bundle and Gatekeeper can
+	@# check it with no network at all.
+	@xcrun stapler staple "$(APP)"
+	@xcrun stapler validate "$(APP)"
+
+	@# The distribution zip was made before any of this and carries an
+	@# unstapled copy. Rebuilt, or the download is exactly what it was.
+	@rm -f "$(BUILD)/$(APP_NAME)-macos.zip"
+	@cd "$(BUILD)" && ditto -c -k --sequesterRsrc --keepParent \
+		"$(APP_NAME).app" "$(APP_NAME)-macos.zip"
+
+	@$(MAKE) --no-print-directory gatekeeper
+
+# What a person who downloads it will actually get.
+#
+# `--context context:primary-signature` is the one that matters: plain
+# `spctl -a` accepts an un-notarised Developer ID bundle, and Finder does not.
+# Asking the wrong question is how "it is signed" gets mistaken for "it opens".
+.PHONY: gatekeeper
+gatekeeper: ## Assess the bundle the way Finder does
+	@test -d "$(APP)" || { echo "  no $(APP); run 'make app' first" >&2; exit 1; }
+	@codesign --verify --deep --strict "$(APP)" && echo "  signature: valid"
+	@if xcrun stapler validate "$(APP)" > /dev/null 2>&1; then 		echo "  notarised: yes, and stapled"; 	else 		echo "  notarised: NO - a downloaded copy will be blocked"; 	fi
+	@spctl -a -vvv -t open --context context:primary-signature "$(APP)" 2>&1 		| sed 's/^/  /' || true
 
 # --------------------------------------------------------------------- extras
 
