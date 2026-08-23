@@ -62,16 +62,16 @@ local game = {
   -- than addresses: two accounts in one store can share an address (an import
   -- of a phrase that was already there), and looking the label back up by
   -- address then finds whichever of them came last.
-  face = { shown = nil, next = nil, turn = 1, key = nil },
+  face = { shown = nil, next = nil, turn = 1, key = nil, index = nil, dir = 1 },
 }
 
---- How long a card takes to turn over.
+--- How long one card takes to swipe out and the next to swipe in.
 ---
---- Short enough that moving down a list with the arrow keys is not a queue of
---- animations, long enough that the turn is legible rather than a flicker. The
---- swap of one face for the other happens at exactly half of it, when the card
---- is edge-on and there is nothing to see.
-local CARD_TURN = 0.34
+--- Short enough that holding an arrow key is not a queue of animations, long
+--- enough that the movement is legible rather than a flicker. `expo_out` puts
+--- nearly all of the distance in the first third of it, so it feels shorter
+--- than it is.
+local CARD_SWIPE = 0.32
 
 --- How long the launch plays before an outcome is allowed to land.
 ---
@@ -239,31 +239,44 @@ local function face_key(index, account)
   return index .. "\0" .. tostring(account.address)
 end
 
---- Keep the card in step with the selection, turning it when they disagree.
+--- Keep the card in step with the selection, swiping when they disagree.
 ---
---- The turn is driven here rather than from the drawing code for one reason:
---- the design must change at the *exact* moment the card is edge-on, and that
---- moment is a property of this animation. A separate timer would drift, and
---- the drift would be a card visibly changing its own face.
-local function turn_card(model)
-  local wanted = model.wallets[model.selected]
+--- Driven here rather than from the drawing code because *which way* the card
+--- should travel is a fact about the selection moving, and the drawing code
+--- only ever sees where it ended up.
+local function swipe_card(model)
+  local index = model.selected
+  local wanted = model.wallets[index]
   local face = game.face
+  local key = face_key(index, wanted)
+  if key == face.key then return end
+  face.key = key
 
-  if face_key(model.selected, wanted) ~= face.key then
-    if face.shown == nil then
-      -- The first card of the session does not turn in from nothing.
-      face.shown, face.turn = wanted, 1
-      face.key = face_key(model.selected, wanted)
-    elseif face.turn < 1 and face.next then
-      -- Already turning. Retarget rather than restart: holding an arrow key
-      -- would otherwise snap the card back to face-on every repeat.
-      face.next = wanted
-      face.key = face_key(model.selected, wanted)
-    else
-      face.next, face.turn = wanted, 0
-      face.key = face_key(model.selected, wanted)
-    end
+  if face.shown == nil then
+    -- The first card of the session does not slide in from nowhere.
+    face.shown, face.turn, face.index = wanted, 1, index
+    return
   end
+
+  -- Down the list scrolls the card left, which is the way the eye expects a
+  -- list to move under a cursor going down. Up reverses it.
+  face.dir = index >= (face.index or index) and 1 or -1
+  face.index = index
+
+  if face.turn < 1 and face.next then
+    -- Already moving. Retarget rather than restart: holding an arrow key
+    -- would otherwise snap the card back to the middle on every repeat.
+    face.next = wanted
+    return
+  end
+
+  face.next, face.turn = wanted, 0
+  sound.play("card")
+  -- Thrown off the trailing edge, so the spray comes from where the card
+  -- left rather than from the middle of a card that is no longer there.
+  game.fx:burst(card_target.x - face.dir * 40, card_target.y,
+    { count = 20, speed = 150, colour = { 0.3, 0.94, 1 }, life = 0.45,
+      sprite = "spark", size = 3 })
 end
 
 --- React to what the model says happened, with light and noise.
@@ -353,18 +366,12 @@ function love.update(dt)
 
   game.model:pump()
 
-  turn_card(game.model)
+  swipe_card(game.model)
   if game.face.turn < 1 then
-    game.face.turn = math.min(1, game.face.turn + dt / CARD_TURN)
-    local _, past_edge = card.turn(game.face.turn)
-    if past_edge and game.face.next then
-      -- Edge-on: nothing of the old face is on screen, so this is the one
-      -- frame where the swap costs nothing to look at.
+    game.face.turn = math.min(1, game.face.turn + dt / CARD_SWIPE)
+    if game.face.turn >= 1 and game.face.next then
+      -- Arrived. The card that slid in is simply the card now.
       game.face.shown, game.face.next = game.face.next, nil
-      sound.play("card")
-      game.fx:burst(card_target.x, card_target.y,
-        { count = 26, speed = 190, colour = { 0.3, 0.94, 1 }, life = 0.55,
-          sprite = "spark", size = 3 })
     end
   end
 
@@ -739,6 +746,64 @@ local function stat(x, y, label, value, colour, font)
   theme.text(value, x, y + 13, colour or theme.colour.text, font or theme.font.small)
 end
 
+--- One card, at a placement along the swipe.
+---
+--- Pulled out of `draw_wallets` because during a swipe it is called twice —
+--- once for the card leaving and once for the one arriving. `place` is nil
+--- when the card is simply sitting there, which is most frames.
+local function draw_card(model, entry, face, place)
+  card.draw(card.design(entry.address), face, {
+    time = game.time,
+    offset_x = place and place.x or 0,
+    scale = place and place.scale or 1,
+    alpha = (place and place.alpha or 1) * game.entrance.value,
+    holder = entry.label,
+    -- The balance belongs on the card, where a card puts a number. It was a
+    -- frame of its own above; a card with somebody else's balance printed
+    -- over it would be the one mistake this whole design is here to prevent.
+    body = function(box, ink, alpha)
+      if model.balance and entry.address == model.active then
+        local amount = (("%.4f"):format(game.balance_shown)
+          :gsub("0+$", ""):gsub("%.$", ""))
+        theme.text(amount, box.x + 10, box.y + 60, theme.colour.text,
+          theme.font.big, alpha)
+        theme.text(model.balance.symbol or "",
+          box.x + 12 + theme.width(amount, theme.font.big), box.y + 68,
+          ink, theme.font.small, alpha)
+      elseif entry.address == model.active then
+        theme.text("- - -", box.x + 10, box.y + 60, theme.colour.faint,
+          theme.font.big, alpha)
+        theme.text("REFRESH to ask the node", box.x + 10, box.y + 84,
+          theme.colour.faint, theme.font.small, alpha * 0.9)
+      else
+        -- An inactive card must not show the active one's money. Saying
+        -- which card the balance belongs to is the only honest option.
+        theme.text("USE THIS CARD", box.x + 10, box.y + 62, ink,
+          theme.font.body, alpha)
+        theme.text("to see its balance", box.x + 10, box.y + 80,
+          theme.colour.faint, theme.font.small, alpha * 0.9)
+      end
+
+      local tag = (entry.source or "?"):upper():gsub("_", " ")
+      theme.text_right(tag, box.x + box.w - 10, box.y + box.h - 15,
+        theme.colour.faint, theme.font.small, alpha * 0.8)
+
+      if entry.address == model.active then
+        -- The one badge worth the room: which card the wallet is actually
+        -- spending from. It pulses, because it is the answer to the question
+        -- a person asks most often on this screen.
+        --
+        -- Up beside the sigil rather than down by the holder — the bottom
+        -- right belongs to the second line of the card number, and a badge
+        -- printed over an address is a badge that makes the address wrong.
+        local pulse = anim.pulse(game.time, 1.6, 0.55, 1.0)
+        widgets.chip(box.x + box.w - 56, box.y + 36, "ACTIVE",
+          theme.colour.green, { alpha = alpha * pulse })
+      end
+    end,
+  })
+end
+
 local function draw_wallets(model, state, x)
   local height = L.bottom - L.top
 
@@ -836,66 +901,24 @@ local function draw_wallets(model, state, x)
     theme.text_centred("press + NEW below", face.x + face.w / 2,
       face.y + face.h / 2 - 2, theme.colour.faint, theme.font.small)
   else
-    -- The *shown* account, not the selected one. Between the two the card is
-    -- mid-turn, and swapping the face before it is edge-on is exactly the seam
-    -- this animation exists to hide.
-    local entry = game.face.shown or selected
-    local flip = card.turn(game.face.turn)
-    local swing_x, swing_y, angle = card.swing(game.face.turn)
-    local design = card.design(entry.address)
-
-    card.draw(design, face, {
-      time = game.time,
-      flip = flip,
-      swing_x = swing_x,
-      swing_y = swing_y,
-      angle = angle,
-      alpha = game.entrance.value,
-      holder = entry.label,
-      -- The balance belongs on the card, where a card puts a number. It was a
-      -- frame of its own above; a card with somebody else's balance printed
-      -- over it would be the one mistake this whole design is here to prevent.
-      body = function(box, ink, alpha)
-        if model.balance and entry.address == model.active then
-          local shown_amount = (("%.4f"):format(game.balance_shown)
-            :gsub("0+$", ""):gsub("%.$", ""))
-          theme.text(shown_amount, box.x + 10, box.y + 60, theme.colour.text,
-            theme.font.big, alpha)
-          theme.text(model.balance.symbol or "",
-            box.x + 12 + theme.width(shown_amount, theme.font.big), box.y + 68,
-            ink, theme.font.small, alpha)
-        elseif entry.address == model.active then
-          theme.text("- - -", box.x + 10, box.y + 60, theme.colour.faint,
-            theme.font.big, alpha)
-          theme.text("REFRESH to ask the node", box.x + 10, box.y + 84,
-            theme.colour.faint, theme.font.small, alpha * 0.9)
-        else
-          -- An inactive card must not show the active one's money. Saying
-          -- which card the balance belongs to is the only honest option.
-          theme.text("USE THIS CARD", box.x + 10, box.y + 62, ink,
-            theme.font.body, alpha)
-          theme.text("to see its balance", box.x + 10, box.y + 80,
-            theme.colour.faint, theme.font.small, alpha * 0.9)
-        end
-
-        local tag = (entry.source or "?"):upper():gsub("_", " ")
-        theme.text_right(tag, box.x + box.w - 10, box.y + box.h - 15,
-          theme.colour.faint, theme.font.small, alpha * 0.8)
-
-        if entry.address == model.active then
-          -- The one badge worth the room: which card the wallet is actually
-          -- spending from. It pulses, because it is the answer to the
-          -- question a person asks most often on this screen.
-          --
-          -- Up beside the sigil rather than down by the holder — the bottom
-          -- right belongs to the second line of the card number, and a badge
-          -- printed over an address is a badge that makes the address wrong.
-          local pulse = anim.pulse(game.time, 1.6, 0.55, 1.0)
-          widgets.chip(box.x + box.w - 56, box.y + 36, "ACTIVE",
-            theme.colour.green, { alpha = alpha * pulse })
-        end
-      end,
-    })
+    -- Two cards while it is moving: the one leaving and the one arriving,
+    -- both on screen at once. That overlap is the whole difference between a
+    -- swipe and a cut — for a moment you can see them travel together, which
+    -- is what makes it read as a stack being moved through rather than a
+    -- panel whose contents were replaced.
+    --
+    -- Clipped to the column, because a card number sliding across the wallet
+    -- list is not a transition, it is a bug with an easing curve on it.
+    local window = { x = x + L.right, y = L.top - 2, w = L.right_w, h = face.h + 4 }
+    theme.clip(window, function()
+      if game.face.next then
+        local leaving, arriving = card.swipe(game.face.turn, face.w + 16, game.face.dir)
+        draw_card(model, game.face.shown, face, leaving)
+        draw_card(model, game.face.next, face, arriving)
+      else
+        draw_card(model, game.face.shown or selected, face, nil)
+      end
+    end)
   end
 
   -- ------------------------------------------------------------ actions

@@ -159,6 +159,32 @@ function theme.frame(body)
   love.graphics.draw(theme.canvas, offset_x, offset_y, 0, scale, scale)
 end
 
+--- Draw `body` with everything outside `box` clipped away.
+---
+--- For anything that slides in from off its own edge — the card carousel is
+--- the reason this exists. Rectangles can be clamped by hand; text cannot, and
+--- a card number sliding out of its column and across the wallet list is not a
+--- transition, it is a bug with an easing curve on it.
+---
+--- `setScissor` takes canvas pixels and ignores the current transform, so the
+--- box is pushed through `transformPoint` first. Without that the clip would
+--- stand still while the screen shake moved everything under it — visible as a
+--- one-pixel sliver of card appearing past the edge on exactly the frames a
+--- transfer lands.
+function theme.clip(box, body)
+  local x1, y1 = love.graphics.transformPoint(box.x, box.y)
+  local x2, y2 = love.graphics.transformPoint(box.x + box.w, box.y + box.h)
+  local previous = { love.graphics.getScissor() }
+  love.graphics.setScissor(math.floor(x1), math.floor(y1),
+    math.ceil(x2 - x1), math.ceil(y2 - y1))
+  body()
+  if previous[1] then
+    love.graphics.setScissor(previous[1], previous[2], previous[3], previous[4])
+  else
+    love.graphics.setScissor()
+  end
+end
+
 -- ------------------------------------------------------------------ drawing
 --
 -- Small helpers, so no screen writes a raw setColor/rectangle pair.

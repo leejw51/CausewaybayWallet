@@ -175,8 +175,8 @@ end
 ---
 --- Every pattern below is drawn from arithmetic that runs off the edges, and
 --- the usual answer — a scissor — is wrong here: `setScissor` works in canvas
---- coordinates and would ignore the flip transform, so the clip would stand
---- still while the card turned under it. Clamping is two `max` calls and is
+--- coordinates and would ignore the swipe transform, so the clip would stand
+--- still while the card moved under it. Clamping is two `max` calls and is
 --- correct under any transform.
 local function clipped(box, colour, x, y, w, h, a)
   local x1 = math.max(box.x, x)
@@ -267,13 +267,12 @@ end
 
 --- Draw the card.
 ---
---- `flip` is -1..1: the cosine of how far through a turn it is, so 0 is exactly
---- edge-on. The caller owns that number because the caller knows when the
---- wallet changed; all this does is honour it.
+--- `offset_x`, `scale` and `alpha` place it. The caller owns them because the
+--- caller knows when the wallet changed and which way the list moved; all this
+--- does is honour them. See `card.swipe`.
 function card.draw(design, box, options)
   options = options or {}
   local t = options.time or 0
-  local flip = options.flip == nil and 1 or options.flip
   local alpha = options.alpha or 1
   local ink = theme.colour[design.scheme.ink]
   local edge = theme.colour[design.scheme.edge]
@@ -282,21 +281,13 @@ function card.draw(design, box, options)
   local cx, cy = box.x + box.w / 2, box.y + box.h / 2
 
   love.graphics.push()
-  love.graphics.translate(cx, cy)
-  -- The arc. A card that turns over on the spot is a rectangle changing its
-  -- width; a card that *travels* while it turns is a card being flicked out of
-  -- a wallet and dropped back. The path is a half sine — zero at both ends, so
-  -- it leaves and arrives exactly where the layout says, and no clamping is
-  -- ever needed at the seams.
-  love.graphics.translate(options.swing_x or 0, options.swing_y or 0)
-  love.graphics.rotate(options.angle or 0)
-  -- The turn itself. Scaling x by the cosine is the whole illusion: a real
-  -- card seen edge-on is a line, and a rectangle scaled to zero width is one
-  -- too. Held just off zero so it never disappears completely.
-  love.graphics.scale(math.max(0.02, math.abs(flip)), 1)
-  -- A slight tilt with the lean, so it turns like an object rather than a
-  -- window blind.
-  love.graphics.shear(0, (1 - math.abs(flip)) * 0.06 * (flip < 0 and -1 or 1))
+  -- Where it is along the swipe, and how far back. The scale is what stops a
+  -- carousel reading as two flat rectangles passing each other: the card
+  -- leaving settles back a little as it goes and the one arriving comes
+  -- forward into place, so they occupy depth rather than only width.
+  love.graphics.translate(cx + (options.offset_x or 0), cy)
+  local scale = options.scale or 1
+  love.graphics.scale(scale, scale)
   love.graphics.translate(-cx, -cy)
 
   -- The body.
@@ -360,8 +351,8 @@ function card.draw(design, box, options)
   -- that stops a static rectangle reading as a picture of a card.
   --
   -- Built row by row rather than as a diagonal polygon behind a scissor,
-  -- because `setScissor` works in canvas coordinates and ignores the flip
-  -- transform above — the clip would sit still while the card turned under it.
+  -- because `setScissor` works in canvas coordinates and ignores the transform
+  -- above — the clip would sit still while the card moved under it.
   -- A row is a rectangle, and a rectangle can be clipped with two `max` calls.
   local period = 4.5
   local sweep = ((t % period) / period) * (box.w + box.h * 2) - box.h
@@ -384,43 +375,45 @@ function card.draw(design, box, options)
   end
   love.graphics.setBlendMode(previous)
 
-  -- Edge-on, the card is a bright line rather than a squashed picture.
-  if math.abs(flip) < 0.25 then
-    local glare = 1 - math.abs(flip) / 0.25
-    theme.rect(theme.colour.white, box.x, box.y, box.w, box.h, glare * 0.35 * alpha)
-    theme.rect(ink, box.x, box.y, box.w, box.h, glare * 0.3 * alpha)
-  end
-
   love.graphics.pop()
 end
 
---- Where a card is in its turn, and which design it should be showing.
+--- Where the two cards sit part way through a swipe.
 ---
---- One number does both jobs. `turn` runs 0 to 1; the cosine of half a
---- revolution is +1 at the start, 0 half way and -1 at the end, so the card is
---- edge-on at exactly the moment the design should change — which is why the
---- swap is invisible and why it has to be driven from here rather than from a
---- separate timer that could drift out of step with it.
-function card.turn(progress)
-  local eased = anim.expo_in_out(math.min(1, math.max(0, progress)))
-  return math.cos(eased * math.pi), eased >= 0.5
-end
+--- Both are on screen at once, which is the whole difference between a swipe
+--- and a cut: the one you had slides out while the one you asked for slides
+--- in, and for a moment you can see them move together. That is what makes it
+--- read as a stack of cards being moved through rather than a panel whose
+--- contents were replaced.
+---
+--- `direction` is +1 for moving *down* the list, which scrolls the card to the
+--- left — the way the eye expects a list to move under a cursor going down.
+--- -1 reverses it.
+---
+--- The curve is `expo_out`: nearly all the distance is covered immediately and
+--- the arrival is a long settle. A swipe should feel thrown, and a symmetrical
+--- curve feels driven by a motor instead. Both cards read from the one eased
+--- number, because two curves would be two objects.
+---
+--- Returns `outgoing, incoming`, each `{x, scale, alpha}`, and the eased
+--- progress. At 0 the outgoing card sits exactly on the layout's mark; at 1 the
+--- incoming one does, so neither ever needs clamping at the seams.
+function card.swipe(progress, travel, direction)
+  local eased = anim.expo_out(math.min(1, math.max(0, progress)))
+  direction = direction or 1
 
---- Where the card is along its arc, and how far it has rolled.
----
---- Returns an offset and an angle, all three zero at both ends of the turn —
---- a half sine, which is why the card leaves and arrives exactly on the
---- layout's mark with nothing to clamp or snap at the seams.
----
---- Driven from the *eased* progress rather than the raw one, so the swing has
---- the same acceleration as the flip. Driving them from different curves is
---- what makes an animation look like two effects playing at once instead of
---- one object moving.
-function card.swing(progress, reach)
-  local eased = anim.expo_in_out(math.min(1, math.max(0, progress)))
-  local along = math.sin(eased * math.pi)
-  reach = reach or 1
-  return along * 26 * reach, -along * 15 * reach, along * 0.13 * reach
+  local outgoing = {
+    x = -direction * travel * eased,
+    -- Settles back as it goes, and has faded out before it reaches the edge.
+    scale = 1 - 0.10 * eased,
+    alpha = 1 - eased * eased,
+  }
+  local incoming = {
+    x = direction * travel * (1 - eased),
+    scale = 0.90 + 0.10 * eased,
+    alpha = math.min(1, eased * 2.2),
+  }
+  return outgoing, incoming, eased
 end
 
 return card

@@ -14,7 +14,7 @@ There is no cryptography in this directory, no store, and no argument parsing.
 ```sh
 make run       # opens the window
 make app       # a double-clickable macOS .app with LÖVE inside it
-make test      # 143 headless tests, no LÖVE required
+make test      # 147 headless tests, no LÖVE required
 make shots     # writes a PNG of each screen, for review from a terminal
 make sfx       # re-synthesises the sound effects
 ```
@@ -170,14 +170,29 @@ The balance is printed on the card, and **only on the card that is active**: an
 inactive card says so instead, because a card with somebody else's money
 printed on it is the one mistake this whole design exists to prevent.
 
-### Choosing another one turns it over
+### Choosing another one swipes it away
 
-The card arcs out, turns, and drops back — a half sine for the path so it
-leaves and arrives exactly on the layout's mark, `expo_in_out` for the turn,
-and the two share one curve so it reads as one object moving rather than two
-effects playing at once. Edge-on it is a bright line, which is when the design
-swaps: at exactly the halfway point, where there is nothing to see. A card that
-changed its own face in view is the thing the animation is there to hide.
+The card you had slides out while the one you asked for slides in, **both on
+screen at once**. That overlap is the whole difference between a swipe and a
+cut: for a moment you can see them travel together, which is what makes it read
+as a stack of cards being moved through rather than a panel whose contents were
+replaced.
+
+Moving *down* the list scrolls the card **left** — the way the eye expects a
+list to move under a cursor going down — and moving up reverses it. The curve
+is `expo_out`: nearly all the distance is covered immediately and the arrival is
+a long settle, because a swipe should feel thrown rather than driven by a motor.
+Both cards read from the one eased number, since two curves would be two
+objects. The one leaving settles back and fades as it goes; the one arriving
+comes forward into place, so they occupy depth rather than only width.
+
+At either end of the animation a card sits exactly on the layout's mark, so
+nothing needs clamping at the seams and repeated swipes cannot drift.
+
+It is clipped to the column, which is not a detail: a card number sliding
+across the wallet list is not a transition, it is a bug with an easing curve on
+it. The clip follows the current transform, or it would stand still while the
+screen shake moved everything under it.
 
 ## Motion
 

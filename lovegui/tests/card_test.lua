@@ -170,47 +170,84 @@ t.suite("card / number", function()
   end)
 end)
 
-t.suite("card / turn", function()
-  t.case("it starts face-on, goes edge-on, and ends face-on", function()
-    local start = card.turn(0)
-    local middle = card.turn(0.5)
-    local finish = card.turn(1)
-    t.ok(math.abs(start - 1) < 0.001, "0 should be face-on, got " .. start)
-    t.ok(math.abs(middle) < 0.001, "0.5 should be edge-on, got " .. middle)
-    t.ok(math.abs(finish + 1) < 0.001, "1 should be face-on again, got " .. finish)
+t.suite("card / swipe", function()
+  local TRAVEL = 260
+
+  t.case("the card leaving starts exactly on the mark", function()
+    local leaving, arriving = card.swipe(0, TRAVEL, 1)
+    t.ok(math.abs(leaving.x) < 0.001, "at rest it is where the layout put it")
+    t.ok(math.abs(leaving.scale - 1) < 0.001, "at full size")
+    t.ok(math.abs(leaving.alpha - 1) < 0.001, "and fully opaque")
+    t.ok(math.abs(arriving.x - TRAVEL) < 0.001,
+      "while the one arriving is a full card away, off the clip")
   end)
 
-  t.case("the swap happens exactly at the edge", function()
-    -- If these two ever disagree the card changes its face in view, which is
-    -- the one thing the animation exists to prevent.
-    local _, before = card.turn(0.49)
-    local _, after = card.turn(0.51)
-    t.equal(before, false, "not yet swapped just before half way")
-    t.equal(after, true, "swapped just after")
+  t.case("the card arriving ends exactly on the mark", function()
+    -- If it did not, every swipe would leave the card a few pixels from where
+    -- the layout put it, and the drift would compound.
+    local leaving, arriving = card.swipe(1, TRAVEL, 1)
+    t.ok(math.abs(arriving.x) < 0.001, "it lands on the mark, got " .. arriving.x)
+    t.ok(math.abs(arriving.scale - 1) < 0.001, "at full size")
+    t.ok(math.abs(arriving.alpha - 1) < 0.001, "and fully opaque")
+    t.ok(math.abs(leaving.x + TRAVEL) < 0.001, "the other has gone a full card")
+    t.ok(math.abs(leaving.alpha) < 0.001, "and faded out entirely")
   end)
 
-  t.case("the swing starts and ends exactly on the mark", function()
-    -- A path that did not return to zero would leave the card a few pixels
-    -- from where the layout put it, and every turn would walk it further.
-    for _, progress in ipairs({ 0, 1 }) do
-      local dx, dy, angle = card.swing(progress)
-      t.ok(math.abs(dx) < 0.001, "x at " .. progress .. " should be 0, got " .. dx)
-      t.ok(math.abs(dy) < 0.001, "y at " .. progress .. " should be 0, got " .. dy)
-      t.ok(math.abs(angle) < 0.001, "angle at " .. progress .. " should be 0")
+  t.case("down the list scrolls the card left", function()
+    -- The direction is the whole point: a list moving down should move the
+    -- card the same way, or the two read as unrelated.
+    local leaving, arriving = card.swipe(0.5, TRAVEL, 1)
+    t.ok(leaving.x < 0, "the card leaving goes left, got " .. leaving.x)
+    t.ok(arriving.x > 0, "and the one arriving comes from the right")
+  end)
+
+  t.case("up the list reverses it", function()
+    local leaving, arriving = card.swipe(0.5, TRAVEL, -1)
+    t.ok(leaving.x > 0, "the card leaving goes right, got " .. leaving.x)
+    t.ok(arriving.x < 0, "and the one arriving comes from the left")
+  end)
+
+  t.case("the two never sit on top of each other", function()
+    -- They are a fixed distance apart for the whole swipe. If that ever
+    -- collapsed the cards would overlap in the middle and the transition
+    -- would read as one card glitching rather than two moving.
+    for step = 0, 20 do
+      local leaving, arriving = card.swipe(step / 20, TRAVEL, 1)
+      local gap = arriving.x - leaving.x
+      t.ok(math.abs(gap - TRAVEL) < 0.001,
+        "a card apart at every point, got " .. gap .. " at " .. (step / 20))
     end
   end)
 
-  t.case("the swing is furthest out in the middle", function()
-    local mid = select(1, card.swing(0.5))
-    local early = select(1, card.swing(0.15))
-    t.ok(mid > early, "the arc should peak at the turn, not at the start")
-    t.ok(mid > 10, "and it should be a visible distance, got " .. mid)
+  t.case("it eases rather than sliding at a constant rate", function()
+    -- expo_out: most of the distance is covered immediately and the arrival
+    -- is a long settle. Linear motion is the thing this is not.
+    local _, arriving = card.swipe(0.5, TRAVEL, 1)
+    local travelled = TRAVEL - arriving.x
+    t.ok(travelled > TRAVEL * 0.8,
+      "half way through the time it should be most of the way there, got "
+        .. travelled .. " of " .. TRAVEL)
+  end)
+
+  t.case("it only ever moves forward", function()
+    local previous = math.huge
+    for step = 0, 40 do
+      local _, arriving = card.swipe(step / 40, TRAVEL, 1)
+      t.ok(arriving.x <= previous + 0.001,
+        "the arriving card must not go backwards at " .. (step / 40))
+      previous = arriving.x
+    end
   end)
 
   t.case("progress outside 0..1 is clamped", function()
-    t.ok(math.abs(card.turn(-3) - 1) < 0.001, "before the start is face-on")
-    t.ok(math.abs(card.turn(9) + 1) < 0.001, "after the end is face-on")
-    local dx = select(1, card.swing(-3))
-    t.ok(math.abs(dx) < 0.001, "and the arc is at rest outside the turn")
+    local before = select(2, card.swipe(-3, TRAVEL, 1))
+    local after = select(2, card.swipe(9, TRAVEL, 1))
+    t.ok(math.abs(before.x - TRAVEL) < 0.001, "before the start it is off screen")
+    t.ok(math.abs(after.x) < 0.001, "after the end it is on the mark")
+  end)
+
+  t.case("the default direction is left", function()
+    local leaving = card.swipe(0.5, TRAVEL)
+    t.ok(leaving.x < 0, "omitting the direction should scroll left")
   end)
 end)

@@ -106,13 +106,17 @@ MUTATIONS = [
      "groups[#groups + 1] = hex:sub(i, i + 3)",
      "if i > 1 then groups[#groups + 1] = hex:sub(i, i + 3) end", "card", None),
 
-    ("card: the turn swaps early", "ui/card.lua",
-     "return math.cos(eased * math.pi), eased >= 0.5",
-     "return math.cos(eased * math.pi), eased >= 0.3", "card", None),
+    ("card: the swipe does not land on the mark", "ui/card.lua",
+     "x = direction * travel * (1 - eased),",
+     "x = direction * travel * (1 - eased) + 4,", "card", None),
 
-    ("card: the swing does not return to rest", "ui/card.lua",
-     "local along = math.sin(eased * math.pi)",
-     "local along = math.sin(eased * math.pi) + 0.2", "card", None),
+    ("card: the swipe scrolls the wrong way", "ui/card.lua",
+     "x = -direction * travel * eased,",
+     "x = direction * travel * eased,", "card", None),
+
+    ("card: the swipe stops easing", "ui/card.lua",
+     "local eased = anim.expo_out(math.min(1, math.max(0, progress)))",
+     "local eased = math.min(1, math.max(0, progress))", "card", None),
 
     ("sound: mute stops muting", "ui/sound.lua",
      "if not sound.enabled then return false end", "", "sound", None),
