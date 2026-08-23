@@ -1087,7 +1087,9 @@ class App:
 
     def utils_derive_key(self, private_key: str) -> CommandOutput:
         """Derive from a private key and show the result, storing nothing."""
-        return self._derived(wallet.Keypair.from_private_key(private_key), {"source": "private_key"})
+        return self._derived(
+            wallet.Keypair.from_private_key(private_key), {"source": "private_key"}
+        )
 
     def _derived(self, keypair: wallet.Keypair, extra: dict) -> CommandOutput:
         """The shared shape of a ``utils derive`` result, whatever it came from."""

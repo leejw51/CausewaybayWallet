@@ -201,11 +201,22 @@ lint: ## Lint every front end, changing nothing
 	@$(MAKE) --no-print-directory -C $(LUA_DIR) lint
 	@$(MAKE) --no-print-directory -C $(C_DIR) lint
 
+# Formatting is checked separately from linting because the two tools disagree
+# about what they are for: clippy and ruff-check find mistakes, rustfmt and
+# ruff-format find diffs. CI runs both, so `check` has to as well — leaving it
+# out is how a branch passes locally and fails on a wrapped line.
+.PHONY: fmt-check
+fmt-check: ## Fail if any front end is not formatted
+	@$(MAKE) --no-print-directory -C $(RUST_DIR) fmt-check
+	@$(MAKE) --no-print-directory -C $(PYTHON_DIR) fmt-check
+	@$(MAKE) --no-print-directory -C $(LUA_DIR) fmt-check
+	@$(MAKE) --no-print-directory -C $(C_DIR) fmt-check
+
 .PHONY: fmt
 fmt: format ## Alias for `format`
 
 .PHONY: check
-check: lint test ## Everything CI would run (lints without rewriting)
+check: fmt-check lint test ## Everything CI would run (checks without rewriting)
 
 # ----------------------------------------------------------------------- demos
 
