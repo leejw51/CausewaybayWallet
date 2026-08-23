@@ -695,7 +695,18 @@ make app       # a macOS .app with LÖVE inside it — needs nothing
 ```
 
 `make app` downloads LÖVE, embeds the game, builds an icon from the game's own
-logo, signs the bundle and zips it. Three details are not optional:
+logo, signs the bundle and zips it.
+
+**Two checks run before it is zipped**, and they exist because the staging list
+went stale twice without anybody noticing. `verify-archive` asserts every
+`.lua` beside `main.lua` is inside the archive; `app-smoke` starts the built
+bundle and waits for it to draw a frame. That second one is the only test that
+runs the *bundle* rather than the checkout, which is the whole point — `make
+run` loads modules from the working tree, where every file always exists, so a
+missing one only fails on somebody else's machine. Staging is a glob now, but
+the checks stay: a glob is a fix, a check is a guarantee.
+
+Three details of the signing are not optional:
 
 * **The library goes in `Contents/Frameworks`**, where a signed bundle keeps
   its nested binaries — and its path is worked out by `main.lua` and handed to
@@ -714,9 +725,25 @@ logo, signs the bundle and zips it. Three details are not optional:
   bundle. Signing the outer bundle first invalidates it the moment anything
   inside is signed afterwards.
 
-It signs with a Developer ID if the machine has one and falls back to ad-hoc,
-which runs locally and is not enough to hand to somebody else without them
-right-clicking Open.
+It signs with a Developer ID if the machine has one and falls back to ad-hoc.
+
+**Signed is not the same as notarized**, and the difference decides whether it
+opens on somebody else's Mac. A Developer ID signature with the hardened
+runtime and a secure timestamp is necessary and not sufficient: since macOS
+10.15, anything distributed outside the App Store must also be notarized by
+Apple. Assessed the way Finder does it, a downloaded copy of this bundle says
+
+```
+$ spctl -a -vvv -t open --context context:primary-signature CausewaybayBank.app
+CausewaybayBank.app: rejected
+source=Unnotarized Developer ID
+```
+
+so a person who downloads the zip gets "Apple could not verify…" and has to
+right-click → Open. Notarizing needs an Apple ID with an app-specific password
+and a round trip to Apple's service (`xcrun notarytool submit --wait`, then
+`xcrun stapler staple`), which is why it is not wired into `make app`: it needs
+credentials this repository must not carry.
 
 ## Not here
 

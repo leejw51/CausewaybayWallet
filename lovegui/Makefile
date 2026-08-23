@@ -136,10 +136,16 @@ package: build ## Build a distributable bundle into $(DIST_DIR)
 
 	@# Stage the game, without the parts a player has no use for.
 	@rm -rf build-tmp && mkdir -p build-tmp
-	@cp -R main.lua conf.lua model.lua worker.lua ui assets build-tmp/
+	@# A glob, not a list. The hand-written one went stale twice without
+	@# anybody noticing: it was still copying four files after `boot.lua` and
+	@# `login.lua` were added, so every bundle `package` produced since the
+	@# login screen existed was broken on startup. Nothing here is optional —
+	@# if a `.lua` sits beside `main.lua`, the game needs it.
+	@cp -R *.lua ui assets build-tmp/
 	@cp -R $(LUA_DIR)/causewaybay build-tmp/
 	@cd build-tmp && zip -qr9 "$(STAGE)/$(NAME).love" .
 	@rm -rf build-tmp
+	@$(MAKE) --no-print-directory verify-archive ARCHIVE="$(STAGE)/$(NAME).love"
 
 	@cp -f "$(RUST_DIR)/target/release/$(FFI_LIB)" "$(STAGE)/$(FFI_LIB)"
 	@"$(SIGN)" "$(STAGE)/$(FFI_LIB)" 2>/dev/null || true
@@ -204,10 +210,11 @@ app: build ## Build a double-clickable macOS .app with LÖVE embedded
 	@# reason: the binding's Lua goes *inside* rather than being referenced at
 	@# ../luacli, because a bundle that needs a checkout beside it is not one.
 	@rm -rf "$(BUILD)/stage" && mkdir -p "$(BUILD)/stage"
-	@cp -R main.lua conf.lua model.lua worker.lua boot.lua login.lua ui assets "$(BUILD)/stage/"
+	@cp -R *.lua ui assets "$(BUILD)/stage/"
 	@cp -R $(LUA_DIR)/causewaybay "$(BUILD)/stage/"
 	@cd "$(BUILD)/stage" && zip -qr9 "../game.love" .
 	@rm -rf "$(BUILD)/stage"
+	@$(MAKE) --no-print-directory verify-archive ARCHIVE="$(BUILD)/game.love"
 
 	@echo "  fetching LÖVE $(LOVE_VERSION)"
 	@curl -fsSL -o "$(BUILD)/love-macos.zip" "$(LOVE_URL)"
@@ -232,6 +239,8 @@ app: build ## Build a double-clickable macOS .app with LÖVE embedded
 	@$(MAKE) --no-print-directory app-icon
 	@$(MAKE) --no-print-directory app-sign
 
+	@$(MAKE) --no-print-directory app-smoke
+
 	@cd "$(BUILD)" && ditto -c -k --sequesterRsrc --keepParent "$(APP_NAME).app" "$(APP_NAME)-macos.zip"
 	@rm -rf "$(BUILD)/love-macos" "$(BUILD)/love-macos.zip" "$(BUILD)/game.love"
 	@echo
@@ -240,9 +249,60 @@ app: build ## Build a double-clickable macOS .app with LÖVE embedded
 	@echo
 	@echo "  Open it with: open \"$(APP)\""
 
+# Every `.lua` beside main.lua has to be in the archive.
+#
+# This is the check that would have caught both times the list went stale. A
+# missing module is not a subtle failure — the bundle dies on the first
+# `require` — but it dies on *somebody else's* machine, because the checkout
+# it was built from has the file sitting right there and `make run` never
+# touches the archive.
+.PHONY: verify-archive
+verify-archive:
+	@missing=""; \
+	for file in *.lua; do \
+		unzip -l "$(ARCHIVE)" 2>/dev/null | grep -qE " $$file$$" || missing="$$missing $$file"; \
+	done; \
+	if [ -n "$$missing" ]; then \
+		echo "  the archive is missing:$$missing" >&2; \
+		echo "  (staging is a glob; if this fires, something excluded it)" >&2; \
+		exit 1; \
+	fi; \
+	echo "  archive carries every module ($$(ls *.lua | wc -l | tr -d ' ') files)"
+
 # The icon, from the game's own logo — the vault sprite, which is already the
 # thing on the title card. `sips` refuses to upscale cleanly, so the source is
 # padded to a square first and every size is generated from that.
+# Start the thing that was built and see whether it draws.
+#
+# The archive check above proves every file is present; this proves they add
+# up to a program. It is the only test in here that runs the *bundle* rather
+# than the checkout, and the difference is the whole point: `make run` loads
+# modules from the working tree, where everything always exists.
+#
+# A missing module dies on the first `require`, which is instant — so if no
+# frame has been captured after twenty seconds, it did not start.
+.PHONY: app-smoke
+app-smoke:
+	@test -d "$(APP)" || { echo "  no $(APP); run 'make app'" >&2; exit 1; }
+	@rm -f "$(BUILD)/smoke.png"
+	@CWB_SHOT="$(abspath $(BUILD))/smoke.png" CWB_SHOT_AFTER=2 \
+		CAUSEWAYBAY_HOME="$(abspath $(BUILD))/smoke-home" \
+		"$(APP)/Contents/MacOS/love" > "$(BUILD)/smoke.log" 2>&1 & \
+	pid=$$!; \
+	for _ in $$(seq 1 40); do \
+		[ -f "$(BUILD)/smoke.png" ] && break; \
+		sleep 0.5; \
+	done; \
+	kill $$pid 2>/dev/null || true; \
+	wait $$pid 2>/dev/null || true; \
+	if [ ! -f "$(BUILD)/smoke.png" ]; then \
+		echo "  the bundle did not draw a frame:" >&2; \
+		grep -v CapsLock "$(BUILD)/smoke.log" | head -20 >&2; \
+		exit 1; \
+	fi
+	@rm -rf "$(BUILD)/smoke-home" "$(BUILD)/smoke.log"
+	@echo "  the bundle starts and draws"
+
 .PHONY: app-icon
 app-icon:
 	@test -f assets/logo.png || { echo "  no assets/logo.png; keeping LÖVE's icon"; exit 0; }
