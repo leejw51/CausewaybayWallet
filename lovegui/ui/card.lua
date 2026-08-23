@@ -3,7 +3,7 @@
 --- ## Why a card
 ---
 --- A list of hex strings is a list of hex strings. Nobody recognises
---- `0xCb2134…cb3581`, nobody can tell it from `0xCb2f34…cb3581` at a glance,
+--- `0x9858Ef…Eda94`, nobody can tell it from `0x9858Ff…Eda94` at a glance,
 --- and everybody has to read all forty characters to be sure. A card is a
 --- *face*: after seeing it twice you know your green one with the rocket, and
 --- the moment the wrong card is on screen you know that too, before you have

@@ -14,7 +14,7 @@ There is no cryptography in this directory, no store, and no argument parsing.
 ```sh
 make run       # opens the window
 make app       # a double-clickable macOS .app with LÖVE inside it
-make test      # 163 headless tests, no LÖVE required
+make test      # 172 headless tests, no LÖVE required
 make shots     # writes a PNG of each screen, for review from a terminal
 make sfx       # re-synthesises the sound effects
 ```
@@ -139,6 +139,31 @@ They were separate, and the key left `minted` alone — so pasting over a freshl
 minted phrase left the screen still offering to COPY it while holding a
 different one.
 
+### What still touches a mnemonic
+
+Three things do, and all three are deliberate. Naming them is the point — an
+unlisted one is the one that surprises somebody.
+
+**COPY puts the phrase on the system clipboard.** That is the whole feature: a
+minted phrase exists nowhere else and has to get somewhere safe. But the
+clipboard is shared with every application on the machine and is not cleared
+here, so a phrase copied out stays there until something else replaces it.
+Paste it where it is going, then copy something harmless.
+
+**The store holds it in plain text**, as `mnemonic` and `private_key` fields in
+`accounts.jsonl`. That predates this window and is what the warning across the
+bottom of every screen is about. `accounts.jsonl` and its siblings are ignored
+by name in `.gitignore`, at the repository root and again here.
+
+**`CWB_SHOT_KEYS` carries whatever it replays**, and an environment variable is
+visible to `ps` for the life of the process. `make shots` uses BIP-39's
+published all-zeros vector, which is a secret to nobody; if you point the shot
+harness at a real phrase, that is where it goes.
+
+What does *not* touch it: nothing is written to a log, no error message quotes
+it back (`Model.without_phrase`), and it is never drawn — see the tests in
+`tests/login_test.lua`, which fail if a reveal toggle is ever added.
+
 ## The look
 
 The 8-bit style is not a filter over a modern UI — the UI genuinely is that
@@ -189,7 +214,7 @@ live UI reading as a still image.
 A wallet is shown as a bank card, dealt from its own address.
 
 A list of hex strings is a list of hex strings. Nobody recognises
-`0xCb2134…cb3581`, nobody can tell it from `0xCb2f34…cb3581` at a glance, and
+`0x9858Ef…Eda94`, nobody can tell it from `0x9858Ff…Eda94` at a glance, and
 everybody has to read all forty characters to be sure. A card is a **face**:
 after seeing it twice you know your green one with the rocket, and the moment
 the wrong card is on screen you know that too, before reading a character.

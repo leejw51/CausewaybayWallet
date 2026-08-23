@@ -64,13 +64,19 @@ MUTATIONS = [
 
     ("login: skips validation", "model.lua",
      "  if not check.valid then", "  if false then", "model",
-     # Checked by hand: `validate_mnemonic` and `derive` reject exactly the
-     # same phrases with the same code and the same message. They differ only
-     # on an empty one — `invalid_mnemonic` versus `usage` — and `Model:login`
-     # refuses an empty phrase before reaching either. So dropping the check
-     # changes nothing anyone can see, and the call is defence in depth rather
-     # than the thing producing the message.
-     "validate_mnemonic and derive reject the same phrases identically"),
+     # Was recorded as equivalent on the grounds that `validate_mnemonic` and
+     # `derive` reject the same phrases with the same message. That was wrong,
+     # and a security review found it: they reject the same phrases, but not
+     # the same way. `derive` is an argument-parser call, and for input the
+     # parser cannot make sense of — a phrase pasted with its bullet still
+     # attached — it quotes the input back in the message. `validate` never
+     # does. Deleting the call would have opened that path.
+     #
+     # It is still equivalent, but now because `Model.without_phrase` catches
+     # the quoting rather than because the two commands agree. Which is the
+     # difference between a mutant that cannot be caught and one that merely
+     # is not: with the guard removed as well, this leaks.
+     "the phrase guard catches what skipping validation would expose"),
 
     ("login: a new phrase is imported but not activated", "model.lua",
      "  local ok, use_error = self.wallet:use_account(account.address)\n  if not ok then return self:fail(use_error) end",

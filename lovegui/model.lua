@@ -116,6 +116,63 @@ end
 --- what `validate-mnemonic` and `derive` exist for. Only once an address is in
 --- hand does this decide whether the wallet is already known (select it) or new
 --- (import it), which means a typo never leaves a stray account behind.
+--- An error about a mnemonic, with the mnemonic taken back out of it.
+---
+--- The three calls that take a phrase — validate, derive, import — pass it as
+--- an argument, and the argument parser quotes back anything it does not
+--- understand. A phrase copied out of a bulleted list arrives as
+--- "- abandon abandon …", the parser refuses it as an unexpected argument, and
+--- the message it returns contains the whole phrase. That message goes into
+--- `status.text`, and `status.text` is drawn.
+---
+--- ## This is a guard, not a live fix
+---
+--- The leak is currently unreachable, and it is worth being exact about why:
+--- `login` calls `validate-mnemonic` first, that command answers
+--- `{valid = false, reason = "unsupported word count 13"}` for anything
+--- malformed without ever quoting its input, and `login` returns there. Only
+--- phrases it approved — well-formed BIP-39, no leading hyphen — ever reach
+--- `derive` or `import`.
+---
+--- So the ordering is what makes it safe, and nothing said so. That ordering
+--- looks redundant: both commands reject the same phrases, which is exactly
+--- the argument for deleting the extra call to save an FFI round trip. Delete
+--- it and the quoting path opens.
+---
+--- The other half is that `status.text` is not drawn on the login screen
+--- today. That is layout, not policy — a status line there is an obvious
+--- thing to add, and adding it would publish whatever this held.
+---
+--- Two accidents standing between a mnemonic and the screen is not a promise.
+--- A `usage` error is always the parser quoting its input and is replaced
+--- outright; any other message is replaced only if it really contains the
+--- phrase, so a genuine failure — the library missing, the store unwritable —
+--- still says what went wrong.
+---
+--- Exposed on the module so it can be tested directly. The end-to-end path
+--- cannot reach it, which means an end-to-end test would pass whether or not
+--- this function did anything at all.
+function Model.without_phrase(err, phrase)
+  if not err then return err end
+
+  if err.code == "usage" then
+    return { code = "invalid_mnemonic", message = "that does not look like a mnemonic" }
+  end
+
+  local message = tostring(err.message or "")
+  local trimmed = (tostring(phrase or ""):gsub("^%s+", ""):gsub("%s+$", ""))
+  if trimmed == "" then return err end
+
+  -- The whole phrase, or enough of it to matter. Three words in a row is the
+  -- test rather than one, because "about" and "abandon" are ordinary words
+  -- that a legitimate message could contain on its own.
+  local head = trimmed:match("^(%S+%s+%S+%s+%S+)") or trimmed
+  if message:find(trimmed, 1, true) or message:find(head, 1, true) then
+    return { code = err.code, message = "that does not look like a mnemonic" }
+  end
+  return err
+end
+
 --- How far to look for the addresses a phrase controls, and when to give up.
 ---
 --- BIP-44 wallets are scanned with a gap limit rather than to a fixed depth:
@@ -166,13 +223,14 @@ function Model:login(phrase)
   end
 
   local check, check_error = self.wallet:validate_mnemonic(phrase)
-  if not check then return self:fail(check_error) end
+  if not check then return self:fail(Model.without_phrase(check_error, phrase)) end
   if not check.valid then
-    return self:fail({ code = "invalid_mnemonic", message = check.reason or "not a valid phrase" })
+    return self:fail(Model.without_phrase(
+      { code = "invalid_mnemonic", message = check.reason or "not a valid phrase" }, phrase))
   end
 
   local derived, derive_error = self.wallet:derive({ mnemonic = phrase })
-  if not derived then return self:fail(derive_error) end
+  if not derived then return self:fail(Model.without_phrase(derive_error, phrase)) end
 
   -- Asked of the store, not of `self.wallets` — that list may still be scoped
   -- to the session which is ending, and the phrase being unlocked has nothing
@@ -192,7 +250,7 @@ function Model:login(phrase)
   else
     -- New to this store: import it, which is the one place a phrase is written.
     local imported, import_error = self.wallet:import_mnemonic(phrase, {})
-    if not imported then return self:fail(import_error) end
+    if not imported then return self:fail(Model.without_phrase(import_error, phrase)) end
     account = imported
     welcome = "Imported " .. imported.label
   end

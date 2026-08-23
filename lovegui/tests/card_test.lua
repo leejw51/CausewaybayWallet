@@ -11,6 +11,7 @@
 
 local t = require("tests.runner")
 local card = require("ui.card")
+local support = require("tests.support")
 
 --- Twenty bytes of hex, from a number. Enough distinct addresses to say
 --- something about the distribution without shipping a fixture file.
@@ -22,7 +23,12 @@ local function address(n)
   return "0x" .. table.concat(hex)
 end
 
-local REAL = "0xCb2134f9F5e0f1B0d0F0e5b8dA2b3c4d5E6f7081"
+--- BIP-39's published all-zeros vector, index 0 — the address in every
+--- implementation's fixtures. Deliberately not an address invented for this
+--- file: an invented one looks exactly like somebody's real wallet, and a
+--- documentation example that could be mistaken for one is worth avoiding in
+--- a public repository.
+local REAL = support.ADDRESS_0
 
 t.suite("card / determinism", function()
   t.case("the same address always deals the same card", function()
@@ -157,8 +163,8 @@ end)
 t.suite("card / number", function()
   t.case("the address is printed in groups of four", function()
     local top, bottom = card.number(REAL)
-    t.equal(top, "Cb21 34f9 F5e0 f1B0 d0F0", "the first five groups")
-    t.equal(bottom, "e5b8 dA2b 3c4d 5E6f 7081", "and the last five")
+    t.equal(top, "9858 EfFD 232B 4033 E47d", "the first five groups")
+    t.equal(bottom, "9000 3D41 EC34 EcaE da94", "and the last five")
   end)
 
   t.case("nothing is lost or invented", function()

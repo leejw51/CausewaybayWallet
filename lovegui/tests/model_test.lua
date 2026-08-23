@@ -199,6 +199,102 @@ t.suite("model / the session", function()
     t.equal(#model.wallets, 0, "and nothing should have been written")
   end)
 
+  t.case("the guard replaces a parser error outright", function()
+    -- Tested directly, because the end-to-end path cannot reach it: `login`
+    -- validates first, and a malformed phrase is refused there without ever
+    -- being quoted. An end-to-end test would pass whether or not this
+    -- function did anything, which is the least useful kind of test.
+    local leaky = {
+      code = "usage",
+      message = "error: unexpected argument '- " .. support.MNEMONIC .. "' found",
+    }
+    local safe = Model.without_phrase(leaky, "- " .. support.MNEMONIC)
+    t.ok(not safe.message:find("abandon", 1, true),
+      "the phrase must be gone: " .. safe.message)
+    t.equal(safe.code, "invalid_mnemonic", "and it is a mnemonic problem, not usage")
+  end)
+
+  t.case("the guard replaces any message holding the phrase", function()
+    local leaky = { code = "internal", message = "failed on " .. support.MNEMONIC }
+    local safe = Model.without_phrase(leaky, support.MNEMONIC)
+    t.ok(not safe.message:find("abandon", 1, true), "gone: " .. safe.message)
+  end)
+
+  t.case("three words in a row is enough to count as the phrase", function()
+    local leaky = { code = "internal", message = "near 'abandon abandon abandon' here" }
+    local safe = Model.without_phrase(leaky, support.MNEMONIC)
+    t.ok(not safe.message:find("abandon", 1, true), "gone: " .. safe.message)
+  end)
+
+  t.case("the guard leaves an unrelated failure alone", function()
+    -- It must not swallow everything. A missing library or an unwritable
+    -- store still has to say so.
+    local real = { code = "io_error", message = "libcausewaybay_ffi.dylib not found" }
+    local kept = Model.without_phrase(real, support.MNEMONIC)
+    t.equal(kept.message, real.message, "a real reason survives")
+    t.equal(kept.code, "io_error")
+  end)
+
+  t.case("one shared word is not the phrase", function()
+    -- "about" and "abandon" are ordinary words. A message containing one of
+    -- them is not a leak, and blanking it would hide real failures.
+    local real = { code = "io_error", message = "cannot write about the store" }
+    t.equal(Model.without_phrase(real, support.MNEMONIC).message, real.message)
+  end)
+
+  t.case("the guard copes with nothing to guard", function()
+    t.equal(Model.without_phrase(nil, support.MNEMONIC), nil)
+    local err = { code = "io_error", message = "gone" }
+    t.equal(Model.without_phrase(err, "").message, "gone")
+    t.equal(Model.without_phrase(err, nil).message, "gone")
+  end)
+
+  t.case("a rejected phrase is never quoted back in the status", function()
+    -- The leak this closes. A mnemonic copied out of a bulleted list arrives
+    -- with the bullet still on it; the argument parser refuses it as an
+    -- unexpected argument and quotes the whole thing back, and that message
+    -- becomes `status.text`, which is drawn.
+    local model = model_over()
+    local phrase = "- " .. support.MNEMONIC
+
+    t.equal(model:login(phrase), false, "it should still be refused")
+    local text = model.status.text
+    t.ok(not text:find("abandon", 1, true),
+      "the phrase must not be in the status: " .. text)
+    t.ok(not text:find("about", 1, true), "nor any part of it: " .. text)
+    t.ok(#text > 0, "but there should still be a message")
+  end)
+
+  t.case("nothing typed into the field is ever quoted back", function()
+    -- Not only mnemonic-shaped input: whatever is in that field is treated as
+    -- a secret, because the person typing believed it was one.
+    local model = model_over()
+    for _, phrase in ipairs({
+      "--home /tmp/somewhere",
+      "-abandon abandon abandon",
+      "--mnemonic hunter2 hunter2 hunter2",
+      "correct horse battery staple correct horse battery staple",
+    }) do
+      model:login(phrase)
+      local text = model.status.text
+      for word in phrase:gmatch("[%w/%-%.]+") do
+        if #word > 4 then
+          t.ok(not text:find(word, 1, true),
+            ("%q leaked into the status: %s"):format(word, text))
+        end
+      end
+    end
+  end)
+
+  t.case("a real failure still says what went wrong", function()
+    -- The scrub must not swallow everything. A wrong-checksum phrase has a
+    -- message worth reading, and it does not contain the phrase.
+    local model = model_over()
+    model:login("abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon")
+    t.contains(model.status.text:lower(), "checksum",
+      "the reason should survive, since it quotes nothing")
+  end)
+
   t.case("a phrase that is not a phrase is refused", function()
     local model = model_over()
     t.equal(model:login("abandon abandon banana"), false)
