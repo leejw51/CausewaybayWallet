@@ -1,0 +1,16 @@
+# Screenshots from `make shots`. Regenerable, and a PNG per screen per commit
+# would bloat the history for no benefit.
+/shots/
+
+# LÖVE's save directory, if it is ever run from here.
+/.love/
+
+# Local demo/test wallet homes — these hold private keys
+/.demo-home/
+/.causewaybaywallet/
+*.jsonl
+
+# Editor and OS noise
+.DS_Store
+.idea/
+.vscode/

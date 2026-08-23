@@ -154,7 +154,8 @@ The signing secrets the release needs: `MACOS_CERTIFICATE_P12_BASE64`,
 | `.github/workflows/` | CI on every push, and the tagged macOS release |
 | `rustcli/` | the Rust workspace: `core/` the wallet, `ffi/` the C ABI, `cli/` the `cwbwallet` binary and TUI |
 | `pythoncli/` | Python CLI and TUI (`cwbwallet`), its own `Makefile` and `.gitignore` |
-| `luacli/` | the Lua CLI over the C ABI, and the module a LÖVE GUI loads |
+| `luacli/` | the Lua CLI over the C ABI, and the module the LÖVE GUI loads |
+| `lovegui/` | the wallet as an 8-bit LÖVE game, built on that module |
 | `testvectors/` | shared fixtures every implementation is tested against |
 | `skills/causewaybay-wallet/` | the skill definition that lets an AI agent drive the wallet |
 | `scripts/` | vector generation and cross-implementation checks run by `make test` |
@@ -201,10 +202,10 @@ program in another language can hold the whole thing without shelling out to a
 binary. See [`rustcli/README.md`](rustcli/README.md) for the ABI and
 [`luacli/README.md`](luacli/README.md) for the Lua binding built on it.
 
-**Three ways to drive it** — flags for a script, the full-screen TUI for a
-terminal, and `cwbwallet-lua interactive`, which is a numbered menu and a REPL
-at one prompt: pick `1` to create a wallet, or type `account list` and get the
-same answer the CLI would give. Seed phrases are typed with terminal echo off,
+**Four ways to drive it** — flags for a script, the full-screen TUI for a
+terminal, `cwbwallet-lua interactive`, which is a numbered menu and a REPL
+at one prompt, and `make gui` — the wallet as an 8-bit game, rendered at 480×270
+with springs, particles and art drawn by Grok. Seed phrases are typed with terminal echo off,
 and the confirmation before anything irreversible is the wallet's own summary of
 a transaction it has already priced and funded — not a sentence the menu wrote.
 

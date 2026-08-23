@@ -7,6 +7,8 @@
 #   pythoncli/  an independent Python implementation of the same spec
 #   luacli/     a Lua CLI and LÖVE module, loading the shared library at run
 #               time — which is what LÖVE needs
+#   lovegui/    the LÖVE game built on that module: an 8-bit window over the
+#               same store
 #   ccli/       a C CLI with the static library compiled in, so the binary
 #               carries the whole wallet and needs nothing beside it
 #
@@ -22,6 +24,7 @@ RUST_DIR   := rustcli
 PYTHON_DIR := pythoncli
 LUA_DIR    := luacli
 C_DIR      := ccli
+GUI_DIR    := lovegui
 
 RUST_BIN   := $(RUST_DIR)/target/debug/cwbwallet
 PYTHON_BIN := $(PYTHON_DIR)/.venv/bin/python
@@ -66,7 +69,7 @@ version: ## Print the version both implementations agree on
 # ---------------------------------------------------------------------- tests
 
 .PHONY: test
-test: test-rust test-python test-lua test-c test-vectors test-vector-coverage test-parity ## Run every test in all four front ends
+test: test-rust test-python test-lua test-c test-gui test-vectors test-vector-coverage test-parity ## Run every test in every front end
 	@echo
 	@echo "All tests passed."
 
@@ -89,6 +92,11 @@ test-lua: ## Run the Lua test suite (builds the shared library first)
 test-c: ## Run the C test suite (builds the static library first)
 	@echo "==> C tests"
 	@$(MAKE) --no-print-directory -C $(C_DIR) check
+
+.PHONY: test-gui
+test-gui: ## Run the GUI's headless suite (no LÖVE needed)
+	@echo "==> GUI tests"
+	@$(MAKE) --no-print-directory -C $(GUI_DIR) check
 
 .PHONY: test-parity
 test-parity: build ## Check that every front end agrees on the store and the CLI
@@ -229,6 +237,8 @@ format: ## Format and lint every front end
 	@$(MAKE) --no-print-directory -C $(LUA_DIR) format
 	@echo "==> C"
 	@$(MAKE) --no-print-directory -C $(C_DIR) format
+	@echo "==> GUI"
+	@$(MAKE) --no-print-directory -C $(GUI_DIR) format
 	@echo
 	@echo "  Formatted and linted every front end."
 
@@ -238,6 +248,7 @@ lint: ## Lint every front end, changing nothing
 	@$(MAKE) --no-print-directory -C $(PYTHON_DIR) lint
 	@$(MAKE) --no-print-directory -C $(LUA_DIR) lint
 	@$(MAKE) --no-print-directory -C $(C_DIR) lint
+	@$(MAKE) --no-print-directory -C $(GUI_DIR) lint
 
 # Formatting is checked separately from linting because the two tools disagree
 # about what they are for: clippy and ruff-check find mistakes, rustfmt and
@@ -249,6 +260,7 @@ fmt-check: ## Fail if any front end is not formatted
 	@$(MAKE) --no-print-directory -C $(PYTHON_DIR) fmt-check
 	@$(MAKE) --no-print-directory -C $(LUA_DIR) fmt-check
 	@$(MAKE) --no-print-directory -C $(C_DIR) fmt-check
+	@$(MAKE) --no-print-directory -C $(GUI_DIR) fmt-check
 
 .PHONY: fmt
 fmt: format ## Alias for `format`
@@ -266,6 +278,10 @@ demo: build ## Create a throwaway wallet and show every CLI reading it
 tui-rust: ## Launch the Rust terminal UI
 	@$(MAKE) --no-print-directory -C $(RUST_DIR) tui
 
+.PHONY: gui
+gui: ## Open the LÖVE window
+	@$(MAKE) --no-print-directory -C $(GUI_DIR) run
+
 .PHONY: tui-python
 tui-python: ## Launch the Python terminal UI
 	@$(MAKE) --no-print-directory -C $(PYTHON_DIR) tui
@@ -278,4 +294,5 @@ clean: ## Remove build output from every front end and ./dist
 	@$(MAKE) --no-print-directory -C $(PYTHON_DIR) clean
 	@$(MAKE) --no-print-directory -C $(LUA_DIR) clean
 	@$(MAKE) --no-print-directory -C $(C_DIR) clean
+	@$(MAKE) --no-print-directory -C $(GUI_DIR) clean
 	@rm -rf "$(DIST_DIR)"
