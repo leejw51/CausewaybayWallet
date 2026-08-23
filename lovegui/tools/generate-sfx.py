@@ -301,6 +301,15 @@ def build() -> dict[str, list[float]]:
         tone(0.3, 700.0, decay(1.5), wave="noise", gain=0.2),
     )
 
+    # A card turning over. A riffle rather than a tone: the sound of one card
+    # being dealt onto another is broadband noise sweeping down as it lands,
+    # and a pitched blip here would read as another button press instead of as
+    # a thing physically moving.
+    sounds["card"] = mix(
+        tone(0.13, sweep(6800.0, 1400.0, 0.8), decay(2.2), wave="noise", gain=0.7),
+        tone(0.07, note("D5"), decay(4.0), duty=0.125, gain=0.35, delay=0.05),
+    )
+
     # ------------------------------------------------------------- the rocket
     #
     # 1.3 seconds, to cover `LAUNCH_FLOOR` in main.lua with a little over. Three
@@ -379,6 +388,7 @@ def build() -> dict[str, list[float]]:
 MIX = {
     "hover": 0.20, "type": 0.20,                                    # whispers
     "blip": 0.42, "press": 0.50, "back": 0.45, "tab": 0.50,             # taps
+    "card": 0.58,
     "ready": 0.55, "created": 0.68, "coin": 0.70, "unlock": 0.75,     # events
     "deny": 0.62, "error": 0.68,
     "sent": 0.85, "launch": 0.92, "power": 0.80,                    # moments

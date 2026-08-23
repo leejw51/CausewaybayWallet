@@ -44,7 +44,7 @@ RATE = 22050
 # the failure this catches first.
 EXPECTED = {
     "hover": 0.03, "type": 0.02, "blip": 0.05,
-    "press": 0.07, "back": 0.08, "tab": 0.10,
+    "press": 0.07, "back": 0.08, "tab": 0.10, "card": 0.13,
     "coin": 0.41, "created": 0.41, "sent": 0.80,
     "error": 0.22, "deny": 0.35,
     "unlock": 0.61, "ready": 0.37,

@@ -81,6 +81,50 @@ t.suite("model / wallets", function()
     t.equal(model.balance, nil)
   end)
 
+  t.case("creating one selects it without making it active", function()
+    -- Two separate ideas that used to be one. The card should follow what was
+    -- just made; what the wallet *spends* from should not move because a
+    -- wallet was added.
+    local model = model_over()
+    model:create("one")
+    local spending = model.active
+    model.balance = { balance = "5", symbol = "TCRO" }
+
+    model:create("two")
+    model:create("three")
+    t.equal(model.selected, 3, "the card should show the one just created")
+    t.equal(model.active, spending, "but spending should not have moved")
+    t.ok(model.balance ~= nil,
+      "and the active wallet's balance is still that wallet's, so it stands")
+  end)
+
+  t.case("it opens on the wallet that is actually in use", function()
+    -- The card shows whatever is selected. Starting on row 1 when the wallet
+    -- is spending from row 2 means the first thing a person sees at every
+    -- launch is a card that is not the one their money is in.
+    local model = model_over()
+    model:create("one")
+    model:create("two")
+    model:create("three")
+    model:select(2)
+
+    local fresh = Model.new(model.wallet, nil)
+    fresh:refresh()
+    t.equal(fresh.active, model.wallets[2].address, "two should be active")
+    t.equal(fresh.selected, 2, "and the selection should have found it")
+  end)
+
+  t.case("aiming happens once and does not fight the arrow keys", function()
+    local model = model_over()
+    model:create("one")
+    model:create("two")
+    model:select(2)
+    -- What pressing up does: the view moves `selected` directly.
+    model.selected = 1
+    model:refresh()
+    t.equal(model.selected, 1, "a refresh must not drag it back to the active row")
+  end)
+
   t.case("selecting nothing is refused rather than crashing", function()
     local model = model_over()
     t.equal(model:select(1), false)

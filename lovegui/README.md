@@ -13,7 +13,8 @@ There is no cryptography in this directory, no store, and no argument parsing.
 
 ```sh
 make run       # opens the window
-make test      # 63 headless tests, no LÖVE required
+make app       # a double-clickable macOS .app with LÖVE inside it
+make test      # 84 headless tests, no LÖVE required
 make shots     # writes a PNG of each screen, for review from a terminal
 make sfx       # re-synthesises the sound effects
 ```
@@ -128,6 +129,55 @@ rooftops, the Vltava bending around the town — drawn by Grok in the style of a
 Konami MSX backdrop and scrimmed back so the interface wins every contrast fight
 in front of it. It drifts a few pixels, which is what stops a painting behind a
 live UI reading as a still image.
+
+## The card
+
+A wallet is shown as a bank card, dealt from its own address.
+
+A list of hex strings is a list of hex strings. Nobody recognises
+`0xCb2134…cb3581`, nobody can tell it from `0xCb2f34…cb3581` at a glance, and
+everybody has to read all forty characters to be sure. A card is a **face**:
+after seeing it twice you know your green one with the rocket, and the moment
+the wrong card is on screen you know that too, before reading a character.
+
+That is the real argument for it. Recognition beats verification — an address
+checked character by character gets checked carefully the first three times and
+skimmed forever after.
+
+### Everything on it comes out of the address
+
+No randomness, no stored preference, no counter. The same address deals the
+same card on every machine, in every run, forever, which is the only way a face
+is worth anything. The address is twenty bytes of hash output and already
+evenly distributed, so there is nothing to gain by hashing it again — different
+bytes simply drive different choices:
+
+| byte | decides |
+| --- | --- |
+| 1 | the colourway — six, all built from the same sixteen palette colours |
+| 2 | the background pattern — stripes, grid, circuit, waves, stars, chevron |
+| 3 | the emblem, stamped like a hologram from the sprites already in `assets/` |
+| 4–5 | the sigil: a 5×5 identicon, mirrored, because a symmetric shape reads as a mark and an asymmetric one reads as noise |
+| 6 | the tier — weighted, so a BLACK card is three wallets in a hundred |
+| 19–20 | the member number |
+
+The tier means nothing. It buys no feature and unlocks nothing; it is there
+because getting one should feel like something.
+
+The card number is the whole address in groups of four — nothing hidden,
+nothing abbreviated, and a shape every person alive already knows how to read.
+The balance is printed on the card, and **only on the card that is active**: an
+inactive card says so instead, because a card with somebody else's money
+printed on it is the one mistake this whole design exists to prevent.
+
+### Choosing another one turns it over
+
+The card arcs out, turns, and drops back — a half sine for the path so it
+leaves and arrives exactly on the layout's mark, `expo_in_out` for the turn,
+and the two share one curve so it reads as one object moving rather than two
+effects playing at once. Edge-on it is a bright line, which is when the design
+swaps: at exactly the halfway point, where there is nothing to see. A card that
+changed its own face in view is the thing the animation is there to hide.
 
 ## Motion
 
@@ -340,10 +390,11 @@ half of an exponential look nothing alike.
 | `F11` · `Alt+Enter` | fullscreen, or the **FULL/WIN** button |
 | `Esc` | cancel a confirmation, or quit |
 
-Everything is clickable too — including **COPY** beside the address and
-**PASTE** beside the recipient field. An address is 42 characters of hex that
-nobody retypes correctly, so the clipboard is not a convenience here, it is the
-only realistic way to move one.
+Everything is clickable too — **COPY** under the card, **PASTE** beside the
+recipient field, **USE CARD** to spend from the one on screen, **SFX**,
+**FULL/WIN** and **LOGOUT** in the header. An address is 42 characters of hex
+that nobody retypes correctly, so the clipboard is not a convenience here, it
+is the only realistic way to move one.
 
 ## Tests
 
@@ -357,6 +408,7 @@ luajit tests/init.lua anim       # one suite
 | `anim` | easing bounds, frame-rate independence, springs that settle and do not explode |
 | `particles` | that effects die, the cap holds, and homing coins actually arrive |
 | `sound` | the throttle, mute, and the voice pool — the parts with decisions in them |
+| `card` | that a face is deterministic, spread across every scheme, and survives a malformed address |
 | `model` | wallets, screens, networks, the send flow and the form, against a real store |
 
 They run without LÖVE, which is the payoff of keeping the logic free of `love.`
@@ -374,6 +426,39 @@ played — writes a PNG, and quits. `CWB_SHOT_KEYS` takes `type:…` for text an
 key name for anything else, plus one step that is not a key at all: `launch`
 starts the rocket, because the only other way to reach it is a funded account
 and a node, and the flight itself is pure animation.
+
+## Shipping it
+
+Two shapes, for two different people.
+
+```sh
+make package   # a .love, its library, and a launcher — needs LÖVE installed
+make app       # a macOS .app with LÖVE inside it — needs nothing
+```
+
+`make app` downloads LÖVE, embeds the game, builds an icon from the game's own
+logo, signs the bundle and zips it. Three details are not optional:
+
+* **The library goes in `Contents/Frameworks`**, where a signed bundle keeps
+  its nested binaries — and its path is worked out by `main.lua` and handed to
+  `open` explicitly. A checkout finds the library by walking up to
+  `rustcli/target`; a bundle has no checkout to walk up to, `love.filesystem`
+  is sandboxed and cannot look outside the archive, and the one thing that
+  would fix it — `CAUSEWAYBAY_LIB` — cannot be set by a double-click. The
+  worker thread is handed the same path, because a bundle that found its
+  library on one thread and not the other would start, show nothing, and never
+  say why.
+* **Three entitlements, all LuaJIT's fault**: `allow-jit` and
+  `allow-unsigned-executable-memory`, without which the app dies the moment
+  LuaJIT compiles anything; and `disable-library-validation`, without which
+  dlopen refuses to load a `.dylib` not signed by whoever signed LÖVE.
+* **Signed inside-out** — nested binaries, then the executable, then the
+  bundle. Signing the outer bundle first invalidates it the moment anything
+  inside is signed afterwards.
+
+It signs with a Developer ID if the machine has one and falls back to ad-hoc,
+which runs locally and is not enough to hand to somebody else without them
+right-clicking Open.
 
 ## Not here
 

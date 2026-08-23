@@ -17,3 +17,6 @@
 
 # Python leaves these beside the asset and sound generators.
 __pycache__/
+
+# The macOS .app and its zip.
+/build/

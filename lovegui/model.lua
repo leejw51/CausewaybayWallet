@@ -58,6 +58,9 @@ function Model.new(wallet, jobs)
     confirm = nil,
     focus = "to",
     selected = 1,
+    -- Whether the selection has ever been aimed at the active account. See
+    -- `refresh`: it happens once, and never again.
+    aimed = false,
     scroll = 0,      -- first visible row of the wallet list
     session = nil,   -- the wallet a mnemonic unlocked; nil means logged out
     -- Bumped whenever something happened that the view may want to celebrate;
@@ -197,6 +200,28 @@ function Model:refresh()
   self.active = type(active) == "string" and active or nil
 
   if self.selected > #self.wallets then self.selected = math.max(1, #self.wallets) end
+
+  -- Open on the wallet that is actually in use, once.
+  --
+  -- The selection used to start at row 1 regardless, so a store whose active
+  -- account was any other row opened showing the wrong one — which was merely
+  -- untidy when the panel was a list of fields and is misleading now that it
+  -- is a card, because the first thing a person sees is a card that is not the
+  -- one their money is in.
+  --
+  -- Once, and only once: doing it on every refresh would drag the selection
+  -- back to the active account every time a balance arrived, and the arrow
+  -- keys would fight it.
+  if not self.aimed and self.active then
+    for index, entry in ipairs(self.wallets) do
+      if entry.address == self.active then
+        self.selected = index
+        break
+      end
+    end
+  end
+  if #self.wallets > 0 then self.aimed = true end
+
   return true
 end
 
@@ -206,6 +231,20 @@ function Model:create(label)
   })
   if not account then return self:fail(err) end
   self:refresh()
+  -- Land on the wallet that was just made, without making it active.
+  --
+  -- Creating one does not switch the store's active account, and it should
+  -- not: spending should never move because a wallet was added. But the *card*
+  -- should — the new wallet is the one thing a person is looking for at that
+  -- moment, and leaving the selection on the previous row means the card on
+  -- screen is not the card that was just created. USE CARD is one press away
+  -- if they want to spend from it.
+  --
+  -- The balance is deliberately left alone: the active wallet did not change,
+  -- so the number that is on screen is still that wallet's and still true.
+  for index, entry in ipairs(self.wallets) do
+    if entry.address == account.address then self.selected = index end
+  end
   self:say("Created " .. account.label)
   self:emit("created")
   return account

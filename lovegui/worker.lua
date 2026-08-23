@@ -16,7 +16,7 @@
 --- Requests arrive as `{id, argv, stdin, yes}` and leave as `{id, envelope}`,
 --- both plain tables, because that is all a channel can carry.
 
-local repo, home, network = ...
+local repo, home, network, library = ...
 
 package.path = repo .. "/luacli/?.lua;" .. repo .. "/luacli/?/init.lua;" .. package.path
 
@@ -35,6 +35,9 @@ end
 local wallet, open_error = causewaybay.open({
   home = home ~= "" and home or nil,
   network = network ~= "" and network or nil,
+  -- Worked out by main.lua and passed across, because a bundle's library sits
+  -- outside the sandbox and this thread has no way to look for it.
+  lib = library ~= "" and library or nil,
   -- The window asks its own questions and only submits `yes` on a request it
   -- has already confirmed, so the wallet underneath must not assume one.
   yes = false,

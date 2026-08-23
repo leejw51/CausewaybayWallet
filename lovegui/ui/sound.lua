@@ -45,6 +45,7 @@ local WANTED = {
   press   = 1.0,
   back    = 0.9,
   tab     = 1.0,
+  card    = 1.0,
   -- Outcomes.
   coin    = 1.0,
   created = 1.0,
@@ -76,6 +77,7 @@ local THROTTLE = {
   hover = 0.10,
   blip  = 0.045,
   type  = 0.03,
+  card  = 0.07,
   coin  = 0.035,
 }
 local THROTTLE_DEFAULT = 0.02
@@ -91,6 +93,7 @@ local JITTER = {
   coin  = 0.10,
   press = 0.03,
   back  = 0.03,
+  card  = 0.07,
 }
 
 sound.pools = {}

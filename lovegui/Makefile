@@ -157,6 +157,150 @@ package: build ## Build a distributable bundle into $(DIST_DIR)
 	@echo
 	@echo "  Needs LÖVE 11 on the machine that runs it: $(STAGE)/$(NAME)"
 
+# ------------------------------------------------------------------ macOS app
+
+# A real double-clickable .app, with LÖVE inside it.
+#
+# `package` above produces a directory that needs LÖVE installed. This produces
+# something you can hand to a person who has never heard of LÖVE: the runtime is
+# downloaded and embedded, the shared library goes in Frameworks where a signed
+# bundle keeps its nested binaries, the icon is built from the game's own logo,
+# and the whole thing is signed and zipped.
+#
+# Two things about this are not optional and both are LuaJIT's fault:
+#
+#   * the hardened runtime needs `allow-jit` and
+#     `allow-unsigned-executable-memory`, or the app dies the moment LuaJIT
+#     compiles anything;
+#   * `disable-library-validation`, because the wallet's own .dylib is not
+#     signed by whoever signed LÖVE, and without it dlopen refuses to load it.
+#
+# Signing uses a Developer ID if the machine has one and falls back to ad-hoc,
+# which is enough to run locally and not enough to hand to somebody else
+# without them right-clicking Open.
+
+LOVE_VERSION ?= 11.5
+APP_NAME     := CausewaybayBank
+BUNDLE_ID    := com.causewaybay.wallet
+LOVE_URL     := https://github.com/love2d/love/releases/download/$(LOVE_VERSION)/love-$(LOVE_VERSION)-macos.zip
+BUILD        := build
+APP          := $(BUILD)/$(APP_NAME).app
+
+.PHONY: app
+app: build ## Build a double-clickable macOS .app with LÖVE embedded
+	@# Single quotes, not backticks: sh would treat `make app` as a command
+	@# substitution and re-enter this target on every platform that is not macOS.
+	@test "$$(uname -s)" = "Darwin" || { echo "  'make app' is macOS only." >&2; exit 1; }
+	@rm -rf "$(APP)" "$(BUILD)/love-macos" "$(BUILD)/$(APP_NAME)-macos.zip"
+	@mkdir -p "$(BUILD)"
+
+	@# The game, as one archive. Same contents as `package`, and for the same
+	@# reason: the binding's Lua goes *inside* rather than being referenced at
+	@# ../luacli, because a bundle that needs a checkout beside it is not one.
+	@rm -rf "$(BUILD)/stage" && mkdir -p "$(BUILD)/stage"
+	@cp -R main.lua conf.lua model.lua worker.lua boot.lua login.lua ui assets "$(BUILD)/stage/"
+	@cp -R $(LUA_DIR)/causewaybay "$(BUILD)/stage/"
+	@cd "$(BUILD)/stage" && zip -qr9 "../game.love" .
+	@rm -rf "$(BUILD)/stage"
+
+	@echo "  fetching LÖVE $(LOVE_VERSION)"
+	@curl -fsSL -o "$(BUILD)/love-macos.zip" "$(LOVE_URL)"
+	@unzip -q -o "$(BUILD)/love-macos.zip" -d "$(BUILD)/love-macos"
+	@mv "$(BUILD)/love-macos/love.app" "$(APP)"
+
+	@cp "$(BUILD)/game.love" "$(APP)/Contents/Resources/game.love"
+	@cp -f "$(RUST_DIR)/target/release/$(FFI_LIB)" "$(APP)/Contents/Frameworks/$(FFI_LIB)"
+
+	@# Without these the bundle is still called "LÖVE" everywhere macOS shows a
+	@# name, and two different games installed at once collide on the bundle id.
+	@plutil -replace CFBundleName -string "Causewaybay Bank" "$(APP)/Contents/Info.plist"
+	@plutil -replace CFBundleDisplayName -string "Causewaybay Bank" "$(APP)/Contents/Info.plist"
+	@plutil -replace CFBundleIdentifier -string "$(BUNDLE_ID)" "$(APP)/Contents/Info.plist"
+	@plutil -replace CFBundleShortVersionString -string "$(VERSION)" "$(APP)/Contents/Info.plist"
+	@plutil -replace CFBundleVersion -string "$(VERSION)" "$(APP)/Contents/Info.plist"
+	@# LÖVE ships this as an editable document type so a .love dropped on the
+	@# icon runs. This bundle *is* one game and must not open somebody else's.
+	@plutil -remove CFBundleDocumentTypes "$(APP)/Contents/Info.plist" 2>/dev/null || true
+	@plutil -replace NSHighResolutionCapable -bool true "$(APP)/Contents/Info.plist"
+
+	@$(MAKE) --no-print-directory app-icon
+	@$(MAKE) --no-print-directory app-sign
+
+	@cd "$(BUILD)" && ditto -c -k --sequesterRsrc --keepParent "$(APP_NAME).app" "$(APP_NAME)-macos.zip"
+	@rm -rf "$(BUILD)/love-macos" "$(BUILD)/love-macos.zip" "$(BUILD)/game.love"
+	@echo
+	@echo "  $(APP)"
+	@du -sh "$(APP)" "$(BUILD)/$(APP_NAME)-macos.zip" | sed 's/^/    /'
+	@echo
+	@echo "  Open it with: open \"$(APP)\""
+
+# The icon, from the game's own logo — the vault sprite, which is already the
+# thing on the title card. `sips` refuses to upscale cleanly, so the source is
+# padded to a square first and every size is generated from that.
+.PHONY: app-icon
+app-icon:
+	@test -f assets/logo.png || { echo "  no assets/logo.png; keeping LÖVE's icon"; exit 0; }
+	@rm -rf "$(BUILD)/icon.iconset" && mkdir -p "$(BUILD)/icon.iconset"
+	@for size in 16 32 64 128 256 512 1024; do \
+		sips -s format png -z $$size $$size assets/logo.png \
+			--out "$(BUILD)/icon.iconset/icon_$${size}x$${size}.png" > /dev/null 2>&1; \
+	done
+	@for size in 16 32 128 256 512; do \
+		double=$$((size * 2)); \
+		cp "$(BUILD)/icon.iconset/icon_$${double}x$${double}.png" \
+			"$(BUILD)/icon.iconset/icon_$${size}x$${size}@2x.png" 2>/dev/null || true; \
+	done
+	@rm -f "$(BUILD)/icon.iconset/icon_1024x1024.png"
+	@iconutil -c icns "$(BUILD)/icon.iconset" -o "$(BUILD)/icon.icns"
+	@cp "$(BUILD)/icon.icns" "$(APP)/Contents/Resources/OS X AppIcon.icns" 2>/dev/null || true
+	@cp "$(BUILD)/icon.icns" "$(APP)/Contents/Resources/Love.icns" 2>/dev/null || true
+	@rm -rf "$(BUILD)/icon.iconset" "$(BUILD)/icon.icns"
+	@echo "  icon from assets/logo.png"
+
+# Signed inside-out: nested binaries first, then the executable, then the
+# bundle. Signing the outer bundle first invalidates itself the moment anything
+# inside it is signed afterwards.
+.PHONY: app-sign
+app-sign:
+	@test -d "$(APP)" || { echo "  no $(APP); run \`make app\`" >&2; exit 1; }
+	@rm -f "$(BUILD)/entitlements.plist"
+	@printf '%s\n' \
+		'<?xml version="1.0" encoding="UTF-8"?>' \
+		'<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
+		'<plist version="1.0"><dict>' \
+		'  <key>com.apple.security.cs.allow-jit</key><true/>' \
+		'  <key>com.apple.security.cs.allow-unsigned-executable-memory</key><true/>' \
+		'  <key>com.apple.security.cs.disable-library-validation</key><true/>' \
+		'</dict></plist>' \
+		> "$(BUILD)/entitlements.plist"
+	@identity=$$(security find-identity -v -p codesigning 2>/dev/null \
+		| grep "Developer ID Application" | head -1 | awk -F'"' '{print $$2}'); \
+	if [ -z "$$identity" ]; then \
+		identity="-"; \
+		echo "  no Developer ID found - signing ad-hoc (runs here, not elsewhere)"; \
+	else \
+		echo "  signing as $$identity"; \
+	fi; \
+	stamp=--timestamp; \
+	[ "$$identity" = "-" ] && stamp=""; \
+	find "$(APP)/Contents/Frameworks" -type f 2>/dev/null | while read -r file; do \
+		if file "$$file" | grep -q "Mach-O"; then \
+			codesign --force --options runtime --sign "$$identity" \
+				--entitlements "$(BUILD)/entitlements.plist" $$stamp "$$file" || exit 1; \
+		fi; \
+	done; \
+	find "$(APP)/Contents/Frameworks" -maxdepth 1 -name "*.framework" 2>/dev/null | while read -r bundle; do \
+		codesign --force --options runtime --sign "$$identity" \
+			--entitlements "$(BUILD)/entitlements.plist" $$stamp "$$bundle" || exit 1; \
+	done; \
+	codesign --force --options runtime --sign "$$identity" \
+		--entitlements "$(BUILD)/entitlements.plist" $$stamp \
+		"$(APP)/Contents/MacOS/love" || exit 1; \
+	codesign --force --options runtime --sign "$$identity" \
+		--entitlements "$(BUILD)/entitlements.plist" $$stamp "$(APP)" || exit 1
+	@rm -f "$(BUILD)/entitlements.plist"
+	@codesign --verify --strict "$(APP)" && echo "  signature verifies"
+
 # --------------------------------------------------------------------- extras
 
 # Stand-ins for what a person would type. The mnemonic is BIP-39's published
@@ -216,5 +360,5 @@ sfx-check: ## Verify every committed sound is present and well-formed
 	@python3 tools/check-sfx.py
 
 .PHONY: clean
-clean: ## Remove screenshots and staged output
-	rm -rf shots build-tmp
+clean: ## Remove screenshots, the app bundle, and staged output
+	rm -rf shots build build-tmp

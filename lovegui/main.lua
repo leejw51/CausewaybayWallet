@@ -24,6 +24,7 @@ local sprite = require("ui.sprite")
 local widgets = require("ui.widgets")
 local particles = require("ui.particles")
 local sound = require("ui.sound")
+local card = require("ui.card")
 local Boot = require("boot")
 local Login = require("login")
 local Model = require("model")
@@ -56,7 +57,21 @@ local game = {
   -- A confirmed send launches the rocket. See LAUNCH below for why the
   -- animation has a floor and the outcome waits behind it.
   launch = nil,
+  -- Which card is on screen, and how far through turning over it is. See
+  -- CARD_TURN. `shown` and `next` are the account tables themselves rather
+  -- than addresses: two accounts in one store can share an address (an import
+  -- of a phrase that was already there), and looking the label back up by
+  -- address then finds whichever of them came last.
+  face = { shown = nil, next = nil, turn = 1, key = nil },
 }
+
+--- How long a card takes to turn over.
+---
+--- Short enough that moving down a list with the arrow keys is not a queue of
+--- animations, long enough that the turn is legible rather than a flicker. The
+--- swap of one face for the other happens at exactly half of it, when the card
+--- is edge-on and there is nothing to see.
+local CARD_TURN = 0.34
 
 --- How long the launch plays before an outcome is allowed to land.
 ---
@@ -71,16 +86,67 @@ local LAUNCH_FLOOR = 1.25
 -- here because `love.update` is defined above the screens that set them, and a
 -- local declared further down would not be in scope there.
 local coin_target = { x = theme.WIDTH / 2, y = 90 }  -- where earned coins fly to
+local card_target = { x = theme.WIDTH / 2, y = 140 } -- the middle of the card
 local rocket = { x = theme.WIDTH / 2, y = 120 }      -- what the exhaust comes out of
 
 -- ------------------------------------------------------------------- startup
 
+--- The shared library's file name on this platform.
+local function library_name()
+  local system = love.system.getOS()
+  if system == "OS X" then return "libcausewaybay_ffi.dylib" end
+  if system == "Windows" then return "causewaybay_ffi.dll" end
+  return "libcausewaybay_ffi.so"
+end
+
+--- Where the library is when the game is an application bundle.
+---
+--- A checkout finds it on its own: the binding walks up from its own file to
+--- `rustcli/target`, which is exactly right for `make run`. A bundle has no
+--- checkout to walk up to — the Lua is inside a zip, `love.filesystem` is
+--- sandboxed and cannot look outside it, and the one thing that *would* fix it,
+--- `CAUSEWAYBAY_LIB`, cannot be set by a double-click.
+---
+--- So the path is worked out here and handed to `open` explicitly. The
+--- candidates are probed with plain `io.open` rather than `love.filesystem`,
+--- because these paths are deliberately outside the sandbox.
+---
+--- Returns nil when nothing is found, which is not an error: a checkout has no
+--- bundle layout and is expected to fall through to the binding's own search.
+local function bundled_library()
+  local base = love.filesystem.getSourceBaseDirectory()
+  if not base or base == "" then return nil end
+  local name = library_name()
+
+  for _, path in ipairs({
+    -- macOS, where `make app` puts it. Frameworks is where a signed bundle's
+    -- nested binaries belong, and codesign expects to find them there.
+    base .. "/../Frameworks/" .. name,
+    base .. "/Frameworks/" .. name,
+    -- Beside the .love, which is the shape `make package` produces and the one
+    -- a Linux or Windows bundle uses.
+    base .. "/" .. name,
+    base .. "/../" .. name,
+  }) do
+    local handle = io.open(path, "rb")
+    if handle then
+      handle:close()
+      return path
+    end
+  end
+  return nil
+end
+
 --- Start the worker and hand back the `jobs` interface the model expects.
-local function start_worker(home, network)
+--- `library` is passed through because the worker opens its own wallet on the
+--- other side of a thread boundary, where none of this file's locals exist —
+--- and a bundle that found its library here but not there would start, show a
+--- balance of nothing, and never say why.
+local function start_worker(home, network, library)
   -- Relative: `newThread` reads through love.filesystem, which is rooted at
   -- the game directory and cannot see an absolute path outside it.
   local thread = love.thread.newThread("worker.lua")
-  thread:start(ROOT, home or "", network or "")
+  thread:start(ROOT, home or "", network or "", library or "")
 
   local requests = love.thread.getChannel("cwb.requests")
   local answers = love.thread.getChannel("cwb.answers")
@@ -112,8 +178,11 @@ function love.load()
   game.screen_slide = anim.Spring.new(0, 240, 0.62)
 
   local home = os.getenv("CAUSEWAYBAY_HOME")
+  local library = bundled_library()
   local wallet, err = causewaybay.open({
     home = home,
+    -- nil in a checkout, which lets the binding's own search run.
+    lib = library,
     -- The window asks its own questions and only sends `yes` on a request it
     -- has already confirmed, so the wallet must not assume one.
     yes = false,
@@ -126,7 +195,7 @@ function love.load()
   end
 
   game.boot = Boot.new(wallet, nil)
-  game.model = Model.new(wallet, start_worker(home, nil))
+  game.model = Model.new(wallet, start_worker(home, nil, library))
   game.model:say("Ready.")
 end
 
@@ -156,6 +225,45 @@ local function flight()
   if not game.launch then return 0, 0 end
   local t = math.min(1, game.launch.time / LAUNCH_FLOOR)
   return anim.expo_in(t), t
+end
+
+--- Which row a card belongs to, for deciding whether it is a different card.
+---
+--- The row index *and* the address, because neither alone is enough. Two rows
+--- in one store can share an address — importing a phrase the store already
+--- had — so the address does not identify a row; and a refresh rebuilds the
+--- list into fresh tables, so identity does not survive one. Together they are
+--- stable across a refresh and still tell two identical-looking rows apart.
+local function face_key(index, account)
+  if not account then return nil end
+  return index .. "\0" .. tostring(account.address)
+end
+
+--- Keep the card in step with the selection, turning it when they disagree.
+---
+--- The turn is driven here rather than from the drawing code for one reason:
+--- the design must change at the *exact* moment the card is edge-on, and that
+--- moment is a property of this animation. A separate timer would drift, and
+--- the drift would be a card visibly changing its own face.
+local function turn_card(model)
+  local wanted = model.wallets[model.selected]
+  local face = game.face
+
+  if face_key(model.selected, wanted) ~= face.key then
+    if face.shown == nil then
+      -- The first card of the session does not turn in from nothing.
+      face.shown, face.turn = wanted, 1
+      face.key = face_key(model.selected, wanted)
+    elseif face.turn < 1 and face.next then
+      -- Already turning. Retarget rather than restart: holding an arrow key
+      -- would otherwise snap the card back to face-on every repeat.
+      face.next = wanted
+      face.key = face_key(model.selected, wanted)
+    else
+      face.next, face.turn = wanted, 0
+      face.key = face_key(model.selected, wanted)
+    end
+  end
 end
 
 --- React to what the model says happened, with light and noise.
@@ -244,6 +352,21 @@ function love.update(dt)
   if not game.model then return end
 
   game.model:pump()
+
+  turn_card(game.model)
+  if game.face.turn < 1 then
+    game.face.turn = math.min(1, game.face.turn + dt / CARD_TURN)
+    local _, past_edge = card.turn(game.face.turn)
+    if past_edge and game.face.next then
+      -- Edge-on: nothing of the old face is on screen, so this is the one
+      -- frame where the swap costs nothing to look at.
+      game.face.shown, game.face.next = game.face.next, nil
+      sound.play("card")
+      game.fx:burst(card_target.x, card_target.y,
+        { count = 26, speed = 190, colour = { 0.3, 0.94, 1 }, life = 0.55,
+          sprite = "spark", size = 3 })
+    end
+  end
 
   if game.launch then
     game.launch.time = game.launch.time + dt
@@ -680,64 +803,99 @@ local function draw_wallets(model, state, x)
       theme.colour.faint, theme.font.small)
   end
 
-  -- ---------------------------------------------------------- the detail
-  -- Whatever the list is highlighting. It used to be whichever account was
-  -- *active*, which meant the panel could show one wallet's label above
-  -- another's address the moment the two disagreed.
+  -- ------------------------------------------------------------ the card
+  -- Whatever the list is highlighting — not whichever account is *active*,
+  -- which meant the panel could show one wallet's label above another's
+  -- address the moment the two disagreed.
+  --
+  -- A card rather than a labelled panel, because a list of hex strings is a
+  -- list of hex strings: nobody recognises one, and everybody has to read all
+  -- forty characters to be sure. A face is recognised before a single
+  -- character has been read, and the wrong face is noticed just as fast. See
+  -- `ui/card.lua` for how it is dealt from the address.
   local selected = model.wallets[model.selected]
 
-  -- The balance, given the room a headline deserves.
-  local balance_h = 70
-  local card = widgets.frame(x + L.right, L.top, L.right_w, balance_h, "BALANCE")
-  coin_target.x, coin_target.y = x + L.right + L.right_w / 2, L.top + 40
+  -- A real card's proportions, centred in the column. The ratio is the reason
+  -- it reads as a card at a glance and not as a panel with a picture on it.
+  local face_h = L.bottom - L.top
+  local face_w = math.floor(face_h * 1.585)
+  local face = {
+    x = x + L.right + math.floor((L.right_w - face_w) / 2),
+    y = L.top,
+    w = face_w,
+    h = face_h,
+  }
+  card_target.x, card_target.y = face.x + face.w / 2, face.y + face.h / 2
+  coin_target.x, coin_target.y = face.x + face.w / 2, face.y + 72
 
   if not selected then
-    theme.text_centred("no wallet selected", card.x + card.w / 2, card.y + 16,
-      theme.colour.faint, theme.font.small)
-  elseif model.balance then
-    widgets.readout(card.x, card.y, card.w,
-      (("%.4f"):format(game.balance_shown):gsub("0+$", ""):gsub("%.$", "")),
-      model.balance.symbol, { alpha = game.entrance.value })
+    theme.rect(theme.colour.deep, face.x, face.y, face.w, face.h, 0.6)
+    theme.outline(theme.colour.faint, face.x, face.y, face.w, face.h, 0.5)
+    theme.text_centred("no wallet selected", face.x + face.w / 2,
+      face.y + face.h / 2 - 16, theme.colour.faint, theme.font.small)
+    theme.text_centred("press + NEW below", face.x + face.w / 2,
+      face.y + face.h / 2 - 2, theme.colour.faint, theme.font.small)
   else
-    -- Not a row of dashes pretending to be a number: say what is missing and
-    -- how to get it. An unknown balance is a state, not a value.
-    theme.text_centred("- - -", card.x + card.w / 2, card.y + 4,
-      theme.colour.faint, theme.font.big)
-    theme.text_centred("press REFRESH to ask the node", card.x + card.w / 2,
-      card.y + 28, theme.colour.faint, theme.font.small)
-  end
+    -- The *shown* account, not the selected one. Between the two the card is
+    -- mid-turn, and swapping the face before it is edge-on is exactly the seam
+    -- this animation exists to hide.
+    local entry = game.face.shown or selected
+    local flip = card.turn(game.face.turn)
+    local swing_x, swing_y, angle = card.swing(game.face.turn)
+    local design = card.design(entry.address)
 
-  -- Its address, in full — the one place it is not abbreviated, because this
-  -- is where a person comes to copy it.
-  local detail = widgets.frame(x + L.right, L.top + balance_h + L.gutter, L.right_w,
-    height - balance_h - L.gutter, "ACCOUNT")
+    card.draw(design, face, {
+      time = game.time,
+      flip = flip,
+      swing_x = swing_x,
+      swing_y = swing_y,
+      angle = angle,
+      alpha = game.entrance.value,
+      holder = entry.label,
+      -- The balance belongs on the card, where a card puts a number. It was a
+      -- frame of its own above; a card with somebody else's balance printed
+      -- over it would be the one mistake this whole design is here to prevent.
+      body = function(box, ink, alpha)
+        if model.balance and entry.address == model.active then
+          local shown_amount = (("%.4f"):format(game.balance_shown)
+            :gsub("0+$", ""):gsub("%.$", ""))
+          theme.text(shown_amount, box.x + 10, box.y + 60, theme.colour.text,
+            theme.font.big, alpha)
+          theme.text(model.balance.symbol or "",
+            box.x + 12 + theme.width(shown_amount, theme.font.big), box.y + 68,
+            ink, theme.font.small, alpha)
+        elseif entry.address == model.active then
+          theme.text("- - -", box.x + 10, box.y + 60, theme.colour.faint,
+            theme.font.big, alpha)
+          theme.text("REFRESH to ask the node", box.x + 10, box.y + 84,
+            theme.colour.faint, theme.font.small, alpha * 0.9)
+        else
+          -- An inactive card must not show the active one's money. Saying
+          -- which card the balance belongs to is the only honest option.
+          theme.text("USE THIS CARD", box.x + 10, box.y + 62, ink,
+            theme.font.body, alpha)
+          theme.text("to see its balance", box.x + 10, box.y + 80,
+            theme.colour.faint, theme.font.small, alpha * 0.9)
+        end
 
-  if selected then
-    stat(detail.x, detail.y, "LABEL", selected.label, theme.colour.text)
-    -- Where the key came from, as a tag rather than another labelled row —
-    -- it is a property of the wallet, not a field of equal weight.
-    local tag = (selected.source or "?"):upper():gsub("_", " ")
-    local tag_w = theme.width(tag, theme.font.small) + 10
-    widgets.chip(detail.x + detail.w - tag_w, detail.y, tag, theme.colour.magenta)
-    if selected.address == model.active then
-      widgets.chip(detail.x + detail.w - tag_w - 58, detail.y, "ACTIVE", theme.colour.green)
-    end
+        local tag = (entry.source or "?"):upper():gsub("_", " ")
+        theme.text_right(tag, box.x + box.w - 10, box.y + box.h - 15,
+          theme.colour.faint, theme.font.small, alpha * 0.8)
 
-    theme.text("ADDRESS", detail.x, detail.y + 30, theme.colour.faint, theme.font.small)
-    -- Split across two lines: 42 characters do not fit a 230px column, and an
-    -- address broken in the middle is still checkable end to end.
-    theme.text(selected.address:sub(1, 21), detail.x, detail.y + 45,
-      theme.colour.cyan, theme.font.small)
-    theme.text(selected.address:sub(22), detail.x, detail.y + 58,
-      theme.colour.cyan, theme.font.small)
-
-    -- Right beside the thing it copies, which is the only place a copy button
-    -- is unambiguous.
-    local copy = { x = detail.x + detail.w - 58, y = detail.y + 26, w = 58, h = 17 }
-    if widgets.button(game.springs, "copy", copy, "COPY", state,
-        { colour = theme.colour.cyan }) then
-      copy_to_clipboard(model, selected.address, "address")
-    end
+        if entry.address == model.active then
+          -- The one badge worth the room: which card the wallet is actually
+          -- spending from. It pulses, because it is the answer to the
+          -- question a person asks most often on this screen.
+          --
+          -- Up beside the sigil rather than down by the holder — the bottom
+          -- right belongs to the second line of the card number, and a badge
+          -- printed over an address is a badge that makes the address wrong.
+          local pulse = anim.pulse(game.time, 1.6, 0.55, 1.0)
+          widgets.chip(box.x + box.w - 56, box.y + 36, "ACTIVE",
+            theme.colour.green, { alpha = alpha * pulse })
+        end
+      end,
+    })
   end
 
   -- ------------------------------------------------------------ actions
@@ -751,6 +909,22 @@ local function draw_wallets(model, state, x)
   if widgets.button(game.springs, "new", new, "+ NEW", state,
       { colour = theme.colour.green }) then
     model:create("")
+  end
+
+  -- The card's own two verbs, under the card. COPY takes the address the card
+  -- is showing — which is the one on screen, not the one the wallet happens to
+  -- be spending from, because the card is what a person is looking at.
+  local copy = { x = x + L.right + 88, y = L.bar, w = 76, h = L.button_h }
+  if widgets.button(game.springs, "copy", copy, "COPY", state,
+      { colour = theme.colour.cyan, disabled = selected == nil }) then
+    copy_to_clipboard(model, selected.address, "address")
+  end
+
+  local usable = selected ~= nil and selected.address ~= model.active
+  local use = { x = x + L.right + 168, y = L.bar, w = 84, h = L.button_h }
+  if widgets.button(game.springs, "use", use, usable and "USE CARD" or "IN USE",
+      state, { colour = theme.colour.gold, disabled = not usable }) then
+    model:select(model.selected)
   end
 end
 
@@ -1091,6 +1265,8 @@ local shot = {
   screen = os.getenv("CWB_SHOT_SCREEN"),
   keys = os.getenv("CWB_SHOT_KEYS"),
   taken = false,
+  queue = {},
+  hold = 0,
 }
 
 --- Drive the game the way a person would, before the shot is taken.
@@ -1117,9 +1293,31 @@ local function replay()
   end
   if not shot.keys then return end
   for step in shot.keys:gmatch("[^,]+") do
+    shot.queue[#shot.queue + 1] = step
+  end
+end
+
+--- Perform the replayed steps, pausing wherever one says to.
+---
+--- Everything used to happen in a single burst at 0.35s, which made half the
+--- animations in this file unphotographable: by the time a shot could be taken
+--- the card had finished turning, and taking it earlier caught the entrance
+--- instead. A `wait:0.4` step lets a shot say *settle first, then press this*,
+--- which is the only way to photograph the middle of something.
+local function advance_replay(dt)
+  if shot.hold > 0 then
+    shot.hold = shot.hold - dt
+    return
+  end
+  while shot.queue[1] do
+    local step = table.remove(shot.queue, 1)
     local text = step:match("^type:(.*)$")
+    local pause = step:match("^wait:(.*)$")
     if text then
       love.textinput(text)
+    elseif pause then
+      shot.hold = tonumber(pause) or 0
+      return
     elseif step == "launch" then
       -- The one thing no keypress can reach: the rocket only lifts off once a
       -- transfer is confirmed, and confirming one needs a funded account and a
@@ -1144,6 +1342,7 @@ if shot.path then
       replayed = true
       replay()
     end
+    if replayed then advance_replay(dt) end
   end
 
   love.draw = function()
