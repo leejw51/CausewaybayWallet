@@ -60,8 +60,7 @@ MUTATIONS = [
      "  if type(text) ~= \"string\" then return false end\n", "", "model", None),
 
     ("logout: forgets to drop the balance", "model.lua",
-     "function Model:logout()\n  self.session = nil\n  self.balance = nil",
-     "function Model:logout()\n  self.session = nil", "model", None),
+     "  self:refresh()\n  self.balance = nil", "  self:refresh()", "model", None),
 
     ("login: skips validation", "model.lua",
      "  if not check.valid then", "  if false then", "model",
@@ -74,8 +73,23 @@ MUTATIONS = [
      "validate_mnemonic and derive reject the same phrases identically"),
 
     ("login: a new phrase is imported but not activated", "model.lua",
-     "    if entry.address == account.address then\n      if not self:select(index) then return false end\n    end",
-     "    if entry.address == account.address then self.selected = index end", "model", None),
+     "  local ok, use_error = self.wallet:use_account(account.address)\n  if not ok then return self:fail(use_error) end",
+     "  local ok, use_error = true, nil\n  if not ok then return self:fail(use_error) end", "model", None),
+
+    ("session: the list is not scoped to the phrase", "model.lua",
+     "  if self.session then\n    local mine = {}",
+     "  if false then\n    local mine = {}", "model", None),
+
+    ("session: the scan stops at the first gap", "model.lua",
+     "if index > 0 and misses >= Model.SESSION_GAP then break end",
+     "if index > 0 and misses >= 1 then break end", "model", None),
+
+    ("session: a wallet made inside it is not recorded", "model.lua",
+     "  if self.session then\n    self.session.addresses[tostring(account.address):lower()] = true\n  end\n\n  self:refresh()",
+     "  self:refresh()", "model", None),
+
+    ("logout: the list stays scoped", "model.lua",
+     "  self.session = nil\n  -- Unscoped again", "  self.session = nil\n  if true then else", "model", None),
 
     ("login: forget leaves the phrase behind", "login.lua",
      "function login:forget()\n  self.phrase = \"\"", "function login:forget()", "login", None),

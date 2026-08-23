@@ -14,7 +14,7 @@ There is no cryptography in this directory, no store, and no argument parsing.
 ```sh
 make run       # opens the window
 make app       # a double-clickable macOS .app with LÖVE inside it
-make test      # 155 headless tests, no LÖVE required
+make test      # 163 headless tests, no LÖVE required
 make shots     # writes a PNG of each screen, for review from a terminal
 make sfx       # re-synthesises the sound effects
 ```
@@ -90,10 +90,43 @@ prevent. It used to be true of a known phrase and not of a new one, so NEW
 MNEMONIC → COPY → UNLOCK created the wallet, put it on screen, and left the
 store spending from whichever wallet was active before.
 
+### A session is one mnemonic
+
+The store is one home directory and can hold wallets from a dozen different
+phrases. Showing all of them behind any one of them made this a doorway rather
+than a gate: unlocking with a brand new phrase produced a "new wallet" sitting
+in a list of somebody else's.
+
+So the list is **scoped to the wallets the phrase controls**. Nothing is hidden
+that the phrase can reach, and nothing is shown that it cannot. Nothing is
+deleted either — the other wallets are still on disk, and logging out shows the
+whole store again.
+
+Which wallets those are is **derived, not read**. The store keeps each account's
+mnemonic and `accounts()` deliberately does not hand it out — which is correct —
+so the only honest way to ask "does this phrase own that wallet?" is to derive
+the addresses and see which ones are there. Login walks the BIP-44 indices with
+a gap limit, the same way any wallet scans for accounts: keep going until
+several in a row are absent, then stop. A wallet whose accounts are 0 and 3 is
+found whole; one with a hundred is not scanned a hundred times on every login.
+It costs under a millisecond an index and nothing is remembered between runs.
+
+That makes the two buttons mean different things, which is worth knowing:
+
+| | |
+| --- | --- |
+| **NEW MNEMONIC** | starts a *separate wallet*, with its own phrase |
+| **+ NEW** | adds an account to the wallet you are in, recoverable from the same phrase |
+
+`+ NEW` continues the active account's mnemonic, so an account made inside a
+session is the next index of that phrase and comes back the next time it is
+unlocked. Nothing made in the window is ever stranded behind a phrase you were
+never shown.
+
 **LOGOUT** in the header comes back here, to a screen holding nothing: no
 phrase, not minted, offering PASTE rather than COPY. Nothing carries over from
 the session that ended, so NEW MNEMONIC after a logout starts a genuinely new
-wallet.
+wallet — and shows only that wallet.
 
 The phrase is wiped rather than merely dropped — `login:forget()` runs the
 moment a session opens and again on the way out. Releasing the last reference

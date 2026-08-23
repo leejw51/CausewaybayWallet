@@ -207,6 +207,139 @@ t.suite("model / the session", function()
     t.ok(not model:logged_in())
   end)
 
+  t.case("a new phrase shows its own wallet and nobody else's", function()
+    -- The complaint this exists for: logout, NEW MNEMONIC, COPY, UNLOCK, and
+    -- the old wallets were all still listed. A store is one home directory
+    -- and may hold wallets from a dozen phrases; showing all of them behind
+    -- any one of them made the login screen a doorway rather than a gate.
+    local model = model_over()
+    model:create("stranger-one")
+    model:create("stranger-two")
+    t.equal(#model.wallets, 2, "two wallets in the store to begin with")
+
+    local phrase = model:offer_mnemonic(12)
+    local account = model:login(phrase)
+
+    t.ok(account, "should have got in")
+    t.equal(#model.wallets, 1, "a new phrase owns exactly one wallet")
+    t.equal(model.wallets[1].address, account.address, "and it is that one")
+    t.equal(model.selected, 1, "with the card on it")
+  end)
+
+  t.case("the store still holds everything that was there", function()
+    -- Scoped, not deleted. Nothing is removed from disk by logging in.
+    local model = model_over()
+    model:create("stranger")
+    model:login(model:offer_mnemonic(12))
+    t.equal(#model.wallets, 1, "the session sees one")
+    t.equal(#model.all_wallets, 2, "the store still holds both")
+  end)
+
+  t.case("a phrase sees every wallet it controls", function()
+    -- `account new` continues the active account's mnemonic, so a wallet
+    -- made inside a session is the next index of that same phrase and must
+    -- come back next time it is unlocked.
+    local model = model_over()
+    model:create("stranger")
+
+    local phrase = model:offer_mnemonic(12)
+    model:login(phrase)
+    model:create("second")
+    model:create("third")
+    t.equal(#model.wallets, 3, "the wallet and the two made inside it")
+
+    -- A fresh session over the same store: the three must be found again,
+    -- by derivation rather than by anything remembered.
+    local fresh = Model.new(model.wallet, nil)
+    fresh:refresh()
+    t.equal(#fresh.wallets, 4, "logged out, it sees the whole store")
+    fresh:login(phrase)
+    t.equal(#fresh.wallets, 3, "logged in, only what the phrase controls")
+
+    local seen = {}
+    for _, entry in ipairs(fresh.wallets) do seen[entry.label] = true end
+    t.ok(seen["second"] and seen["third"], "including the ones made last time")
+    t.ok(not seen["stranger"], "and not the one it does not own")
+  end)
+
+  t.case("a wallet with a gap in its indices is still found whole", function()
+    -- The scan uses a gap limit rather than stopping at the first absence,
+    -- because indices need not be contiguous: deriving one by hand leaves
+    -- holes, and a wallet whose accounts are 0 and 3 is still one wallet.
+    local model = model_over()
+    local phrase = model:offer_mnemonic(12)
+    model.wallet:import_mnemonic(phrase, { label = "first" })
+    model.wallet:import_mnemonic(phrase, { index = 3, label = "fourth" })
+
+    model:login(phrase)
+    t.equal(#model.wallets, 2, "both sides of the gap should be found")
+  end)
+
+  t.case("more accounts than the scan reached stay visible", function()
+    -- The set is built once, at login, and the scan stops a few indices past
+    -- the last one stored. Making enough accounts in a single session walks
+    -- off the end of it, so each one records itself as it is made.
+    local model = model_over()
+    local phrase = model:offer_mnemonic(12)
+    model:login(phrase)
+    for i = 1, 8 do model:create("extra-" .. i) end
+    t.equal(#model.wallets, 9, "the wallet and all eight made inside it")
+
+    -- And they are genuinely that phrase's, so a fresh session finds them.
+    local fresh = Model.new(model.wallet, nil)
+    fresh:refresh()
+    fresh:login(phrase)
+    t.equal(#fresh.wallets, 9, "and a later login finds them again")
+  end)
+
+  t.case("logging out shows the store again", function()
+    local model = model_over()
+    model:create("stranger")
+    model:login(model:offer_mnemonic(12))
+    t.equal(#model.wallets, 1)
+
+    model:logout()
+    t.equal(#model.wallets, 2, "logged out, the whole store is visible again")
+  end)
+
+  t.case("a phrase already in the store keeps its own wallets", function()
+    local model = model_over()
+    model:login(support.MNEMONIC)
+    model:create("second")
+    model:logout()
+
+    -- Imported straight through the wallet, because that is the only way to
+    -- get a genuinely unrelated one: `+ NEW` continues the *active* account's
+    -- mnemonic, so it would have made another account of the same wallet
+    -- rather than a stranger. NEW MNEMONIC on the login screen is how a
+    -- separate wallet is started, which is exactly the distinction the
+    -- scoping makes visible.
+    local other = model:offer_mnemonic(12)
+    model.wallet:import_mnemonic(other, { label = "stranger" })
+    model:refresh()
+    t.equal(#model.wallets, 3, "three in the store while logged out")
+
+    model:login(support.MNEMONIC)
+    t.equal(#model.wallets, 2, "the seeded wallet and its second account")
+    t.equal(model.active, support.ADDRESS_0)
+  end)
+
+  t.case("+ NEW adds to the wallet you are in, not a separate one", function()
+    -- Worth pinning: it is the difference between the two buttons. NEW
+    -- MNEMONIC starts a wallet; + NEW adds an account to the one you are in,
+    -- recoverable from the same phrase.
+    local model = model_over()
+    local phrase = model:offer_mnemonic(12)
+    model:login(phrase)
+    model:create("second")
+
+    local fresh = Model.new(model.wallet, nil)
+    fresh:refresh()
+    fresh:login(phrase)
+    t.equal(#fresh.wallets, 2,
+      "the one phrase should bring both back, so nothing is stranded")
+  end)
+
   t.case("logging out forgets the session and not the store", function()
     local model = model_over()
     model:login(support.MNEMONIC)

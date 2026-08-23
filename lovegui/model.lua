@@ -116,6 +116,50 @@ end
 --- what `validate-mnemonic` and `derive` exist for. Only once an address is in
 --- hand does this decide whether the wallet is already known (select it) or new
 --- (import it), which means a typo never leaves a stray account behind.
+--- How far to look for the addresses a phrase controls, and when to give up.
+---
+--- BIP-44 wallets are scanned with a gap limit rather than to a fixed depth:
+--- keep deriving until several indices in a row are absent from the store, and
+--- stop. A wallet with accounts at 0, 1 and 5 is found; one with a hundred is
+--- not scanned a hundred times on every login.
+Model.SESSION_GAP = 5
+Model.SESSION_MAX = 40
+
+--- Every address this phrase controls, as a set keyed by lower-case address.
+---
+--- Derived rather than read. The store keeps each account's mnemonic, but
+--- `accounts()` deliberately does not hand it out — which is correct, and
+--- means the only honest way to ask "which of these wallets does this phrase
+--- own?" is to derive the addresses and see which ones are there.
+---
+--- Addresses that are *not* in the store are kept in the set too. They cost
+--- nothing, and the next account made in this session lands on one of them:
+--- `account new` continues the active account's mnemonic, so it is simply the
+--- next index of this same phrase.
+function Model:derived_addresses(phrase, stored)
+  local known = {}
+  for _, account in ipairs(stored) do
+    known[tostring(account.address):lower()] = true
+  end
+
+  local addresses, misses = {}, 0
+  for index = 0, Model.SESSION_MAX - 1 do
+    local derived = self.wallet:derive({ mnemonic = phrase, index = index })
+    if not derived then break end
+    local address = tostring(derived.address):lower()
+    addresses[address] = true
+    if known[address] then
+      misses = 0
+    else
+      misses = misses + 1
+      -- Index 0 is the wallet itself and is never a reason to stop: a phrase
+      -- being imported for the first time has none of its addresses stored.
+      if index > 0 and misses >= Model.SESSION_GAP then break end
+    end
+  end
+  return addresses
+end
+
 function Model:login(phrase)
   if not phrase or phrase:gsub("%s", "") == "" then
     return self:fail({ code = "usage", message = "enter your mnemonic" })
@@ -130,36 +174,51 @@ function Model:login(phrase)
   local derived, derive_error = self.wallet:derive({ mnemonic = phrase })
   if not derived then return self:fail(derive_error) end
 
-  for index, account in ipairs(self.wallets) do
-    if account.address == derived.address then
-      -- Already known: select it and let them in, storing nothing new.
-      if not self:select(index) then return false end
-      self.session = { address = derived.address, label = account.label }
-      self:say("Welcome back, " .. account.label)
-      self:emit("login")
-      return account
-    end
+  -- Asked of the store, not of `self.wallets` — that list may still be scoped
+  -- to the session which is ending, and the phrase being unlocked has nothing
+  -- to do with it.
+  local stored, list_error = self.wallet:accounts()
+  if not stored then return self:fail(list_error) end
+
+  local addresses = self:derived_addresses(phrase, stored)
+
+  local account, welcome
+  for _, entry in ipairs(stored) do
+    if entry.address == derived.address then account = entry end
   end
 
-  -- New to this store: import it, which is the one place a phrase is written.
-  local account, import_error = self.wallet:import_mnemonic(phrase, {})
-  if not account then return self:fail(import_error) end
+  if account then
+    welcome = "Welcome back, " .. account.label
+  else
+    -- New to this store: import it, which is the one place a phrase is written.
+    local imported, import_error = self.wallet:import_mnemonic(phrase, {})
+    if not imported then return self:fail(import_error) end
+    account = imported
+    welcome = "Imported " .. imported.label
+  end
+
+  -- Set before the refresh, so the list comes back already scoped to it.
+  self.session = {
+    address = account.address,
+    label = account.label,
+    addresses = addresses,
+  }
+  self.session.addresses[tostring(account.address):lower()] = true
+
+  -- Made active, not merely shown. Logging in *as* a wallet while the money
+  -- moves from a different one is exactly the mismatch this screen exists to
+  -- prevent, and a known phrase and a new one used to disagree about it.
+  local ok, use_error = self.wallet:use_account(account.address)
+  if not ok then return self:fail(use_error) end
+  self.balance = nil
   self:refresh()
 
-  -- Made active, not merely selected — the same as the branch above, which is
-  -- the point. Unlocking with a new phrase used to import the wallet, put it
-  -- on screen, and leave the store spending from whichever one was active
-  -- before. Logging in *as* a wallet while the money moves from a different
-  -- one is exactly the mismatch this screen exists to prevent, and the two
-  -- branches disagreeing about what "logging in" means was the whole bug.
+  self.scroll = 0
   for index, entry in ipairs(self.wallets) do
-    if entry.address == account.address then
-      if not self:select(index) then return false end
-    end
+    if entry.address == account.address then self.selected = index end
   end
 
-  self.session = { address = account.address, label = account.label }
-  self:say("Imported " .. account.label)
+  self:say(welcome)
   self:emit("login")
   return account
 end
@@ -178,6 +237,10 @@ end
 --- Leave. The store is untouched; this only forgets what the window was showing.
 function Model:logout()
   self.session = nil
+  -- Unscoped again, so nothing of the session's view is left behind. The list
+  -- is not on screen at this point; it is cleared because leaving stale state
+  -- around for the next login to inherit is how the next bug gets in.
+  self:refresh()
   self.balance = nil
   self.confirm = nil
   self.form.to, self.form.amount = "", ""
@@ -200,7 +263,29 @@ end
 function Model:refresh()
   local accounts, err = self.wallet:accounts()
   if not accounts then return self:fail(err) end
-  self.wallets = accounts
+  self.all_wallets = accounts
+
+  -- A session is one mnemonic, and it shows the wallets that mnemonic
+  -- controls — not everything the store happens to hold.
+  --
+  -- The store is one home directory and may hold wallets from a dozen
+  -- different phrases. Showing all of them behind any one of them made the
+  -- login screen a doorway rather than a gate: unlocking with a brand new
+  -- phrase produced a "new wallet" sitting in a list of somebody else's.
+  --
+  -- `session.addresses` is the set derived from the phrase at login. Nothing
+  -- is hidden that the phrase can reach, and nothing is shown that it cannot.
+  if self.session then
+    local mine = {}
+    for _, account in ipairs(accounts) do
+      if self.session.addresses[tostring(account.address):lower()] then
+        mine[#mine + 1] = account
+      end
+    end
+    self.wallets = mine
+  else
+    self.wallets = accounts
+  end
 
   local info = self.wallet:info()
   self.info = info
@@ -240,6 +325,15 @@ function Model:create(label)
     label = label ~= "" and label or nil,
   })
   if not account then return self:fail(err) end
+
+  -- `account new` continues the active account's mnemonic, so a wallet made
+  -- inside a session belongs to that session's phrase and must stay visible.
+  -- Recorded rather than assumed: the scan that built the set stops at a gap
+  -- and may not have reached this index.
+  if self.session then
+    self.session.addresses[tostring(account.address):lower()] = true
+  end
+
   self:refresh()
   -- Land on the wallet that was just made, without making it active.
   --
