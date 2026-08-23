@@ -177,7 +177,16 @@ t.suite("card / number", function()
 end)
 
 t.suite("card / swipe", function()
-  local TRAVEL = 260
+  -- The real geometry, because the visibility question depends on it: the card
+  -- is a little narrower than the column it lives in, and it travels its own
+  -- width plus a gap so that one is clear as the other arrives.
+  local CARD, WINDOW = 247, 260
+  local TRAVEL = CARD + 16
+
+  --- Does a card at this offset overlap the column at all?
+  local function visible(place)
+    return math.abs(place.x) < (WINDOW + CARD) / 2
+  end
 
   t.case("the card leaving starts exactly on the mark", function()
     local leaving, arriving = card.swipe(0, TRAVEL, 1)
@@ -196,7 +205,7 @@ t.suite("card / swipe", function()
     t.ok(math.abs(arriving.scale - 1) < 0.001, "at full size")
     t.ok(math.abs(arriving.alpha - 1) < 0.001, "and fully opaque")
     t.ok(math.abs(leaving.x + TRAVEL) < 0.001, "the other has gone a full card")
-    t.ok(math.abs(leaving.alpha) < 0.001, "and faded out entirely")
+    t.ok(not visible(leaving), "and is clear of the column")
   end)
 
   t.case("down the list scrolls the card left", function()
@@ -225,14 +234,42 @@ t.suite("card / swipe", function()
     end
   end)
 
-  t.case("it eases rather than sliding at a constant rate", function()
-    -- expo_out: most of the distance is covered immediately and the arrival
-    -- is a long settle. Linear motion is the thing this is not.
-    local _, arriving = card.swipe(0.5, TRAVEL, 1)
-    local travelled = TRAVEL - arriving.x
-    t.ok(travelled > TRAVEL * 0.8,
-      "half way through the time it should be most of the way there, got "
-        .. travelled .. " of " .. TRAVEL)
+  t.case("both cards are visible together for most of it", function()
+    -- The property the whole animation exists for, and the one the first
+    -- attempt failed: with a front-loaded curve the outgoing card was half a
+    -- screen away within a tenth of the time and faded besides, so what you
+    -- saw was a new card appearing, not two cards moving.
+    --
+    local together = 0
+    for step = 0, 100 do
+      local leaving, arriving = card.swipe(step / 100, TRAVEL, 1)
+      if visible(leaving) and visible(arriving) then together = together + 1 end
+    end
+    t.ok(together >= 70,
+      "the two should share the column for most of the swipe, got "
+        .. together .. "%")
+  end)
+
+  t.case("neither card fades", function()
+    -- The one leaving goes by being clipped at the edge of the column, the
+    -- way a card leaves a window in the physical world. An outgoing card at a
+    -- third opacity is not something you see travelling.
+    for step = 0, 20 do
+      local leaving, arriving = card.swipe(step / 20, TRAVEL, 1)
+      t.equal(leaving.alpha, 1, "the card leaving stays opaque")
+      t.equal(arriving.alpha, 1, "so does the one arriving")
+    end
+  end)
+
+  t.case("it decelerates without front-loading", function()
+    -- The band the curve has to sit in, pinned from both sides. Ahead of
+    -- linear at the midpoint, or it is not easing; not so far ahead that the
+    -- outgoing card is gone before the eye finds it, which is the failure
+    -- `expo_out` had at 97%.
+    local _, half = card.swipe(0.5, TRAVEL, 1)
+    local moved = (TRAVEL - half.x) / TRAVEL
+    t.ok(moved > 0.55, "it should be ahead of linear by half time, got " .. moved)
+    t.ok(moved < 0.85, "but not nearly finished, got " .. moved)
   end)
 
   t.case("it only ever moves forward", function()

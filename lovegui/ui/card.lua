@@ -390,28 +390,56 @@ end
 --- left — the way the eye expects a list to move under a cursor going down.
 --- -1 reverses it.
 ---
---- The curve is `expo_out`: nearly all the distance is covered immediately and
---- the arrival is a long settle. A swipe should feel thrown, and a symmetrical
---- curve feels driven by a motor instead. Both cards read from the one eased
---- number, because two curves would be two objects.
+--- The curve is `quad_out`, chosen by measuring rather than by taste.
+---
+--- The requirement is that both cards are on screen together for most of the
+--- swipe — that overlap is the entire difference between a scroll and a cut.
+--- How long that lasts is a property of the curve, so the curves were counted:
+--- what fraction of the animation has both cards overlapping the column.
+---
+---     linear         93%    no easing at all
+---     quad_out       79%    moves 19% by a tenth of the time, 75% by half
+---     smoothstep     77%    but only 3% moved by a tenth: a mechanical slide
+---     cubic_out      65%
+---     expo_out       47%    50% of the distance in the first tenth
+---     expo_in_out    37%    still for a quarter, then a snap
+---
+--- `expo_out` was the first attempt, on the reasoning that a swipe should feel
+--- thrown. It does — and it puts half the distance in the first thirty
+--- milliseconds, so the card being replaced is gone before the eye finds it
+--- and what you see is a new card appearing from the right. That is a cut with
+--- a slide on the end of it. `expo_in_out` was the second attempt and is
+--- worse: it holds still for a quarter of the time and then snaps.
+---
+--- `quad_out` keeps the deceleration that makes an arrival feel like an
+--- arrival, starts promptly enough to feel thrown, and leaves both cards
+--- sharing the column for four fifths of the swipe. Both read from the one
+--- eased number, because two curves would be two objects.
+---
+--- **Neither card fades.** The one leaving is opaque until the moment it is
+--- gone, and it goes by being clipped away at the edge of the column — the way
+--- a card leaves a window in the physical world. Fading it was the other half
+--- of the first attempt's problem: an outgoing card at a third opacity is not
+--- something you see travelling, it is something you see disappearing.
 ---
 --- Returns `outgoing, incoming`, each `{x, scale, alpha}`, and the eased
 --- progress. At 0 the outgoing card sits exactly on the layout's mark; at 1 the
 --- incoming one does, so neither ever needs clamping at the seams.
 function card.swipe(progress, travel, direction)
-  local eased = anim.expo_out(math.min(1, math.max(0, progress)))
+  local eased = anim.quad_out(math.min(1, math.max(0, progress)))
   direction = direction or 1
 
   local outgoing = {
     x = -direction * travel * eased,
-    -- Settles back as it goes, and has faded out before it reaches the edge.
-    scale = 1 - 0.10 * eased,
-    alpha = 1 - eased * eased,
+    -- Settles back a little as it goes, so the two occupy depth rather than
+    -- only width. Small enough that it reads as distance, not as shrinking.
+    scale = 1 - 0.06 * eased,
+    alpha = 1,
   }
   local incoming = {
     x = direction * travel * (1 - eased),
-    scale = 0.90 + 0.10 * eased,
-    alpha = math.min(1, eased * 2.2),
+    scale = 0.94 + 0.06 * eased,
+    alpha = 1,
   }
   return outgoing, incoming, eased
 end

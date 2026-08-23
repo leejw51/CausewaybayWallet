@@ -14,7 +14,7 @@ There is no cryptography in this directory, no store, and no argument parsing.
 ```sh
 make run       # opens the window
 make app       # a double-clickable macOS .app with LÖVE inside it
-make test      # 172 headless tests, no LÖVE required
+make test      # 174 headless tests, no LÖVE required
 make shots     # writes a PNG of each screen, for review from a terminal
 make sfx       # re-synthesises the sound effects
 ```
@@ -258,12 +258,30 @@ as a stack of cards being moved through rather than a panel whose contents were
 replaced.
 
 Moving *down* the list scrolls the card **left** — the way the eye expects a
-list to move under a cursor going down — and moving up reverses it. The curve
-is `expo_out`: nearly all the distance is covered immediately and the arrival is
-a long settle, because a swipe should feel thrown rather than driven by a motor.
-Both cards read from the one eased number, since two curves would be two
-objects. The one leaving settles back and fades as it goes; the one arriving
-comes forward into place, so they occupy depth rather than only width.
+list to move under a cursor going down — and moving up reverses it. Neither
+card fades: the one leaving is opaque until it is gone, and it goes by being
+clipped at the edge of the column, the way a card leaves a window in the
+physical world.
+
+The curve was chosen by measuring, not by taste. The requirement is that both
+cards share the column for most of the swipe, and how long that lasts is a
+property of the curve:
+
+| | both visible | |
+| --- | --- | --- |
+| `linear` | 93% | no easing at all |
+| **`quad_out`** | **79%** | 19% moved by a tenth of the time, 75% by half |
+| `smoothstep` | 77% | but only 3% moved by a tenth — a mechanical slide |
+| `cubic_out` | 65% | |
+| `expo_out` | 47% | half the distance in the first tenth |
+| `expo_in_out` | 37% | still for a quarter, then a snap |
+
+`expo_out` was the first attempt, on the reasoning that a swipe should feel
+thrown. It does — and it puts half the distance in the first thirty
+milliseconds, so the outgoing card is gone before the eye finds it and what you
+see is a new card *appearing* from the right. That is a cut with a slide on the
+end of it. `quad_out` keeps the deceleration that makes an arrival feel like an
+arrival and still leaves both cards on screen together for four fifths of it.
 
 At either end of the animation a card sits exactly on the layout's mark, so
 nothing needs clamping at the seams and repeated swipes cannot drift.

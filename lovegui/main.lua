@@ -68,10 +68,11 @@ local game = {
 --- How long one card takes to swipe out and the next to swipe in.
 ---
 --- Short enough that holding an arrow key is not a queue of animations, long
---- enough that the movement is legible rather than a flicker. `expo_out` puts
---- nearly all of the distance in the first third of it, so it feels shorter
---- than it is.
-local CARD_SWIPE = 0.32
+--- enough that both cards are on screen together for a beat you can actually
+--- see. 0.32 with a front-loaded curve was neither: the card being replaced
+--- was gone before the eye found it, and the whole thing read as a new card
+--- appearing rather than two cards moving.
+local CARD_SWIPE = 0.42
 
 --- How long the launch plays before an outcome is allowed to land.
 ---

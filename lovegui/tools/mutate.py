@@ -148,8 +148,16 @@ MUTATIONS = [
      "x = direction * travel * eased,", "card", None),
 
     ("card: the swipe stops easing", "ui/card.lua",
-     "local eased = anim.expo_out(math.min(1, math.max(0, progress)))",
+     "local eased = anim.quad_out(math.min(1, math.max(0, progress)))",
      "local eased = math.min(1, math.max(0, progress))", "card", None),
+
+    ("card: the swipe front-loads again", "ui/card.lua",
+     "local eased = anim.quad_out(math.min(1, math.max(0, progress)))",
+     "local eased = anim.expo_out(math.min(1, math.max(0, progress)))", "card", None),
+
+    ("card: the outgoing card fades instead of being clipped", "ui/card.lua",
+     "    scale = 1 - 0.06 * eased,\n    alpha = 1,",
+     "    scale = 1 - 0.06 * eased,\n    alpha = 1 - eased,", "card", None),
 
     ("sound: mute stops muting", "ui/sound.lua",
      "if not sound.enabled then return false end", "", "sound", None),
