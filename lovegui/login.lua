@@ -141,9 +141,9 @@ function login:draw(model, state, springs)
   local t = self.entrance.value
   local width, height = theme.WIDTH, theme.HEIGHT
 
-  local shake_x = anim.shake(self.time, self.shake)
+  local shake_x = anim.shake_offset(self.time, self.shake)
   love.graphics.push()
-  love.graphics.translate(math.floor(shake_x), 0)
+  love.graphics.translate(shake_x, 0)
 
   -- The vault, breathing, above the whole thing.
   local bob = math.sin(self.time * 1.2) * 2

@@ -214,6 +214,14 @@ MUTATIONS = [
     ("sound: the throttle is removed", "ui/sound.lua",
      "if last and sound.clock - last < gate then return false end", "", "sound", None),
 
+    ("shake: a settled shake still moves the screen", "ui/anim.lua",
+     "if not amount or amount < SETTLED then return 0, 0 end",
+     "if amount <= 0 then return 0, 0 end", "anim", None),
+
+    ("shake: the offset is floored instead of rounded", "ui/anim.lua",
+     "  return math.floor(x + 0.5), math.floor(y + 0.5)",
+     "  return math.floor(x), math.floor(y)", "anim", None),
+
     ("anim: decay becomes frame-dependent", "ui/anim.lua",
      "function anim.approach(current, target, rate, dt)",
      "function anim.approach(current, target, rate, dt)\n  return current + (target - current) * 0.1 --[[mutant]]",

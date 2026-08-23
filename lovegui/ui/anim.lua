@@ -288,9 +288,34 @@ end
 
 --- Shake offset that decays, for errors. Uses two frequencies so it reads as a
 --- rattle rather than a clean sine.
+--- Below this a shake cannot move anything, so it is over.
+---
+--- The offset is applied in whole pixels, and any amplitude under half a pixel
+--- rounds to zero. Saying so here is what makes *settled* mean settled:
+--- exponential decay never reaches zero, so `amount > 0` was still true at
+--- 1e-39 and the screen was still being asked to move.
+local SETTLED = 0.5
+
 function anim.shake(time, amount)
-  if amount <= 0 then return 0, 0 end
+  if not amount or amount < SETTLED then return 0, 0 end
   return sin(time * 47) * amount, cos(time * 31) * amount * 0.6
+end
+
+--- The shake in whole pixels, which is how it is actually applied.
+---
+--- Rounded, not floored, and that is the whole point of this function
+--- existing. `math.floor` sends every negative value to at least -1, however
+--- small — so a shake decayed to 1e-39, oscillating either side of zero, was
+--- translating the entire screen between 0 and -1 pixels forever. It read as a
+--- faint permanent tremble, and it outlived every animation that caused it.
+---
+--- Flooring is wrong for a symmetric offset even while the shake is real: it
+--- biases the whole screen half a pixel left and up for the duration.
+---
+--- Both call sites go through here so there is one place to be right.
+function anim.shake_offset(time, amount)
+  local x, y = anim.shake(time, amount)
+  return math.floor(x + 0.5), math.floor(y + 0.5)
 end
 
 return anim

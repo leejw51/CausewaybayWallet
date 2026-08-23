@@ -174,4 +174,68 @@ t.suite("anim / shorthands", function()
   end)
 end)
 
+t.suite("anim / shake", function()
+  t.case("a shake that has decayed away moves nothing", function()
+    -- The bug this exists for. Exponential decay never reaches zero, so the
+    -- old guard — `amount <= 0` — was still false at 1e-39, and the screen was
+    -- still being asked to move. It read as a faint permanent tremble that
+    -- outlived every animation that caused it.
+    for _, amount in ipairs({ 1e-4, 1e-12, 1e-39, 0, -1 }) do
+      for step = 0, 40 do
+        local x, y = anim.shake_offset(step * 0.017, amount)
+        t.equal(x, 0, "x moved at amount " .. amount)
+        t.equal(y, 0, "y moved at amount " .. amount)
+      end
+    end
+  end)
+
+  t.case("a decaying shake reaches nothing and stays there", function()
+    -- Driven the way the game drives it, and asserted over the whole tail
+    -- rather than at one instant: the old fault only showed on the frames
+    -- where the sine happened to be negative.
+    local shake, time, moved = 1.2, 0, 0
+    for frame = 1, 600 do
+      time = time + 1 / 60
+      shake = shake * math.exp(-9 / 60)
+      local x, y = anim.shake_offset(time, shake)
+      if frame > 90 and (x ~= 0 or y ~= 0) then moved = moved + 1 end
+    end
+    t.equal(moved, 0, "it should be still long before ten seconds are up")
+  end)
+
+  t.case("a real shake still shakes", function()
+    -- The dead zone must not swallow the effect it is guarding.
+    local seen = {}
+    for step = 0, 200 do
+      local x = anim.shake_offset(step * 0.013, 5)
+      seen[x] = true
+    end
+    local spread = 0
+    for _ in pairs(seen) do spread = spread + 1 end
+    t.ok(spread >= 5, "a strong shake should reach several offsets, got " .. spread)
+    t.ok(seen[0] ~= nil, "including the middle")
+  end)
+
+  t.case("it is rounded, not floored", function()
+    -- Flooring biases a symmetric offset half a pixel left and up for the
+    -- whole duration, and turns any infinitesimal negative into a whole pixel.
+    local low, high = 0, 0
+    for step = 0, 400 do
+      local x = anim.shake_offset(step * 0.011, 4)
+      if x < 0 then low = low + 1 elseif x > 0 then high = high + 1 end
+    end
+    local bias = math.abs(low - high) / (low + high)
+    t.ok(bias < 0.2,
+      ("a symmetric shake should not favour one side: %d left, %d right"):format(low, high))
+  end)
+
+  t.case("the offsets are whole pixels", function()
+    for step = 0, 60 do
+      local x, y = anim.shake_offset(step * 0.019, 6)
+      t.equal(x, math.floor(x), "x should be whole, got " .. x)
+      t.equal(y, math.floor(y), "y should be whole, got " .. y)
+    end
+  end)
+end)
+
 return true

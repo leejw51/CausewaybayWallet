@@ -1320,9 +1320,9 @@ function love.draw()
     game.stars:draw(game.time)
 
     -- The whole scene shakes on an error, and slides when the screen changes.
-    local shake_x, shake_y = anim.shake(game.time, game.shake)
+    local shake_x, shake_y = anim.shake_offset(game.time, game.shake)
     love.graphics.push()
-    love.graphics.translate(math.floor(shake_x), math.floor(shake_y))
+    love.graphics.translate(shake_x, shake_y)
 
     if game.error then
       draw_fatal()
