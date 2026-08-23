@@ -476,6 +476,245 @@ t.suite("model / the session", function()
   end)
 end)
 
+t.suite("model / saving and exporting", function()
+  --- A model over a store with a known home, so the files can be looked at.
+  local function stocked()
+    local wallet, home = support.wallet()
+    local model = Model.new(wallet, nil)
+    model:refresh()
+    model:create("one")
+    model:create("two")
+    return model, home
+  end
+
+  local function read(path)
+    local handle = io.open(path, "r")
+    if not handle then return nil end
+    local body = handle:read("*a")
+    handle:close()
+    return body
+  end
+
+  t.case("saving writes all four formats beside the store", function()
+    local model, home = stocked()
+    local written = model:save_wallets()
+    t.ok(written, "it should have reported what it wrote")
+    t.equal(#written, 4, "four formats")
+
+    for _, name in ipairs({ "wallets.csv", "wallets.md", "wallets.txt", "wallets.jsonl" }) do
+      local body = read(home .. "/" .. name)
+      t.ok(body ~= nil, name .. " should exist")
+      for _, account in ipairs(model.wallets) do
+        t.contains(body, account.address, name .. " should carry every wallet")
+      end
+    end
+  end)
+
+  t.case("what is saved holds no secret", function()
+    -- The whole reason this is a separate verb from exporting. Losing this
+    -- file should cost nothing.
+    local model, home = stocked()
+    model:save_wallets()
+    local secret = model.wallet:export_account(model.wallets[1].address)
+    for _, name in ipairs({ "wallets.csv", "wallets.md", "wallets.txt", "wallets.jsonl" }) do
+      local body = read(home .. "/" .. name)
+      t.ok(not body:find(secret.private_key, 1, true), "a private key reached " .. name)
+      t.ok(not body:find(secret.mnemonic, 1, true), "a mnemonic reached " .. name)
+    end
+  end)
+
+  t.case("exporting writes the keys, and everything asked of it", function()
+    local model, home = stocked()
+    local path = model:export_wallets()
+    t.ok(path, "it should have reported the file")
+
+    local lines = {}
+    for line in read(path):gmatch("[^\n]+") do lines[#lines + 1] = line end
+    t.equal(#lines, #model.wallets, "one line per wallet")
+
+    local json = require("causewaybay.json")
+    local record = json.decode(lines[1])
+    t.ok(#record.mnemonic > 0, "a mnemonic")
+    t.ok(record.index ~= nil, "an index")
+    t.contains(record.private_key, "0x", "a private key")
+    t.equal(#record.public_key_compressed, 68, "a 33-byte public key")
+    t.equal(#record.public_key, 130, "a 64-byte public key")
+    t.equal(record.address, record.address_checksummed:lower(), "both spellings")
+  end)
+
+  t.case("the exported keys are the real ones", function()
+    -- A file of plausible-looking keys that do not open the wallets would be
+    -- the worst possible outcome here: discovered only when it is needed.
+    local model, home = stocked()
+    model:export_wallets()
+
+    local json = require("causewaybay.json")
+    local body = read(home .. "/" .. require("export").SECRET_FILE)
+    local first = json.decode(body:match("[^\n]+"))
+
+    local derived = model.wallet:derive({ private_key = first.private_key })
+    t.equal(derived.address:lower(), first.address,
+      "the private key must derive the address it is filed under")
+
+    local from_phrase = model.wallet:derive({ mnemonic = first.mnemonic, index = first.index })
+    t.equal(from_phrase.address:lower(), first.address,
+      "and so must the mnemonic at that index")
+  end)
+
+  t.case("saving and exporting are scoped to the session", function()
+    -- The list on screen is scoped to the phrase; the files must be too, or
+    -- the scoping quietly does not apply to the thing that leaves the machine.
+    local model, home = stocked()
+    local phrase = model:offer_mnemonic(12)
+    model:login(phrase)
+    t.equal(#model.wallets, 1, "the session sees one")
+
+    model:save_wallets()
+    model:export_wallets()
+
+    local body = read(home .. "/wallets.csv")
+    local count = 0
+    for _ in body:gmatch("0x%x+") do count = count + 1 end
+    t.equal(count, 1, "only the session's wallet should be in the file")
+  end)
+
+  t.case("nothing to write is refused rather than writing nothing", function()
+    local wallet = support.wallet()
+    local model = Model.new(wallet, nil)
+    model:refresh()
+    t.equal(model:save_wallets(), false)
+    t.equal(model.status.kind, "error")
+    t.equal(model:export_wallets(), false)
+  end)
+end)
+
+t.suite("model / wiping the store", function()
+  t.case("logging out normally leaves everything alone", function()
+    local wallet, home = support.wallet()
+    local model = Model.new(wallet, nil)
+    model:refresh()
+    model:create("keep-me")
+
+    model:logout()
+    local handle = io.open(home .. "/accounts.jsonl", "r")
+    t.ok(handle ~= nil, "the store must survive an ordinary logout")
+    if handle then handle:close() end
+  end)
+
+  t.case("logging out with a wipe removes the store", function()
+    local wallet, home = support.wallet()
+    local model = Model.new(wallet, nil)
+    model:refresh()
+    model:create("goodbye")
+    model:save_wallets()
+    model:export_wallets()
+
+    model:logout({ wipe = true })
+
+    for _, name in ipairs({ "accounts.jsonl", "config.jsonl", "recent.jsonl",
+        "wallets.csv", "wallets.jsonl", require("export").SECRET_FILE }) do
+      local handle = io.open(home .. "/" .. name, "r")
+      t.equal(handle, nil, name .. " should be gone")
+      if handle then handle:close() end
+    end
+  end)
+
+  t.case("an exported key file does not survive the wipe", function()
+    -- Leaving the keys behind after deleting the store they came from would
+    -- make the wipe a gesture rather than a fact.
+    local wallet, home = support.wallet()
+    local model = Model.new(wallet, nil)
+    model:refresh()
+    model:create("one")
+    model:export_wallets()
+    model:logout({ wipe = true })
+
+    local handle = io.open(home .. "/" .. require("export").SECRET_FILE, "r")
+    t.equal(handle, nil, "the exported keys must go too")
+    if handle then handle:close() end
+  end)
+
+  t.case("it says how much it removed", function()
+    local wallet = support.wallet()
+    local model = Model.new(wallet, nil)
+    model:refresh()
+    model:create("one")
+    model:logout({ wipe = true })
+    t.equal(model.status.kind, "error", "a wipe is reported loudly")
+    t.contains(model.status.text, "Wiped")
+  end)
+end)
+
+t.suite("model / remembering a session", function()
+  t.case("a snapshot carries no secret", function()
+    -- The point of remembering a session is to skip the gate, not to keep the
+    -- thing the gate asks for.
+    local model = model_over()
+    local phrase = model:login(model:offer_mnemonic(12)) and nil
+    phrase = model:offer_mnemonic(12)
+    model:login(phrase)
+
+    local snapshot = model:session_snapshot()
+    local blob = require("causewaybay.json").encode(snapshot)
+    t.ok(not blob:find("abandon", 1, true), "no phrase")
+    for word in phrase:gmatch("%S+") do
+      t.ok(not blob:lower():find(word:lower() .. " ", 1, true),
+        "no run of the phrase reached the snapshot")
+    end
+    local secret = model.wallet:export_account(model.session.address)
+    t.ok(not blob:find(secret.private_key, 1, true), "no private key")
+    t.ok(not blob:find(secret.mnemonic, 1, true), "no mnemonic")
+  end)
+
+  t.case("a restored session sees the same wallets", function()
+    local model = model_over()
+    -- An unrelated wallet, so the store genuinely holds more than the session
+    -- does and the scoping has something to exclude.
+    model:create("stranger")
+
+    local phrase = model:offer_mnemonic(12)
+    model:login(phrase)
+    model:create("second")
+    local before = #model.wallets
+    local snapshot = model:session_snapshot()
+
+    local fresh = Model.new(model.wallet, nil)
+    fresh:refresh()
+    t.ok(#fresh.wallets > before, "logged out it sees the whole store")
+
+    t.ok(fresh:restore_session(snapshot), "it should come back")
+    t.ok(fresh:logged_in(), "and be a session")
+    t.equal(#fresh.wallets, before, "scoped exactly as it was")
+    t.equal(fresh.active, snapshot.address, "and spending from the same wallet")
+  end)
+
+  t.case("there is no session to restore before logging in", function()
+    t.equal(model_over():session_snapshot(), nil)
+  end)
+
+  t.case("a snapshot for a wallet that is gone is refused", function()
+    -- Which is exactly what a wipe leaves behind. An empty bank with no way
+    -- to say why is worse than being asked for the phrase again.
+    local model = model_over()
+    model:login(model:offer_mnemonic(12))
+    local snapshot = model:session_snapshot()
+    model:logout({ wipe = true })
+
+    local fresh = Model.new(model.wallet, nil)
+    t.equal(fresh:restore_session(snapshot), false, "the wallet is not there")
+    t.ok(not fresh:logged_in(), "so there is no session")
+  end)
+
+  t.case("junk is refused rather than trusted", function()
+    local model = model_over()
+    for _, junk in ipairs({ nil, {}, "text", 42, { address = 7 },
+        { address = "0xnope", addresses = {} } }) do
+      t.equal(model:restore_session(junk), false)
+      t.ok(not model:logged_in())
+    end
+  end)
+end)
+
 t.suite("model / the list window", function()
   local function model_with(count)
     local model = model_over()

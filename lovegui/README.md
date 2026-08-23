@@ -14,7 +14,7 @@ There is no cryptography in this directory, no store, and no argument parsing.
 ```sh
 make run       # opens the window
 make app       # a double-clickable macOS .app with LÖVE inside it
-make test      # 191 headless tests, no LÖVE required
+make test      # 221 headless tests, no LÖVE required
 make shots     # writes a PNG of each screen, for review from a terminal
 make sfx       # re-synthesises the sound effects
 ```
@@ -129,7 +129,27 @@ session is the next index of that phrase and comes back the next time it is
 unlocked. Nothing made in the window is ever stranded behind a phrase you were
 never shown.
 
-**LOGOUT** in the header comes back here, to a screen holding nothing: no
+### Staying logged in, and the way out
+
+The phrase is asked for **once**, not at every launch. What is remembered is a
+snapshot of the session — the addresses it covers and a label — written to
+LÖVE's save directory. **No phrase and no key**, because none is needed: the
+gate decides *which* wallets the window shows, and which wallets they are is
+public and already in the store. If what was remembered no longer fits — the
+store was wiped, the home moved — it is dropped and the gate comes back.
+
+**LOGOUT wipes the store.** Every `.jsonl` the wallet keeps is deleted, and so
+is anything this window wrote beside them, including an export of the keys —
+leaving those behind after deleting the store they came from would make the
+wipe a gesture rather than a fact. The mnemonics and the private keys are in
+those files and nowhere else, so anything not written down or exported first is
+**gone**, not locked.
+
+Which is why it asks. The first press arms it and the button changes to
+**WIPE?**; the second does it. It disarms itself after a few seconds, because
+walking away should not leave the wallet one stray click from being erased.
+
+LOGOUT comes back to a screen holding nothing: no
 phrase, not minted, offering PASTE rather than COPY. Nothing carries over from
 the session that ended, so NEW MNEMONIC after a logout starts a genuinely new
 wallet — and shows only that wallet.
@@ -354,6 +374,46 @@ the difference between a particle system and a memory leak with a pretty face.
 Everything draws additively, so overlapping particles bloom instead of
 flattening into an opaque blob.
 
+## Getting the wallets out
+
+Two buttons under the card, and they are deliberately different verbs.
+
+**SAVE** writes the address list in all four formats at once —
+`wallets.jsonl`, `.csv`, `.md`, `.txt` — into the wallet's own home directory.
+Public information: labels, addresses, indices, derivation paths. Which format
+you want depends on where it is going, which is why it writes all of them, and
+losing the file costs nothing. A label is free text and can hold a comma, a
+quote, a newline or a pipe — every one of those is a separator in one of these
+formats — so each is escaped for the format it lands in, and there is a test
+with a label containing all four.
+
+**KEYS** writes `wallets-secret.jsonl`, one JSON object per wallet:
+
+| | |
+| --- | --- |
+| `mnemonic` | the phrase that recovers it |
+| `index` | its BIP-44 address index |
+| `address_checksummed` | EIP-55, the form a person compares by eye |
+| `address` | lower case, the form many tools compare *with* |
+| `private_key` | |
+| `public_key_compressed` | 33 bytes |
+| `public_key` | 64 bytes |
+
+Both spellings of the address are there because EIP-55 is a property of the
+text and not of the address; a file carrying only one sends somebody to write
+the conversion themselves, and getting it subtly wrong is a way to lose money.
+The public keys are not in the store — it keeps only what it needs to sign — so
+each is derived from the private key as the file is written.
+
+Anyone who reads that file owns the money in it. So it arms like LOGOUT does,
+it is written owner-only (`chmod 600`), and it is named `-secret` on purpose:
+the repository ignores `*secret*.jsonl` by name at its root, which closes the
+single most likely way for it to escape.
+
+Both are **scoped to the session**, like the list on screen. Exporting wallets
+the phrase does not control would be the scoping quietly not applying to the
+one thing that leaves the machine.
+
 ## Sound
 
 Fifteen effects in `assets/sfx`, **synthesised** by `tools/generate-sfx.py`
@@ -550,6 +610,7 @@ luajit tests/init.lua anim       # one suite
 | `login` | that the phrase is never drawn, the word count, and what submitting does |
 | `boot` | that every figure on the boot screen is the wallet's own, and that a missing library halts |
 | `launch` | that the rocket always ends, caps its thrust, and holds an early outcome |
+| `export` | that a label cannot break the file it is written into, and the key file holds every field it promises |
 | `model` | wallets, screens, networks, the session, the list window, the send flow and the form, against a real store |
 
 ### Whether the tests would actually fail

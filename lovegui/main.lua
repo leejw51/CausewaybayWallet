@@ -28,16 +28,23 @@ local card = require("ui.card")
 local Launch = require("ui.launch")
 local Boot = require("boot")
 local Login = require("login")
-local Model = require("model")
 
 -- The repository root, so both this and the worker thread can find `luacli`.
 -- `love.filesystem` is sandboxed and cannot reach it, so the real path is what
--- gets used, and `package.path` is set before anything is required.
+-- gets used.
+--
+-- This has to happen before anything that reaches the binding is required, and
+-- `model.lua` now does — it loads `export.lua`, which needs the JSON encoder.
+-- Requiring it above this line failed at startup with a missing module, and
+-- neither the tests nor `make lint` could see it: the tests set the path
+-- themselves before requiring anything, and lint byte-compiles without ever
+-- running a `require`. It is only reachable by starting the game.
 local ROOT = love.filesystem.getSource() .. "/.."
 package.path = ROOT .. "/luacli/?.lua;" .. ROOT .. "/luacli/?/init.lua;" .. package.path
 
 local causewaybay = require("causewaybay")
 local json = require("causewaybay.json")
+local Model = require("model")
 
 local game = {
   time = 0,
@@ -64,7 +71,18 @@ local game = {
   -- of a phrase that was already there), and looking the label back up by
   -- address then finds whichever of them came last.
   face = { shown = nil, next = nil, turn = 1, key = nil, index = nil, dir = 1 },
+  -- Seconds left on an armed destructive button. See ARM_TIME.
+  armed = {},
 }
+
+--- How long a destructive button stays armed after the first press.
+---
+--- LOGOUT deletes the store and EXPORT writes every private key to a file.
+--- Neither should happen because a pointer was in the wrong place, and neither
+--- is worth a modal — a button that says what it is about to do, and waits, is
+--- the smallest thing that makes a misclick harmless. It disarms itself, so
+--- walking away does not leave the wallet one stray click from being wiped.
+local ARM_TIME = 4
 
 --- How long one card takes to swipe out and the next to swipe in.
 ---
@@ -81,6 +99,48 @@ local CARD_SWIPE = 0.42
 local coin_target = { x = theme.WIDTH / 2, y = 90 }  -- where earned coins fly to
 local card_target = { x = theme.WIDTH / 2, y = 140 } -- the middle of the card
 local rocket = { x = theme.WIDTH / 2, y = 120 }      -- what the exhaust comes out of
+
+-- ----------------------------------------------------------------- session
+--
+-- Remembering that you are logged in, so the phrase is asked for once rather
+-- than at every launch.
+--
+-- What is written is addresses and a label — see `Model:session_snapshot`.
+-- Nothing secret, because nothing secret is needed: the gate decides *which*
+-- wallets the window shows, and which wallets they are is public. It goes in
+-- LÖVE's save directory rather than the wallet's home, so a wipe of the store
+-- and a forgetting of the session stay separate acts.
+
+local SESSION_FILE = "session"
+
+local function forget_session()
+  pcall(love.filesystem.remove, SESSION_FILE)
+end
+
+local function remember_session()
+  local snapshot = game.model and game.model:session_snapshot()
+  if not snapshot then return forget_session() end
+  pcall(love.filesystem.write, SESSION_FILE, json.encode(snapshot))
+end
+
+--- Put the remembered session back. False if there is nothing to put back, or
+--- what was remembered no longer fits the store — a wipe, or a different home.
+local function recall_session()
+  if not game.model then return false end
+  if not love.filesystem.getInfo(SESSION_FILE) then return false end
+
+  local body = love.filesystem.read(SESSION_FILE)
+  local decoded, snapshot = pcall(json.decode, body)
+  if not decoded then
+    forget_session()
+    return false
+  end
+  if game.model:restore_session(snapshot) then return true end
+
+  -- It did not fit. Drop it rather than trying again next time.
+  forget_session()
+  return false
+end
 
 -- ------------------------------------------------------------------- startup
 
@@ -189,7 +249,10 @@ function love.load()
 
   game.boot = Boot.new(wallet, nil)
   game.model = Model.new(wallet, start_worker(home, nil, library))
-  game.model:say("Ready.")
+  -- A remembered session greets you by name; only a cold start says "Ready".
+  if not recall_session() then
+    game.model:say("Ready.")
+  end
 end
 
 function love.quit()
@@ -318,6 +381,10 @@ function love.update(dt)
   -- of blips the moment the frame lands.
   sound.update(dt)
 
+  for name, left in pairs(game.armed) do
+    game.armed[name] = left > dt and (left - dt) or nil
+  end
+
   if game.boot then
     game.boot:update(dt)
     if game.boot:complete() then
@@ -352,6 +419,7 @@ function love.update(dt)
       -- is not the same as clearing it.
       game.login:forget()
       game.login = nil
+      remember_session()
       game.entrance:restart()
       game.fx:burst(theme.WIDTH / 2, theme.HEIGHT / 2,
         { count = 40, speed = 320, colour = { 0.42, 0.96, 0.48 }, life = 1.0 })
@@ -715,15 +783,30 @@ local function draw_header_buttons(model, state)
     love.window.setFullscreen(not full, "desktop")
   end
 
+  -- LOGOUT deletes the store, so it asks. The first press arms it and the
+  -- label says what the second one does; it disarms itself after a few
+  -- seconds, because walking away should not leave the wallet one stray click
+  -- from being wiped.
+  local armed = game.armed.logout ~= nil
   local out = { x = theme.WIDTH - 62, y = 5, w = 54, h = 15 }
-  if widgets.button(game.springs, "logout", out, "LOGOUT", state,
-      { colour = theme.colour.red, font = theme.font.small }) then
-    model:logout()
-    -- A brand new screen, which holds no phrase, is not minted, and offers
-    -- PASTE rather than COPY. Nothing is carried over from the session that
-    -- just ended — including which wallet it was, so NEW MNEMONIC after this
-    -- starts a genuinely new one.
-    game.login = Login.new()
+  if widgets.button(game.springs, "logout", out, armed and "WIPE?" or "LOGOUT", state,
+      { colour = armed and theme.colour.gold or theme.colour.red,
+        font = theme.font.small }) then
+    if armed then
+      game.armed.logout = nil
+      -- Everything the wallet keeps goes with the session. Anything not
+      -- exported first is gone, which is what the arming was for.
+      model:logout({ wipe = true })
+      forget_session()
+      -- A brand new screen, which holds no phrase, is not minted, and offers
+      -- PASTE rather than COPY. Nothing is carried over from the session that
+      -- just ended — including which wallet it was, so NEW MNEMONIC after this
+      -- starts a genuinely new one.
+      game.login = Login.new()
+    else
+      game.armed.logout = ARM_TIME
+      model:say("LOGOUT again to wipe every wallet", "error")
+    end
   end
 end
 
@@ -927,9 +1010,14 @@ local function draw_wallets(model, state, x)
   end
 
   -- ------------------------------------------------------------ actions
-  local refresh = { x = x + L.right, y = L.bar, w = 84, h = L.button_h }
+  --
+  -- Five buttons across the card's column, so they are all narrow and all in
+  -- the small font. Widths are hand-fitted to their labels rather than shared,
+  -- because REFRESH is seven characters and USE is three.
+  local small = theme.font.small
+  local refresh = { x = x + L.right, y = L.bar, w = 60, h = L.button_h }
   if widgets.button(game.springs, "refresh", refresh, "REFRESH", state,
-      { disabled = model:busy() or #model.wallets == 0 }) then
+      { font = small, disabled = model:busy() or #model.wallets == 0 }) then
     model:fetch_balance()
   end
 
@@ -939,20 +1027,45 @@ local function draw_wallets(model, state, x)
     model:create("")
   end
 
-  -- The card's own two verbs, under the card. COPY takes the address the card
-  -- is showing — which is the one on screen, not the one the wallet happens to
-  -- be spending from, because the card is what a person is looking at.
-  local copy = { x = x + L.right + 88, y = L.bar, w = 76, h = L.button_h }
+  -- The card's own verbs. COPY takes the address the card is showing — the one
+  -- on screen, not the one the wallet happens to be spending from, because the
+  -- card is what a person is looking at.
+  local copy = { x = x + L.right + 64, y = L.bar, w = 46, h = L.button_h }
   if widgets.button(game.springs, "copy", copy, "COPY", state,
-      { colour = theme.colour.cyan, disabled = selected == nil }) then
+      { font = small, colour = theme.colour.cyan, disabled = selected == nil }) then
     copy_to_clipboard(model, selected.address, "address")
   end
 
   local usable = selected ~= nil and selected.address ~= model.active
-  local use = { x = x + L.right + 168, y = L.bar, w = 84, h = L.button_h }
-  if widgets.button(game.springs, "use", use, usable and "USE CARD" or "IN USE",
-      state, { colour = theme.colour.gold, disabled = not usable }) then
+  local use = { x = x + L.right + 114, y = L.bar, w = 48, h = L.button_h }
+  if widgets.button(game.springs, "use", use, usable and "USE" or "IN USE",
+      state, { font = small, colour = theme.colour.gold, disabled = not usable }) then
     model:select(model.selected)
+  end
+
+  -- Addresses, in four formats at once. Public information: which format you
+  -- want depends on where it is going, and the file costs nothing to lose.
+  local save = { x = x + L.right + 166, y = L.bar, w = 44, h = L.button_h }
+  if widgets.button(game.springs, "save", save, "SAVE", state,
+      { font = small, colour = theme.colour.green, disabled = #model.wallets == 0 }) then
+    model:save_wallets()
+  end
+
+  -- And the keys. Arms first, like LOGOUT: this writes every mnemonic and
+  -- every private key to a file, and a misclick should not be how that
+  -- happens.
+  local ready = game.armed.keys ~= nil
+  local keys = { x = x + L.right + 214, y = L.bar, w = 46, h = L.button_h }
+  if widgets.button(game.springs, "keys", keys, ready and "SURE?" or "KEYS", state,
+      { font = small, colour = ready and theme.colour.gold or theme.colour.red,
+        disabled = #model.wallets == 0 }) then
+    if ready then
+      game.armed.keys = nil
+      model:export_wallets()
+    else
+      game.armed.keys = ARM_TIME
+      model:say("KEYS again to write every private key", "error")
+    end
   end
 end
 

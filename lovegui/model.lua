@@ -28,6 +28,9 @@
 --- that is real and already priced. It is the same trick the CLI\'s interactive
 --- mode uses, for the same reason.
 
+--- File formats live next door, because they are pure text and this is not.
+local export = require("export")
+
 local Model = {}
 Model.__index = Model
 
@@ -292,8 +295,20 @@ function Model:offer_mnemonic(words)
   return generated.mnemonic
 end
 
---- Leave. The store is untouched; this only forgets what the window was showing.
-function Model:logout()
+--- Leave, and optionally destroy the store on the way out.
+---
+--- `opts.wipe` deletes every file the wallet keeps. That is the end of those
+--- wallets: the mnemonics and the private keys are in those files and nowhere
+--- else, so anything not exported first is gone. The caller is expected to
+--- have asked, twice.
+---
+function Model:logout(opts)
+  opts = opts or {}
+  local wiped = nil
+  if opts.wipe then
+    wiped = self:wipe_store()
+  end
+
   self.session = nil
   -- Unscoped again, so nothing of the session's view is left behind. The list
   -- is not on screen at this point; it is cleared because leaving stale state
@@ -306,11 +321,216 @@ function Model:logout()
   self.scroll = 0
   self.status = nil
   self:emit("logout")
+  if wiped then
+    self:say(("Wiped the store - %d files removed"):format(wiped), "error")
+    self:emit("wiped")
+  end
+  return true
+end
+
+--- The session as plain data, for remembering it between runs.
+---
+--- Addresses and a label. **No phrase and no key** — there is nothing secret
+--- in here to write down, and that is deliberate: the point of remembering a
+--- session is to skip the gate, not to keep the thing the gate asks for.
+--- Everything in this snapshot is already public, and already in the store.
+function Model:session_snapshot()
+  if not self.session then return nil end
+  local addresses = {}
+  for address in pairs(self.session.addresses) do
+    addresses[#addresses + 1] = address
+  end
+  table.sort(addresses)
+  return {
+    address = self.session.address,
+    label = self.session.label,
+    addresses = addresses,
+  }
+end
+
+--- Put a remembered session back, if it still fits the store.
+---
+--- It may not. The wallet it named can have been wiped, or the home pointed
+--- somewhere else, and a session over wallets that are not there is worse than
+--- no session — it would show an empty bank and no way to say why. So this
+--- checks the account is really there and refuses otherwise, which puts the
+--- login screen back where it belongs.
+function Model:restore_session(snapshot)
+  if type(snapshot) ~= "table" or type(snapshot.address) ~= "string" then
+    return false
+  end
+
+  local stored = self.wallet:accounts()
+  if not stored then return false end
+
+  local found
+  for _, entry in ipairs(stored) do
+    if entry.address == snapshot.address then found = entry end
+  end
+  if not found then return false end
+
+  local set = {}
+  for _, address in ipairs(snapshot.addresses or {}) do
+    set[tostring(address):lower()] = true
+  end
+  set[tostring(found.address):lower()] = true
+
+  local ok = self.wallet:use_account(found.address)
+  if not ok then return false end
+
+  self.session = { address = found.address, label = found.label, addresses = set }
+  self.balance = nil
+  self:refresh()
+  self.scroll = 0
+  for index, entry in ipairs(self.wallets) do
+    if entry.address == found.address then self.selected = index end
+  end
+  self:say("Welcome back, " .. found.label)
+  self:emit("login")
   return true
 end
 
 function Model:logged_in()
   return self.session ~= nil
+end
+
+-- ------------------------------------------------------------------- files
+--
+-- Writing the wallet list out, and clearing it away. Plain `io`, not
+-- `love.filesystem`: these go where the wallet's own files are, which is
+-- outside the sandbox, and it keeps the whole of this testable.
+
+--- Where this window writes: the directory the wallet already keeps its store
+--- in. Somewhere a person can find, beside the thing it describes.
+function Model:home()
+  return self.info and self.info.home or nil
+end
+
+local function write_file(path, contents, private)
+  local handle, err = io.open(path, "w")
+  if not handle then return nil, err end
+  handle:write(contents)
+  handle:close()
+  if private then
+    -- Owner-only. Lua cannot chmod, and a file of private keys left at the
+    -- umask default is readable by anything else running as anyone on a
+    -- shared machine. A failure here is not fatal — the file exists and the
+    -- caller is told where — but it is the reason this is worth doing at all.
+    os.execute(("chmod 600 %q 2>/dev/null"):format(path))
+  end
+  return path
+end
+
+--- Save the address list, in every format at once.
+---
+--- Public information only: labels, addresses, indices, derivation paths.
+--- Losing this file costs nothing, which is exactly why it is a separate verb
+--- from the one below.
+---
+--- Scoped to the session, like the list on screen. Exporting wallets a phrase
+--- does not control would be the scoping quietly not applying to files.
+function Model:save_wallets()
+  local home = self:home()
+  if not home then return self:fail({ code = "io_error", message = "no wallet home" }) end
+  if #self.wallets == 0 then
+    return self:fail({ code = "usage", message = "no wallets to save" })
+  end
+
+  local written = {}
+  for name, contents in pairs(export.addresses(self.wallets)) do
+    local path, err = write_file(home .. "/" .. name, contents, false)
+    if not path then
+      return self:fail({ code = "io_error", message = "cannot write " .. name .. ": " .. tostring(err) })
+    end
+    written[#written + 1] = name
+  end
+  table.sort(written)
+
+  self:say(("Saved %d to %s"):format(#self.wallets, home))
+  self:emit("saved")
+  return written
+end
+
+--- Export everything needed to reconstruct these wallets somewhere else.
+---
+--- Mnemonics, private keys, both public keys, both spellings of the address.
+--- Anyone who reads the file owns the money in it.
+---
+--- The public keys are not in the store — it keeps what it needs to sign, and
+--- a public key is derivable — so each one is derived here from the private
+--- key the export already has. That costs a round trip per wallet and is the
+--- honest way to produce a field the store does not hold.
+function Model:export_wallets()
+  local home = self:home()
+  if not home then return self:fail({ code = "io_error", message = "no wallet home" }) end
+  if #self.wallets == 0 then
+    return self:fail({ code = "usage", message = "no wallets to export" })
+  end
+
+  local rows = {}
+  for _, account in ipairs(self.wallets) do
+    local secret, err = self.wallet:export_account(account.address)
+    if not secret then return self:fail(err) end
+
+    local keys = self.wallet:derive({ private_key = secret.private_key }) or {}
+    local address = tostring(secret.address or account.address)
+
+    rows[#rows + 1] = {
+      mnemonic = type(secret.mnemonic) == "string" and secret.mnemonic or "",
+      index = secret.index or account.index or 0,
+      address_checksummed = address,
+      address = address:lower(),
+      private_key = secret.private_key,
+      public_key_compressed = keys.public_key_compressed,
+      public_key = keys.public_key,
+    }
+  end
+
+  local path, err = write_file(home .. "/" .. export.SECRET_FILE,
+    export.secrets(rows), true)
+  if not path then
+    return self:fail({ code = "io_error", message = "cannot write: " .. tostring(err) })
+  end
+
+  self:say(("Exported %d keys to %s"):format(#rows, export.SECRET_FILE), "error")
+  self:emit("exported")
+  return path
+end
+
+--- Delete the store: every `.jsonl` file in the wallet's home.
+---
+--- This is the end of those wallets. The mnemonics and the private keys are in
+--- those files and nowhere else, so anything not written down or exported
+--- first is gone — not locked, gone. The caller is expected to have asked.
+---
+--- The names come from the wallet's own `info().files` rather than from a
+--- glob, so this removes what the wallet says its store is and cannot wander
+--- into a directory that happens to hold something else.
+function Model:wipe_store()
+  local files = self.info and self.info.files
+  if type(files) ~= "table" then
+    return self:fail({ code = "io_error", message = "the wallet did not say where its files are" })
+  end
+
+  local removed = 0
+  for _, path in pairs(files) do
+    if type(path) == "string" and path:match("%.jsonl$") then
+      if os.remove(path) then removed = removed + 1 end
+    end
+  end
+
+  -- Anything this window wrote beside them goes too. Leaving an export of the
+  -- keys behind after deleting the store they came from would make the wipe a
+  -- gesture rather than a fact.
+  local home = self:home()
+  if home then
+    for _, name in ipairs(export.ADDRESS_FILES) do
+      if os.remove(home .. "/" .. name) then removed = removed + 1 end
+    end
+    if os.remove(home .. "/" .. export.SECRET_FILE) then removed = removed + 1 end
+  end
+
+  return removed
 end
 
 -- ----------------------------------------------------------- local commands

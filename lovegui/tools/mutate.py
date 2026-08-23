@@ -125,6 +125,36 @@ MUTATIONS = [
      "  if not state or #events == 0 then return false end",
      "  if not state then return false end", "launch", None),
 
+    ("export: csv stops quoting a field that would split the row", "export.lua",
+     "  if text:find('[\",\\n]') then", "  if false then", "export", None),
+
+    ("export: markdown stops escaping a pipe", "export.lua",
+     'row[i] = (value(account, column, position):gsub("|", "\\\\|"))',
+     "row[i] = value(account, column, position)", "export", None),
+
+    ("export: the secret file drops a column", "export.lua",
+     '  "public_key_compressed",\n', "", "export", None),
+
+    ("save: the address files carry the keys", "model.lua",
+     "  for name, contents in pairs(export.addresses(self.wallets)) do",
+     "  for name, contents in pairs(export.addresses(self.all_wallets or self.wallets)) do",
+     "model", None),
+
+    ("wipe: the exported keys survive", "model.lua",
+     "    if os.remove(home .. \"/\" .. export.SECRET_FILE) then removed = removed + 1 end",
+     "", "model", None),
+
+    ("session: a snapshot for a missing wallet is trusted", "model.lua",
+     "  if not found then return false end\n\n  local set = {}",
+     "  found = found or { address = snapshot.address, label = snapshot.label or \"?\" }\n\n  local set = {}",
+     "model",
+     # Checked by hand: `use_account` is the real gate. It refuses an address
+     # the store does not hold, so a fabricated `found` cannot produce a
+     # session over wallets that are not there — the restore still returns
+     # false. The explicit check decides which *label* the session carries,
+     # not whether it happens, so removing it changes nothing observable.
+     "use_account already refuses an address the store does not hold"),
+
     ("boot: a missing library no longer halts", "boot.lua",
      "self.halted = true", "self.halted = false", "boot", None),
 
