@@ -13,6 +13,11 @@ function love.conf(t)
   t.window.minwidth = 480
   t.window.minheight = 270
   t.window.resizable = true
+  -- Filling the display is the point of a 480x270 canvas: a 1920x1080 screen
+  -- is exactly 4x it, so desktop fullscreen gives a perfect fit with no
+  -- letterbox at all. F11 or Alt+Enter comes back out.
+  t.window.fullscreen = true
+  t.window.fullscreentype = "desktop"
   t.window.vsync = 1
   -- No MSAA: this is pixel art, and the one thing it must not have is
   -- anti-aliased edges.

@@ -13,6 +13,7 @@
 
 local theme = require("ui.theme")
 local anim = require("ui.anim")
+local sound = require("ui.sound")
 
 local widgets = {}
 
@@ -66,9 +67,18 @@ function widgets.button(springs, key, box, label, state, options)
   -- Two springs: one for the hover glow, one snappier for the press. Pressing
   -- is instant feedback and wants stiffness; hovering is ambience.
   local lift = springs:get(key .. ".hover", 260, 0.65)
+  -- The sound goes with the spring rather than with the boolean: `lift.value`
+  -- near zero is the frame the pointer *arrived*, where a hover tick belongs.
+  -- Playing on `hovered` alone would fire every frame the pointer rests on a
+  -- button, which the throttle would then have to hide.
+  if hovered and lift.value < 0.02 and not options.silent then
+    sound.play("hover")
+  end
   lift:to(hovered and 1 or 0)
   local press = springs:get(key .. ".press", 900, 0.5)
   press:to(clicked and 1 or 0)
+
+  if clicked and not options.silent then sound.play("press") end
 
   local accent = options.colour or theme.colour.cyan
   local sink = press.value * 2

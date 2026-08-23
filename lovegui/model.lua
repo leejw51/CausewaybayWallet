@@ -58,6 +58,8 @@ function Model.new(wallet, jobs)
     confirm = nil,
     focus = "to",
     selected = 1,
+    scroll = 0,      -- first visible row of the wallet list
+    session = nil,   -- the wallet a mnemonic unlocked; nil means logged out
     -- Bumped whenever something happened that the view may want to celebrate;
     -- screens compare it against their own copy rather than being called back,
     -- which keeps the model free of anything view-shaped.
@@ -95,6 +97,86 @@ end
 
 function Model:busy()
   return next(self.pending) ~= nil
+end
+
+-- ------------------------------------------------------------------- session
+--
+-- A session gate, and worth being precise about what it is not. The store is
+-- not encrypted and this does not encrypt it: a mnemonic here selects which
+-- wallet the window is showing and gates the screens behind it, and anyone with
+-- the disk still has the keys. The UI says so on the login screen, because a
+-- lock that implies more safety than it provides is worse than no lock.
+
+--- Unlock with a mnemonic.
+---
+--- The phrase is checked and derived *without touching the store* — that is
+--- what `validate-mnemonic` and `derive` exist for. Only once an address is in
+--- hand does this decide whether the wallet is already known (select it) or new
+--- (import it), which means a typo never leaves a stray account behind.
+function Model:login(phrase)
+  if not phrase or phrase:gsub("%s", "") == "" then
+    return self:fail({ code = "usage", message = "enter your mnemonic" })
+  end
+
+  local check, check_error = self.wallet:validate_mnemonic(phrase)
+  if not check then return self:fail(check_error) end
+  if not check.valid then
+    return self:fail({ code = "invalid_mnemonic", message = check.reason or "not a valid phrase" })
+  end
+
+  local derived, derive_error = self.wallet:derive({ mnemonic = phrase })
+  if not derived then return self:fail(derive_error) end
+
+  for index, account in ipairs(self.wallets) do
+    if account.address == derived.address then
+      -- Already known: select it and let them in, storing nothing new.
+      if not self:select(index) then return false end
+      self.session = { address = derived.address, label = account.label }
+      self:say("Welcome back, " .. account.label)
+      self:emit("login")
+      return account
+    end
+  end
+
+  -- New to this store: import it, which is the one place a phrase is written.
+  local account, import_error = self.wallet:import_mnemonic(phrase, {})
+  if not account then return self:fail(import_error) end
+  self:refresh()
+  for index, entry in ipairs(self.wallets) do
+    if entry.address == account.address then self.selected = index end
+  end
+  self.session = { address = account.address, label = account.label }
+  self:say("Imported " .. account.label)
+  self:emit("login")
+  return account
+end
+
+--- Mint a phrase without storing it, for someone starting fresh.
+---
+--- Deliberately not imported here: it is shown first so it can be written
+--- down, and only becomes an account when it is used to log in. A wallet whose
+--- mnemonic was never seen is a wallet that cannot be recovered.
+function Model:offer_mnemonic(words)
+  local generated, err = self.wallet:new_mnemonic(words or 12)
+  if not generated then return self:fail(err) end
+  return generated.mnemonic
+end
+
+--- Leave. The store is untouched; this only forgets what the window was showing.
+function Model:logout()
+  self.session = nil
+  self.balance = nil
+  self.confirm = nil
+  self.form.to, self.form.amount = "", ""
+  self.screen = "wallets"
+  self.scroll = 0
+  self.status = nil
+  self:emit("logout")
+  return true
+end
+
+function Model:logged_in()
+  return self.session ~= nil
 end
 
 -- ----------------------------------------------------------- local commands
@@ -322,6 +404,26 @@ function Model:clear_field(field)
   if self.confirm then return false end
   self.form[field] = ""
   return true
+end
+
+--- Move the list window, keeping it inside the list.
+---
+--- `visible` is how many rows fit, which only the view knows — so it is passed
+--- in rather than assumed here, and the model stays free of layout.
+function Model:scroll_by(delta, visible)
+  local most = math.max(0, #self.wallets - visible)
+  self.scroll = math.max(0, math.min(most, self.scroll + delta))
+  return self.scroll
+end
+
+--- Keep the selected row on screen after the selection moves.
+function Model:reveal(index, visible)
+  if index < self.scroll + 1 then
+    self.scroll = index - 1
+  elseif index > self.scroll + visible then
+    self.scroll = index - visible
+  end
+  self.scroll = math.max(0, math.min(math.max(0, #self.wallets - visible), self.scroll))
 end
 
 function Model:next_field()

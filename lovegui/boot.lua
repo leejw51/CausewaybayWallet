@@ -22,6 +22,7 @@
 local theme = require("ui.theme")
 local anim = require("ui.anim")
 local sprite = require("ui.sprite")
+local sound = require("ui.sound")
 
 local boot = {}
 boot.__index = boot
@@ -108,12 +109,22 @@ function boot:skip()
     self.typed = math.huge
     self.done = true
     self.ready = true
+    self.chirped = true
+    sound.play("ready")
     return
   end
   if self.ready then self.finished = true end
 end
 
 function boot:update(dt)
+  -- The speaker thump as the tube comes on. Fired from `update` rather than
+  -- from `new`, because `new` runs while the wallet is still being opened and
+  -- the sound would play against a black screen a beat before the picture.
+  if not self.thumped then
+    self.thumped = true
+    sound.play("power")
+  end
+
   self.time = self.time + dt
   self.flash = self.flash * math.exp(-6 * dt)
 
@@ -123,6 +134,10 @@ function boot:update(dt)
   end
 
   if self.done then
+    if not self.chirped then
+      self.chirped = true
+      sound.play("ready")
+    end
     self.ready = true
     return
   end
@@ -143,6 +158,12 @@ function boot:update(dt)
     self.next_line = 0
     self.shown = self.shown + 1
     self.typed = 0
+    -- One tick per line rather than per character: at 90 characters a second
+    -- a per-character tick is not a typewriter, it is a buzz.
+    local line = self.lines[self.shown]
+    if line and line.text ~= "" then
+      sound.play("type", { pitch = 0.9 + (self.shown % 5) * 0.06 })
+    end
     if self.shown > #self.lines then
       self.shown = #self.lines
       self.done = true

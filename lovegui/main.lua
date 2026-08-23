@@ -23,7 +23,9 @@ local anim = require("ui.anim")
 local sprite = require("ui.sprite")
 local widgets = require("ui.widgets")
 local particles = require("ui.particles")
+local sound = require("ui.sound")
 local Boot = require("boot")
+local Login = require("login")
 local Model = require("model")
 
 -- The repository root, so both this and the worker thread can find `luacli`.
@@ -48,8 +50,22 @@ local game = {
   balance_shown = 0,
   confirm_t = 0,
   toast = nil,
-  boot = nil, -- the MSX-style boot sequence, until it hands over
+  boot = nil,  -- the MSX-style boot sequence, until it hands over
+  login = nil, -- the mnemonic gate, until a session is open
+  list_rows = 6,
+  -- A confirmed send launches the rocket. See LAUNCH below for why the
+  -- animation has a floor and the outcome waits behind it.
+  launch = nil,
 }
+
+--- How long the launch plays before an outcome is allowed to land.
+---
+--- A node can answer in 80ms, and an effect that is over before the eye finds
+--- it may as well not have happened — the transfer would read as a number that
+--- silently changed. So the rocket always gets its second and a quarter, and a
+--- result that arrives early waits behind it. The wait is animation, not
+--- latency: nothing is being delayed except the telling.
+local LAUNCH_FLOOR = 1.25
 
 -- Positions the drawing code publishes and the update code reads. Declared
 -- here because `love.update` is defined above the screens that set them, and a
@@ -86,6 +102,7 @@ end
 function love.load()
   theme.load()
   sprite.load()
+  sound.load()
   love.keyboard.setKeyRepeat(true)
 
   game.springs = widgets.Springs.new()
@@ -122,24 +139,57 @@ end
 
 -- -------------------------------------------------------------------- update
 
+--- Start the rocket. Called the moment a transfer is confirmed.
+local function begin_launch()
+  game.launch = { time = 0, held = nil }
+  game.shake = 2
+  -- 1.3 seconds of motor, generated to cover LAUNCH_FLOOR with a little over,
+  -- and its pitch climbs on the same exponential curve as the sprite.
+  sound.play("launch")
+end
+
+--- Where the rocket is, and how hard it is burning, 0..1 through the flight.
+---
+--- `expo_in` is the whole character of it: almost nothing for the first third,
+--- then it is gone. A linear rise reads as an elevator; this reads as thrust.
+local function flight()
+  if not game.launch then return 0, 0 end
+  local t = math.min(1, game.launch.time / LAUNCH_FLOOR)
+  return anim.expo_in(t), t
+end
+
 --- React to what the model says happened, with light and noise.
+---
+--- Light and noise are emitted together on purpose. An effect and its sound
+--- are one event to a person, and splitting them across two files is how they
+--- drift apart until the confetti lands a beat before the fanfare.
 local function celebrate(event)
   local cx, cy = theme.WIDTH / 2, theme.HEIGHT / 2
   if event == "created" then
+    sound.play("created")
     game.fx:burst(cx, cy - 20, { count = 30, speed = 200, colour = { 1, 0.85, 0.3 },
       sprite = "spark", size = 4, life = 0.9, gravity = 180 })
     game.toast = { text = "WALLET CREATED", colour = theme.colour.gold, life = 2.2 }
   elseif event == "balance" then
+    sound.play("coin")
     game.fx:coins(cx, theme.HEIGHT - 60, coin_target, 14)
   elseif event == "sent" then
-    game.fx:confetti(cx, cy, 70)
-    game.fx:burst(cx, cy, { count = 40, speed = 320, colour = { 0.4, 1, 0.6 }, life = 1.1 })
-    game.toast = { text = "SENT", colour = theme.colour.green, life = 2.4 }
+    -- Fired from where the rocket left, so the celebration comes from the
+    -- thing that just flew rather than from the middle of the screen.
+    sound.play("sent")
+    game.fx:confetti(cx, 40, 90)
+    game.fx:burst(cx, 40, { count = 60, speed = 420, colour = { 0.4, 1, 0.6 }, life = 1.3 })
+    game.fx:burst(cx, 40, { count = 30, speed = 220, colour = { 1, 0.85, 0.3 },
+      sprite = "spark", size = 5, life = 1.0 })
+    game.toast = { text = "SENT", colour = theme.colour.green, life = 2.6 }
+    game.shake = 4
   elseif event == "error" then
+    sound.play("error")
     game.shake = 6
     game.fx:burst(cx, cy, { count = 22, speed = 260, colour = { 1, 0.3, 0.4 },
       life = 0.6, gravity = 320 })
   elseif event == "selected" or event == "network" then
+    sound.play("blip", { pitch = 1.25 })
     game.fx:burst(cx, cy, { count = 12, speed = 140, colour = { 0.3, 0.94, 1 }, life = 0.5 })
   end
 end
@@ -150,11 +200,16 @@ function love.update(dt)
   -- but a 2-second dt would still teleport particles across the screen.
   dt = math.min(dt, 1 / 20)
   game.time = game.time + dt
+  -- The clamped dt, deliberately: the sound throttle should slow down with
+  -- everything else on a long frame rather than letting a hitch fire a burst
+  -- of blips the moment the frame lands.
+  sound.update(dt)
 
   if game.boot then
     game.boot:update(dt)
     if game.boot:complete() then
       game.boot = nil
+      if game.model and not game.model:logged_in() then game.login = Login.new() end
       -- The entrance starts now rather than at load, so the UI animates in
       -- as the boot screen hands over instead of having played behind it.
       game.entrance:restart()
@@ -176,11 +231,53 @@ function love.update(dt)
     if game.toast.life <= 0 then game.toast = nil end
   end
 
+  if game.login then
+    game.login:update(dt)
+    if game.model and game.model:logged_in() then
+      game.login = nil
+      game.entrance:restart()
+      game.fx:burst(theme.WIDTH / 2, theme.HEIGHT / 2,
+        { count = 40, speed = 320, colour = { 0.42, 0.96, 0.48 }, life = 1.0 })
+    end
+  end
+
   if not game.model then return end
 
   game.model:pump()
-  for _, event in ipairs(game.model:drain()) do
-    celebrate(event)
+
+  if game.launch then
+    game.launch.time = game.launch.time + dt
+    local risen, t = flight()
+
+    -- Exhaust, thickening as the throttle opens. Emitted from where the
+    -- rocket actually is, so the plume stays attached to it.
+    local burn = 1 + math.floor(t * 6)
+    for _ = 1, burn do
+      game.fx:embers(rocket.x + (math.random() - 0.5) * 6,
+        rocket.y - risen * 260 + 18, 10, 1, 1)
+    end
+    game.fx:trail(rocket.x, rocket.y - risen * 260 + 14, 0, -risen * 700,
+      { 0.5, 0.85, 1 })
+
+    -- The shake builds with the thrust rather than being a one-off thump.
+    game.shake = math.max(game.shake, t * t * 5)
+
+    if game.launch.time >= LAUNCH_FLOOR and game.launch.held then
+      for _, event in ipairs(game.launch.held) do celebrate(event) end
+      game.launch = nil
+    end
+  end
+
+  local events = game.model:drain()
+  if game.launch and #events > 0 then
+    -- Held until the rocket has had its moment. The transfer already
+    -- happened; this only decides when it is announced.
+    game.launch.held = game.launch.held or {}
+    for _, event in ipairs(events) do
+      game.launch.held[#game.launch.held + 1] = event
+    end
+  else
+    for _, event in ipairs(events) do celebrate(event) end
   end
 
   -- The confirmation dialog fades in, and snaps out.
@@ -212,6 +309,15 @@ local function mouse_state()
   return { mouse_x = mx, mouse_y = my, clicked = game.clicked }
 end
 
+function love.wheelmoved(_, y)
+  if game.boot or game.login or not game.model then return end
+  if game.model.screen == "wallets" then
+    -- Three rows a notch, which is the step that feels like a list rather
+    -- than a slingshot.
+    game.model:scroll_by(-y * 3, game.list_rows)
+  end
+end
+
 function love.mousepressed(_, _, button)
   if game.boot then
     game.boot:skip()
@@ -222,10 +328,21 @@ end
 
 function love.textinput(text)
   if game.boot then return end
+  if game.login then return game.login:type_into(text) end
   if game.model then game.model:type_into(text) end
 end
 
 function love.keypressed(key)
+  -- Muting works everywhere, including on the boot screen and behind the
+  -- login — the one control a person reaches for in a hurry is the one that
+  -- must not be gated behind getting into the wallet first.
+  if key == "m" and not (game.model and game.model.screen == "send")
+      and not game.login then
+    sound.toggle()
+    sound.play("press")
+    return
+  end
+
   if game.boot then
     -- Any key: the first skips the sequence, the second hands over. Escape
     -- still quits, because being trapped in a boot screen is not charming.
@@ -234,8 +351,33 @@ function love.keypressed(key)
     return
   end
 
+  -- The window is fullscreen by default, so a way back out matters.
+  if key == "f11" or (key == "return" and love.keyboard.isDown("lalt", "ralt")) then
+    love.window.setFullscreen(not love.window.getFullscreen(), "desktop")
+    return
+  end
+
+  if game.login then
+    if key == "escape" then
+      love.event.quit()
+    elseif key == "return" or key == "kpenter" then
+      game.login:submit(game.model)
+    elseif key == "backspace" then
+      if love.keyboard.isDown("lalt", "ralt") then
+        game.login:backword()
+      else
+        game.login:backspace()
+      end
+    elseif love.keyboard.isDown("lctrl", "rctrl", "lgui", "rgui") and key == "v" then
+      local text = love.system.getClipboardText()
+      if text then game.login.phrase = (text:gsub("^%s+", ""):gsub("%s+$", "")) end
+    end
+    return
+  end
+
   if key == "escape" then
     if game.model and game.model.confirm then
+      sound.play("back")
       game.model:cancel_send()
     else
       love.event.quit()
@@ -248,7 +390,9 @@ function love.keypressed(key)
 
   if model.confirm then
     -- The dialog owns the keyboard while it is up.
-    if key == "return" or key == "kpenter" then model:confirm_send() end
+    if key == "return" or key == "kpenter" then
+      if model:confirm_send() then begin_launch() end
+    end
     return
   end
 
@@ -269,6 +413,7 @@ function love.keypressed(key)
   end
 
   if key == "tab" then
+    sound.play("blip", { pitch = 1.1 })
     model:next_field()
   elseif key == "backspace" then
     model:backspace()
@@ -281,14 +426,34 @@ function love.keypressed(key)
   elseif key == "1" or key == "2" or key == "3" then
     -- Only when a text field is not the point of the screen.
     if model.screen ~= "send" then
+      sound.play("tab")
       model:go(Model.SCREENS[tonumber(key)])
       game.screen_slide:set(1):to(0)
     end
   elseif key == "up" or key == "down" then
     if model.screen == "wallets" and #model.wallets > 0 then
       local step = key == "down" and 1 or -1
+      local was = model.selected
       model.selected = math.max(1, math.min(#model.wallets, model.selected + step))
+      model:reveal(model.selected, game.list_rows)
+      if model.selected ~= was then
+        -- Pitched by position in the list, so running down twelve wallets is
+        -- a falling scale rather than the same tick twelve times. Held inside
+        -- a fifth: past that it stops reading as the same sound.
+        local place = (model.selected - 1) / math.max(1, #model.wallets - 1)
+        sound.play("blip", { pitch = 1.2 - place * 0.4 })
+      end
     end
+  elseif key == "pageup" or key == "pagedown" then
+    if model.screen == "wallets" then
+      model:scroll_by(key == "pagedown" and game.list_rows or -game.list_rows,
+        game.list_rows)
+    end
+  elseif key == "home" then
+    model.selected, model.scroll = 1, 0
+  elseif key == "end" then
+    model.selected = #model.wallets
+    model:reveal(model.selected, game.list_rows)
   end
 end
 
@@ -326,8 +491,8 @@ local function draw_header(model)
 
   local network = model and model.info and model.info.network or "…"
   local chain = model and model.info and model.info.chain_id or ""
-  theme.text_right(("%s  ·  chain %s"):format(network, chain),
-    theme.WIDTH - 8, 11, theme.colour.dim, theme.font.small, t)
+  theme.text_right(("%s · chain %s"):format(network, chain),
+    theme.WIDTH - 158, 11, theme.colour.dim, theme.font.small, t)
 
   -- A spinner while the node is thinking, so "busy" is never just a word.
   if model and model:busy() then
@@ -337,7 +502,7 @@ local function draw_header(model)
       local fade = 1 - (i / 6)
       theme.set(theme.colour.cyan, fade * 0.9)
       love.graphics.rectangle("fill",
-        theme.WIDTH - 14 + math.cos(a) * r, 24 + math.sin(a) * r, 2, 2)
+        theme.WIDTH - 166 + math.cos(a) * r, 24 + math.sin(a) * r, 2, 2)
     end
   end
 end
@@ -392,6 +557,41 @@ local function paste_from_clipboard(model, field)
   return true
 end
 
+--- The header's two buttons: the window mode, and the way out.
+local function draw_header_buttons(model, state)
+  -- A button as well as the `M` key. The key cannot be the only way: every
+  -- letter is typed into a field somewhere, so `M` has to be ignored on the
+  -- screens that take text — and a control that stops working on some screens
+  -- is not a control anyone trusts. This one is always here.
+  local sfx = { x = theme.WIDTH - 152, y = 5, w = 36, h = 15 }
+  if widgets.button(game.springs, "sfx", sfx, sound.enabled and "SFX" or "MUTE",
+      state, {
+        colour = sound.enabled and theme.colour.green or theme.colour.faint,
+        font = theme.font.small,
+        -- The one button that makes its own noise. Left to the widget, the
+        -- click would play *before* the toggle — so turning the sound on
+        -- would be the one press in the game that answers with silence.
+        silent = true,
+      }) then
+    sound.toggle()
+    sound.play("press")
+  end
+
+  local full = love.window.getFullscreen()
+  local mode = { x = theme.WIDTH - 112, y = 5, w = 44, h = 15 }
+  if widgets.button(game.springs, "mode", mode, full and "WIN" or "FULL", state,
+      { colour = theme.colour.cyan, font = theme.font.small }) then
+    love.window.setFullscreen(not full, "desktop")
+  end
+
+  local out = { x = theme.WIDTH - 62, y = 5, w = 54, h = 15 }
+  if widgets.button(game.springs, "logout", out, "LOGOUT", state,
+      { colour = theme.colour.red, font = theme.font.small }) then
+    model:logout()
+    game.login = Login.new()
+  end
+end
+
 --- The layout every screen shares, so the columns line up between them.
 local L = {
   margin = 8,
@@ -432,11 +632,19 @@ local function draw_wallets(model, state, x)
 
   -- Two lines each — a name is not enough to tell two wallets apart, and an
   -- address alone is unreadable.
-  local row_h = 30
+  local row_h = 27
   local rows = math.floor(list.h / row_h)
-  for i, account in ipairs(model.wallets) do
-    if i > rows then break end
-    local box = { x = list.x, y = list.y + (i - 1) * row_h, w = list.w, h = row_h - 2 }
+  -- Published so the wheel and the arrow keys, which are handled far from
+  -- here, know how big a page is.
+  game.list_rows = rows
+
+  model.scroll = math.max(0, math.min(math.max(0, #model.wallets - rows), model.scroll))
+
+  for slot = 1, rows do
+    local i = slot + model.scroll
+    local account = model.wallets[i]
+    if not account then break end
+    local box = { x = list.x, y = list.y + (slot - 1) * row_h, w = list.w, h = row_h - 2 }
     local selected = account.address == model.active
     local clicked, hovered, row_x, slide = widgets.row(game.springs, "row" .. i, box, state,
       selected or model.selected == i)
@@ -454,22 +662,32 @@ local function draw_wallets(model, state, x)
       selected and theme.colour.cyan_dark or theme.colour.faint, theme.font.small)
   end
 
+  -- A scrollbar, so a list longer than the frame says so and shows where in
+  -- it you are. "+7 more" told you there was more and nothing else.
   if #model.wallets > rows then
-    theme.text_right(("+%d more"):format(#model.wallets - rows), list.x + list.w,
-      list.y + list.h - 4, theme.colour.faint, theme.font.small)
+    local track_x = list.x + list.w + 1
+    local track_h = rows * row_h - 2
+    theme.rect(theme.colour.void, track_x, list.y, 2, track_h, 0.6)
+    local thumb = math.max(8, track_h * rows / #model.wallets)
+    local travel = (track_h - thumb) * (model.scroll / math.max(1, #model.wallets - rows))
+    theme.rect(theme.colour.cyan, track_x, list.y + travel, 2, thumb, 0.7)
+
+    theme.text(("%d-%d OF %d"):format(model.scroll + 1,
+      math.min(#model.wallets, model.scroll + rows), #model.wallets),
+      list.x, list.y + list.h - 8, theme.colour.faint, theme.font.small)
   elseif #model.wallets > 0 then
-    theme.text(("%s / %s to move"):format("UP", "DOWN"), list.x,
-      list.y + list.h - 4, theme.colour.faint, theme.font.small)
+    theme.text("UP / DOWN TO MOVE", list.x, list.y + list.h - 8,
+      theme.colour.faint, theme.font.small)
   end
 
   -- ---------------------------------------------------------- the detail
+  -- Whatever the list is highlighting. It used to be whichever account was
+  -- *active*, which meant the panel could show one wallet's label above
+  -- another's address the moment the two disagreed.
   local selected = model.wallets[model.selected]
-  for _, account in ipairs(model.wallets) do
-    if account.address == model.active then selected = account end
-  end
 
   -- The balance, given the room a headline deserves.
-  local balance_h = 58
+  local balance_h = 70
   local card = widgets.frame(x + L.right, L.top, L.right_w, balance_h, "BALANCE")
   coin_target.x, coin_target.y = x + L.right + L.right_w / 2, L.top + 40
 
@@ -477,7 +695,7 @@ local function draw_wallets(model, state, x)
     theme.text_centred("no wallet selected", card.x + card.w / 2, card.y + 16,
       theme.colour.faint, theme.font.small)
   elseif model.balance then
-    widgets.readout(card.x, card.y - 2, card.w,
+    widgets.readout(card.x, card.y, card.w,
       (("%.4f"):format(game.balance_shown):gsub("0+$", ""):gsub("%.$", "")),
       model.balance.symbol, { alpha = game.entrance.value })
   else
@@ -498,8 +716,12 @@ local function draw_wallets(model, state, x)
     stat(detail.x, detail.y, "LABEL", selected.label, theme.colour.text)
     -- Where the key came from, as a tag rather than another labelled row —
     -- it is a property of the wallet, not a field of equal weight.
-    widgets.chip(detail.x + detail.w - 74, detail.y,
-      (selected.source or "?"):upper():gsub("_", " "), theme.colour.magenta)
+    local tag = (selected.source or "?"):upper():gsub("_", " ")
+    local tag_w = theme.width(tag, theme.font.small) + 10
+    widgets.chip(detail.x + detail.w - tag_w, detail.y, tag, theme.colour.magenta)
+    if selected.address == model.active then
+      widgets.chip(detail.x + detail.w - tag_w - 58, detail.y, "ACTIVE", theme.colour.green)
+    end
 
     theme.text("ADDRESS", detail.x, detail.y + 30, theme.colour.faint, theme.font.small)
     -- Split across two lines: 42 characters do not fit a 230px column, and an
@@ -538,12 +760,25 @@ local function draw_send(model, state, x)
   -- The rocket gets its own column, so the exhaust has somewhere to go.
   local pad = widgets.frame(x + L.left, L.top, 96, height, "LAUNCH")
   rocket.x, rocket.y = pad.x + pad.w / 2, pad.y + 42
+  local risen, t = flight()
   local thrust = model:busy() and 1 or 0
-  sprite.draw_glowing("rocket", rocket.x, rocket.y + math.sin(game.time * 2) * 2, 56, {
-    angle = math.sin(game.time * 1.4) * 0.06,
-    glow = 0.35 + 0.25 * math.sin(game.time * 4) + thrust * 0.5,
-    glow_colour = theme.colour.cyan,
-  })
+
+  -- Off the top of the screen by the end, stretched as it goes: a sprite that
+  -- keeps its proportions while accelerating reads as a sticker being dragged.
+  sprite.draw_glowing("rocket", rocket.x,
+    rocket.y + math.sin(game.time * 2) * 2 - risen * 260, 56, {
+      angle = math.sin(game.time * 1.4) * 0.06 * (1 - t),
+      scale_y = 1 + t * 0.5,
+      scale_x = 1 - t * 0.18,
+      glow = 0.35 + 0.25 * math.sin(game.time * 4) + thrust * 0.5 + t * 1.2,
+      glow_colour = theme.colour.cyan,
+    })
+
+  -- The pad flashes white underneath at ignition.
+  if game.launch and t < 0.35 then
+    theme.rect(theme.colour.white, pad.x, rocket.y + 22, pad.w, 3,
+      (1 - t / 0.35) * 0.8)
+  end
 
   local form = widgets.frame(x + L.right, L.top, L.right_w, height, "TRANSFER")
 
@@ -586,8 +821,9 @@ local function draw_send(model, state, x)
   end
 
   local send = { x = form.x, y = form.y + height - 46, w = form.w, h = 21 }
-  if widgets.button(game.springs, "send", send, "SEND >", state,
-      { colour = theme.colour.gold, disabled = model:busy() }) then
+  if widgets.button(game.springs, "send", send,
+      game.launch and "LAUNCHING…" or "SEND >", state,
+      { colour = theme.colour.gold, disabled = model:busy() or game.launch ~= nil }) then
     model:begin_send(model.form.to, model.form.amount)
   end
 
@@ -640,11 +876,20 @@ local function draw_status(model)
   if not status then return end
   local colour = status.kind == "error" and theme.colour.red
     or (status.kind == "busy" and theme.colour.amber or theme.colour.dim)
+  -- Bounded by where the next button starts, and trimmed to fit rather than
+  -- to a guessed character count: a balance is as long as it is, and it used
+  -- to run straight under REFRESH.
   local x = status.kind == "error" and 112 or 100
   if status.kind == "error" then
     sprite.draw("skull", 103, L.bar + 9, 13, { alpha = 0.9 })
   end
-  theme.text(theme.ellipsis(status.text, 30, 0), x, L.bar + 3, colour, theme.font.small)
+  local room = (L.right - 6) - x
+  local text = status.text
+  while theme.width(text, theme.font.small) > room and #text > 1 do
+    text = text:sub(1, -2)
+  end
+  if text ~= status.text then text = text:sub(1, -2) .. "…" end
+  theme.text(text, x, L.bar + 3, colour, theme.font.small)
 end
 
 local function draw_confirm(model, state)
@@ -684,7 +929,7 @@ local function draw_confirm(model, state)
   end
   if widgets.button(game.springs, "yes", yes, "SEND IT", state,
       { colour = theme.colour.green }) then
-    model:confirm_send()
+    if model:confirm_send() then begin_launch() end
   end
 end
 
@@ -730,6 +975,23 @@ function love.draw()
     return
   end
 
+  if game.login then
+    theme.frame(function()
+      sprite.backdrop("krumlov", {
+        alpha = 0.85, scrim = 0.66,
+        drift_x = math.sin(game.time * 0.09) * 3,
+        drift_y = math.cos(game.time * 0.07) * 2,
+      })
+      game.stars:draw(game.time)
+      game.login:draw(game.model, mouse_state(), game.springs)
+      game.fx:draw(sprite.images)
+      theme.scanlines(0.10)
+      theme.vignette(0.4)
+    end)
+    game.clicked = false
+    return
+  end
+
   theme.frame(function()
     -- Cesky Krumlov at dusk, behind everything. Heavily scrimmed: it is a
     -- backdrop, and a wallet's numbers have to win every contrast fight
@@ -760,6 +1022,7 @@ function love.draw()
       love.graphics.translate(0, drop)
       draw_header(model)
       if model then
+        draw_header_buttons(model, state)
         draw_tabs(model, state)
         if model.screen == "wallets" then
           draw_wallets(model, state, slide)
@@ -786,8 +1049,14 @@ function love.draw()
     theme.text_centred("EDUCATIONAL · KEYS ARE STORED UNENCRYPTED", theme.WIDTH / 2,
       theme.HEIGHT - 16, theme.colour.faint, theme.font.small)
 
-    if #sprite.missing > 0 then
-      theme.text("assets missing: " .. table.concat(sprite.missing, " "), 4, 48,
+    -- Absent art and absent sound both say so, in one line, once. A missing
+    -- effect is silent by design, and silence is exactly what a working mute
+    -- looks like — so without this the two are indistinguishable.
+    local absent = {}
+    for _, name in ipairs(sprite.missing) do absent[#absent + 1] = name end
+    for _, name in ipairs(sound.missing) do absent[#absent + 1] = name .. ".wav" end
+    if #absent > 0 then
+      theme.text("assets missing: " .. table.concat(absent, " "), 4, 48,
         theme.colour.amber, theme.font.small)
     end
 
@@ -833,15 +1102,30 @@ local shot = {
 local function replay()
   game.boot = nil
   game.entrance:restart()
-  if shot.screen and game.model then
-    game.model:go(shot.screen)
-    game.screen_slide:set(0)
+  -- `CWB_SHOT_SCREEN=login` photographs the gate; anything else goes straight
+  -- past it, because a shot of a wallet screen should not have to log in first.
+  -- Created, then the keys fall through below — returning here meant a
+  -- scripted mnemonic was never typed and the shot showed an empty field.
+  if shot.screen == "login" then
+    game.login = Login.new()
+  else
+    game.login = nil
+    if shot.screen and game.model then
+      game.model:go(shot.screen)
+      game.screen_slide:set(0)
+    end
   end
   if not shot.keys then return end
   for step in shot.keys:gmatch("[^,]+") do
     local text = step:match("^type:(.*)$")
     if text then
       love.textinput(text)
+    elseif step == "launch" then
+      -- The one thing no keypress can reach: the rocket only lifts off once a
+      -- transfer is confirmed, and confirming one needs a funded account and a
+      -- node. The flight itself is pure animation, so it is started directly
+      -- and `CWB_SHOT_AFTER` picks the frame.
+      begin_launch()
     else
       love.keypressed(step)
     end

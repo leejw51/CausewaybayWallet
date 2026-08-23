@@ -13,8 +13,9 @@ There is no cryptography in this directory, no store, and no argument parsing.
 
 ```sh
 make run       # opens the window
-make test      # 54 headless tests, no LÖVE required
+make test      # 63 headless tests, no LÖVE required
 make shots     # writes a PNG of each screen, for review from a terminal
+make sfx       # re-synthesises the sound effects
 ```
 
 Needs LÖVE 11 (`brew install love`) and the shared library, which `make run`
@@ -48,6 +49,40 @@ than handing off to a UI that cannot work. The only invented figures are the two
 memory counts — 65536 and 16384 are an MSX1's RAM and VRAM, which is the whole
 reference. A boot screen that reports fake state is a lie printed in a font that
 makes it look authoritative, and it is the first thing anyone sees.
+
+## Getting in
+
+A mnemonic opens the window, and the screen is honest about what that is:
+
+> a session gate, not encryption
+> keys stay unencrypted on disk
+
+It decides *which* wallet you are looking at and keeps the screens behind it
+until a phrase is entered. It is not protecting the store — that is plain JSONL
+exactly as it was before, and anyone with the disk has the keys whether or not
+this screen has been passed. A lock that implies more safety than it provides
+is worse than no lock, so it is labelled rather than dressed up.
+
+**The phrase is never drawn.** Not masked-with-a-reveal — never. It is the
+whole wallet in twelve words, and a SHOW toggle is one shoulder or one
+screenshot away from being the last mistake somebody makes. What replaces
+seeing it is the word count, which turns green at twelve or twenty-four, and
+one button that changes with the situation:
+
+| | |
+| --- | --- |
+| **PASTE** | a phrase you already have, brought in from the clipboard |
+| **COPY** | a phrase just minted by NEW MNEMONIC, taken out before you use it |
+
+COPY appears only for a phrase this screen generated, because that one exists
+nowhere else yet and a wallet whose mnemonic was never saved is a wallet nobody
+can recover. Everything is checked before anything is written:
+`validate-mnemonic` says whether it is a phrase at all, `derive` turns it into
+an address without touching the store, and only then does the model choose
+between selecting a wallet it knows and importing one it does not. A typo
+produces a message, never a stray account.
+
+**LOGOUT** in the header comes back here.
 
 ## The look
 
@@ -151,6 +186,68 @@ the difference between a particle system and a memory leak with a pretty face.
 Everything draws additively, so overlapping particles bloom instead of
 flattening into an opaque blob.
 
+## Sound
+
+Fifteen effects in `assets/sfx`, **synthesised** by `tools/generate-sfx.py`
+with nothing but the Python standard library and committed alongside the art.
+
+No sample pack — which means no licence to honour, no server to stay up, and
+nothing to download. It also means the sounds are *source*: a blip is edited by
+changing a number in that script and running it again, not by opening an audio
+editor and hoping.
+
+```sh
+make sfx        # re-synthesise everything (no API key, no network)
+make sfx-check  # assert the committed WAVs are present and well-formed
+```
+
+### It is a chip, not a chip filter
+
+Same principle as the graphics. Three constraints, all deliberate:
+
+* **The volume is four bits.** An AY-3-8910 or a 2A03 had sixteen levels and no
+  more, so every envelope is quantised to sixteen steps. That stair-step on a
+  decay tail is a large part of the sound.
+* **Only the waveforms the hardware had** — pulse at a few duty cycles, a
+  stepped triangle, and noise. There is no sine anywhere, because a PSG could
+  not make one.
+* **The noise is a real LFSR**, the same 15-bit shift register the NES used,
+  clocked by a divider so it has a *pitch*. Sweeping that divider is how every
+  explosion and every rocket in 1985 was made, and it is how this one is too.
+
+Levels are set in one table (`MIX`) rather than left to whatever the voices
+summed to. Doing it per-voice was tried and `error` came out three times the
+level of `blip` — which meant a mistake was louder than anything a person did
+on purpose. Levelling to peak in one place also means nothing clips.
+
+### Playing them is the part that goes wrong
+
+`ui/sound.lua` exists for three reasons, none of them "play a wav":
+
+* **A Source is one voice.** Calling `play` on a Source that is already playing
+  restarts it, so two coins landing a frame apart become one coin. Each effect
+  keeps a pool of four and takes them in turn.
+* **The UI fires far more often than an ear wants.** Hover is evaluated every
+  frame for every button. Ungated, that is not a sound effect, it is a buzz —
+  so every effect has a minimum gap, and the ones that fire most have the
+  longest.
+* **The same sample twice running sounds like a stuck machine.** A few percent
+  of random detune on the effects that repeat is enough for the ear to hear two
+  events rather than one glitch. Moving through the wallet list also pitches by
+  position, so running down twelve wallets is a falling scale.
+
+The throttle and the mute are the testable half and they are tested — with no
+LÖVE and no audio device, because the decisions live in `sound.allowed` and the
+clock is advanced by `dt` rather than read from a timer.
+
+**SFX** in the header, or `M`, turns it off, and it stays off next time. The
+button exists because the key cannot be the only way: every letter is typed
+into a field on some screen, so `M` has to be ignored where text is expected,
+and a control that stops working on some screens is not one anybody trusts.
+
+A missing sound is a no-op and is named on screen next to any missing art —
+a silent effect and a working mute look identical otherwise.
+
 ## The art
 
 Eight sprites in `assets/`, drawn by **Grok** through
@@ -206,16 +303,41 @@ have put to a human. That summary is what the dialog shows, so what you approve
 is a transaction that is real and already priced. It is the same trick the CLI's
 interactive mode uses, for the same reason.
 
+## The rocket
+
+A confirmed transfer launches one, and it is the one animation with a
+**floor**: `LAUNCH_FLOOR` is 1.25 seconds and the outcome waits behind it.
+
+A node can answer in eighty milliseconds. An effect that is over before the eye
+finds it may as well not have happened — the transfer would read as a number
+that silently changed. So a result that arrives early is *held* and celebrated
+when the rocket has had its moment. Nothing is delayed except the telling; the
+transfer already happened.
+
+The flight is `expo_in`, and that is its whole character: almost nothing for
+the first third, then it is gone. A linear rise reads as an elevator. Exhaust
+thickens with the throttle and is emitted from where the rocket actually is, so
+the plume stays attached; the screen shake grows as `t²` rather than thumping
+once; the rocket stretches vertically and narrows as it goes. The motor's pitch
+climbs on the same exponential curve, so the sound and the sprite leave in the
+same instant.
+
+`make shots` captures two frames of it, because the first half and the second
+half of an exponential look nothing alike.
+
 ## Controls
 
 | | |
 | --- | --- |
 | `1` `2` `3` | wallets · send · network |
 | `↑` `↓` | move through the wallet list |
+| `PgUp` `PgDn` · wheel | scroll it |
 | `Enter` | refresh the balance, or send |
 | `Tab` | switch fields on the send screen |
 | `Ctrl/Cmd+C` | copy the selected wallet's address |
 | `Ctrl/Cmd+V` | paste into the focused field |
+| `M` | sound on or off |
+| `F11` · `Alt+Enter` | fullscreen, or the **FULL/WIN** button |
 | `Esc` | cancel a confirmation, or quit |
 
 Everything is clickable too — including **COPY** beside the address and
@@ -234,6 +356,7 @@ luajit tests/init.lua anim       # one suite
 | --- | --- |
 | `anim` | easing bounds, frame-rate independence, springs that settle and do not explode |
 | `particles` | that effects die, the cap holds, and homing coins actually arrive |
+| `sound` | the throttle, mute, and the voice pool — the parts with decisions in them |
 | `model` | wallets, screens, networks, the send flow and the form, against a real store |
 
 They run without LÖVE, which is the payoff of keeping the logic free of `love.`
@@ -247,7 +370,10 @@ CWB_SHOT=/tmp/x.png CWB_SHOT_AFTER=2.5 CWB_SHOT_SCREEN=send \
 ```
 
 Runs normally for that long — so the entrance has settled and effects have
-played — writes a PNG, and quits.
+played — writes a PNG, and quits. `CWB_SHOT_KEYS` takes `type:…` for text and a
+key name for anything else, plus one step that is not a key at all: `launch`
+starts the rocket, because the only other way to reach it is a funded account
+and a node, and the flight itself is pure animation.
 
 ## Not here
 

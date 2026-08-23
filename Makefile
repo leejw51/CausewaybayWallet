@@ -18,7 +18,8 @@
 # created.
 #
 #   make        show this help
-#   make test   run every test in all four
+#   make run    open CAUSEWAYBAY BANK, the LÖVE window
+#   make test   run every test in every front end
 
 RUST_DIR   := rustcli
 PYTHON_DIR := pythoncli
@@ -278,9 +279,15 @@ demo: build ## Create a throwaway wallet and show every CLI reading it
 tui-rust: ## Launch the Rust terminal UI
 	@$(MAKE) --no-print-directory -C $(RUST_DIR) tui
 
-.PHONY: gui
-gui: ## Open the LÖVE window
+# `make run` from the repository root opens the app, because that is the one
+# command a person should not have to look up. Everything else here is a
+# developer target; this is the front door.
+.PHONY: run
+run: ## Open CAUSEWAYBAY BANK (the LÖVE window)
 	@$(MAKE) --no-print-directory -C $(GUI_DIR) run
+
+.PHONY: gui
+gui: run ## Alias for `run`
 
 .PHONY: tui-python
 tui-python: ## Launch the Python terminal UI

@@ -87,8 +87,11 @@ test: require-luajit build ## Run the headless suite (no LÖVE needed)
 
 .PHONY: lint
 lint: require-luajit ## Byte-compile every file, which is the syntax check
+	@# A glob, not a list: the hand-written list silently stopped covering
+	@# boot.lua and login.lua when they were added, and a syntax error in
+	@# login.lua reached a run because of it.
 	@status=0; \
-	for file in main.lua conf.lua model.lua worker.lua ui/*.lua tests/*.lua; do \
+	for file in *.lua ui/*.lua tests/*.lua; do \
 		$(LUAJIT) -bl "$$file" /dev/null || { echo "  syntax error in $$file" >&2; status=1; }; \
 	done; \
 	if [ $$status -eq 0 ]; then echo "  every Lua file compiles"; fi; \
@@ -104,7 +107,7 @@ fmt: format ## Alias for `format`
 fmt-check: lint ## Fail if a file does not compile
 
 .PHONY: check
-check: lint test ## Everything CI would run
+check: lint sfx-check test ## Everything CI would run
 
 # -------------------------------------------------------------------- package
 
@@ -156,6 +159,12 @@ package: build ## Build a distributable bundle into $(DIST_DIR)
 
 # --------------------------------------------------------------------- extras
 
+# Stand-ins for what a person would type. The mnemonic is BIP-39's published
+# all-zeros test vector — the one in every implementation's fixtures — so it is
+# not a secret and never was.
+SHOT_ADDRESS := 0x6Fac4D18c912343BF86fa7049364Dd4E424Ab9C0
+SHOT_WORDS   := abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about
+
 # The GUI's equivalent of a test for the part tests cannot reach. Drawing can
 # only be checked by looking, so this makes a frame reviewable from a terminal.
 .PHONY: shots
@@ -163,9 +172,21 @@ shots: require-love build ## Write a PNG of each screen into ./shots
 	@mkdir -p shots
 	@cd .. && CWB_SHOT="$(CURDIR)/shots/wallets.png" CWB_SHOT_AFTER=2.4 $(LOVE) lovegui
 	@cd .. && CWB_SHOT="$(CURDIR)/shots/send.png" CWB_SHOT_AFTER=2.6 CWB_SHOT_SCREEN=send \
-		CWB_SHOT_KEYS="type:0x6Fac4D18c912343BF86fa7049364Dd4E424Ab9C0,tab,type:0.5" $(LOVE) lovegui
+		CWB_SHOT_KEYS="type:$(SHOT_ADDRESS),tab,type:0.5" $(LOVE) lovegui
 	@cd .. && CWB_SHOT="$(CURDIR)/shots/network.png" CWB_SHOT_AFTER=2.4 \
 		CWB_SHOT_SCREEN=network $(LOVE) lovegui
+	@# Its own throwaway home. Unlocking with a phrase the store does not know
+	@# *imports* it, so a login shot against the real home would quietly add an
+	@# account to somebody's wallet every time this ran.
+	@cd .. && CAUSEWAYBAY_HOME="$(CURDIR)/shots/.home" \
+		CWB_SHOT="$(CURDIR)/shots/login.png" CWB_SHOT_AFTER=1.8 \
+		CWB_SHOT_SCREEN=login CWB_SHOT_KEYS="type:$(SHOT_WORDS)" $(LOVE) lovegui
+	@# Two frames of the flight rather than one, because the whole point of
+	@# expo_in is that the first half and the second half look nothing alike.
+	@cd .. && CWB_SHOT="$(CURDIR)/shots/launch-ignition.png" CWB_SHOT_AFTER=0.6 \
+		CWB_SHOT_SCREEN=send CWB_SHOT_KEYS="type:$(SHOT_ADDRESS),tab,type:0.5,launch" $(LOVE) lovegui
+	@cd .. && CWB_SHOT="$(CURDIR)/shots/launch-away.png" CWB_SHOT_AFTER=1.5 \
+		CWB_SHOT_SCREEN=send CWB_SHOT_KEYS="type:$(SHOT_ADDRESS),tab,type:0.5,launch" $(LOVE) lovegui
 	@ls -1 shots | sed 's/^/  /'
 
 # Redrawing the art. Needs an API key; running the game does not, because the
@@ -177,6 +198,22 @@ assets: ## Redraw any missing sprites with Grok (needs XAI_API_KEY)
 .PHONY: assets-all
 assets-all: ## Redraw every sprite, replacing what is committed
 	@python3 tools/generate-assets.py logo wallet coin rocket globe key skull spark
+
+# The sounds, unlike the art, need nothing but Python — they are square waves
+# and a shift register, so this is safe to run at any time by anyone.
+.PHONY: sfx
+sfx: ## Re-synthesise the sound effects (no API key, no network)
+	@python3 tools/generate-sfx.py
+
+# Checked for shape rather than for bytes. Byte-comparing against a fresh
+# render would be the stronger test and is the wrong one to run in CI: the
+# waveforms come out of libm, and a sine that differs in its last bit between
+# macOS and Linux would fail a build over something no ear could detect. What
+# can go wrong and matters is a file that is missing, truncated, silent, or at
+# the wrong sample rate — so that is what this asserts.
+.PHONY: sfx-check
+sfx-check: ## Verify every committed sound is present and well-formed
+	@python3 tools/check-sfx.py
 
 .PHONY: clean
 clean: ## Remove screenshots and staged output

@@ -14,3 +14,6 @@
 .DS_Store
 .idea/
 .vscode/
+
+# Python leaves these beside the asset and sound generators.
+__pycache__/
