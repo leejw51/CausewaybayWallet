@@ -7,6 +7,7 @@
 # `make` lists the targets; `make test` builds and runs the suite.
 
 CC      ?= cc
+CARGO   ?= cargo
 CFLAGS  ?= -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion
 LDFLAGS ?=
 
@@ -18,24 +19,37 @@ VERSION := $(shell sed -n 's/^version = "\(.*\)"/\1/p' $(RUST_DIR)/Cargo.toml | 
 FFI_LIB := $(RUST_DIR)/target/release/libcausewaybay_ffi.a
 FFI_INC := $(RUST_DIR)/ffi/include
 
-# What a Rust staticlib needs from the system. The authoritative list comes
-# from the toolchain itself:
-#
-#   cargo rustc -p causewaybay-ffi --release --crate-type staticlib \
-#     -- --print native-static-libs
-#
-# Hardcoding it would be a guess that breaks on the next platform; asking is
-# cheap and always right.
-NATIVE_LIBS := $(shell cd $(RUST_DIR) && cargo rustc -p causewaybay-ffi --release \
-	--crate-type staticlib -- --print native-static-libs 2>&1 \
-	| sed -n 's/^note: native-static-libs: //p' | head -1)
-
 UNAME := $(shell uname -s)
+
+# What a Rust staticlib needs from the system. The authoritative list comes from
+# the toolchain rather than from a list written down here, because a hardcoded
+# list is a guess that breaks on the next platform.
+#
+# Two things make asking fiddly, and both have already gone wrong:
+#
+#   * The answer is only printed while rustc is actually linking. So it is
+#     asked for at link time, not at parse time — which also keeps `make help`
+#     from building the workspace.
+#   * It is a machine-readable answer, so it is asked for without colour. CI
+#     sets CARGO_TERM_COLOR=always, which wraps the note in ANSI escapes; the
+#     pattern then matched nothing and the link ran with *no* libraries on it.
+#     That is undefined symbols on macOS, and on Linux a link that happens to
+#     succeed because cc supplies libc anyway — a latent break waiting for a
+#     platform that needs anything more.
+#
+# The `tr`/`sed` pair strips escapes even so, and the recipe refuses to link on
+# an empty answer rather than emitting a command that cannot work.
+NATIVE_LIBS_CMD = cd $(RUST_DIR) && CARGO_TERM_COLOR=never $(CARGO) rustc -p causewaybay-ffi \
+	--release --crate-type staticlib -- --print native-static-libs 2>&1 \
+	| sed -n 's/.*native-static-libs: //p' | head -1 \
+	| tr -d '\033' | sed 's/\[[0-9;]*m//g'
+
+# On macOS `-lc` and `-lSystem` name the same library, and cc links it itself
+# anyway, so passing either makes the linker report a duplicate on every build.
+# An exact-match filter, because `-lc` must not also strip `-lcrypto`.
+FILTER_LIBS := cat
 ifeq ($(UNAME),Darwin)
-  # On macOS `-lc` and `-lSystem` name the same library, and cc links it by
-  # itself anyway — so passing either makes the linker report a duplicate on
-  # every build. Dropping both is the fix, and loses nothing.
-  NATIVE_LIBS := $(filter-out -lc -lSystem,$(NATIVE_LIBS))
+  FILTER_LIBS := grep -vx -e -lc -e -lSystem
 
   # The archive's prebuilt assembly (from `ring`) is compiled against the host
   # SDK, which is newer than the version cc targets by default. Matching them
@@ -80,8 +94,18 @@ ffi-lib:
 build: $(BIN) ## Build the binary
 
 $(BIN): $(OBJECTS) ffi-lib
-	@echo "==> linking $(BIN) ($(VERSION)) statically"
-	$(CC) $(OBJECTS) $(FFI_LIB) $(NATIVE_LIBS) $(LDFLAGS) -o $(BIN)
+	@libs="$$($(NATIVE_LIBS_CMD))"; \
+	 if [ -z "$$libs" ]; then \
+	   echo "$(BIN): cannot determine the system libraries a Rust staticlib needs." >&2; \
+	   echo "  Linking without them produces a binary with undefined symbols, so" >&2; \
+	   echo "  this stops here instead. Run the query by hand to see what it says:" >&2; \
+	   echo "    cd $(RUST_DIR) && cargo rustc -p causewaybay-ffi --release \\" >&2; \
+	   echo "      --crate-type staticlib -- --print native-static-libs" >&2; \
+	   exit 1; \
+	 fi; \
+	 libs=$$(printf '%s\n' $$libs | $(FILTER_LIBS) | tr '\n' ' '); \
+	 echo "==> linking $(BIN) ($(VERSION)) statically against$$(printf '%s' " $$libs")"; \
+	 $(CC) $(OBJECTS) $(FFI_LIB) $$libs $(LDFLAGS) -o $(BIN)
 	@echo "  built ./$(BIN) ($$(du -h $(BIN) | cut -f1 | tr -d ' '))"
 
 .PHONY: test
