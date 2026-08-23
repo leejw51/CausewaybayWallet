@@ -145,9 +145,19 @@ function Model:login(phrase)
   local account, import_error = self.wallet:import_mnemonic(phrase, {})
   if not account then return self:fail(import_error) end
   self:refresh()
+
+  -- Made active, not merely selected — the same as the branch above, which is
+  -- the point. Unlocking with a new phrase used to import the wallet, put it
+  -- on screen, and leave the store spending from whichever one was active
+  -- before. Logging in *as* a wallet while the money moves from a different
+  -- one is exactly the mismatch this screen exists to prevent, and the two
+  -- branches disagreeing about what "logging in" means was the whole bug.
   for index, entry in ipairs(self.wallets) do
-    if entry.address == account.address then self.selected = index end
+    if entry.address == account.address then
+      if not self:select(index) then return false end
+    end
   end
+
   self.session = { address = account.address, label = account.label }
   self:say("Imported " .. account.label)
   self:emit("login")

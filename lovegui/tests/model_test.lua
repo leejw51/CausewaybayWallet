@@ -148,6 +148,39 @@ t.suite("model / the session", function()
     t.contains(model.status.text, "Welcome back")
   end)
 
+  t.case("a new phrase becomes the wallet in use, not just the one on screen", function()
+    -- NEW MNEMONIC, COPY, UNLOCK should start a new wallet — all the way,
+    -- including spending from it. Logging in *as* a wallet and then spending
+    -- from a different one is exactly the mismatch this screen exists to
+    -- prevent, and the known-phrase branch below already activates, so a new
+    -- phrase behaving differently was simply a gap.
+    local model = model_over()
+    model:create("first")
+    local first = model.active
+
+    local phrase = model:offer_mnemonic(12)
+    local account = model:login(phrase)
+
+    t.ok(account, "should have got in")
+    t.not_equal(model.active, first, "spending must have moved to the new wallet")
+    t.equal(model.active, account.address, "and it should be the one unlocked")
+    t.equal(model.wallets[model.selected].address, account.address,
+      "with the card showing it too")
+    t.equal(model.session.address, account.address)
+  end)
+
+  t.case("logging in with a known phrase does the same", function()
+    -- The two branches must not disagree about what logging in means.
+    local model = model_over()
+    model:login(support.MNEMONIC)
+    model:create("other")
+    model:select(2)
+    t.not_equal(model.active, support.ADDRESS_0, "spending is elsewhere now")
+
+    model:login(support.MNEMONIC)
+    t.equal(model.active, support.ADDRESS_0, "logging back in should return to it")
+  end)
+
   t.case("logging in points the card at the wallet that was unlocked", function()
     local model = model_over()
     model:create("one")

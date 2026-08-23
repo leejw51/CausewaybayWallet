@@ -73,6 +73,19 @@ MUTATIONS = [
      # than the thing producing the message.
      "validate_mnemonic and derive reject the same phrases identically"),
 
+    ("login: a new phrase is imported but not activated", "model.lua",
+     "    if entry.address == account.address then\n      if not self:select(index) then return false end\n    end",
+     "    if entry.address == account.address then self.selected = index end", "model", None),
+
+    ("login: forget leaves the phrase behind", "login.lua",
+     "function login:forget()\n  self.phrase = \"\"", "function login:forget()", "login", None),
+
+    ("login: pasting no longer clears minted", "login.lua",
+     "  self.phrase = login.tidy(text)\n  self.minted = false", "  self.phrase = login.tidy(text)", "login", None),
+
+    ("login: an empty clipboard wipes the field", "login.lua",
+     "  if not text or text:gsub(\"%s\", \"\") == \"\" then return false end", "", "login", None),
+
     ("boot: a missing library no longer halts", "boot.lua",
      "self.halted = true", "self.halted = false", "boot", None),
 

@@ -355,6 +355,10 @@ function love.update(dt)
   if game.login then
     game.login:update(dt)
     if game.model and game.model:logged_in() then
+      -- The session has started, so the screen goes. Wiped first: a phrase
+      -- must not outlive the moment it was used, and dropping the reference
+      -- is not the same as clearing it.
+      game.login:forget()
       game.login = nil
       game.entrance:restart()
       game.fx:burst(theme.WIDTH / 2, theme.HEIGHT / 2,
@@ -499,8 +503,7 @@ function love.keypressed(key)
         game.login:backspace()
       end
     elseif love.keyboard.isDown("lctrl", "rctrl", "lgui", "rgui") and key == "v" then
-      local text = love.system.getClipboardText()
-      if text then game.login.phrase = (text:gsub("^%s+", ""):gsub("%s+$", "")) end
+      game.login:paste(love.system.getClipboardText())
     end
     return
   end
@@ -718,6 +721,10 @@ local function draw_header_buttons(model, state)
   if widgets.button(game.springs, "logout", out, "LOGOUT", state,
       { colour = theme.colour.red, font = theme.font.small }) then
     model:logout()
+    -- A brand new screen, which holds no phrase, is not minted, and offers
+    -- PASTE rather than COPY. Nothing is carried over from the session that
+    -- just ended — including which wallet it was, so NEW MNEMONIC after this
+    -- starts a genuinely new one.
     game.login = Login.new()
   end
 end
@@ -1341,6 +1348,17 @@ local function advance_replay(dt)
     elseif pause then
       shot.hold = tonumber(pause) or 0
       return
+    elseif step == "mint" then
+      -- NEW MNEMONIC has no key, only a button, so a shot of the
+      -- mint-then-unlock path cannot be replayed without this.
+      if game.login and game.model then
+        local phrase = game.model:offer_mnemonic(12)
+        if phrase then
+          game.login.phrase = phrase
+          game.login.minted = true
+          game.login.copied = false
+        end
+      end
     elseif step == "launch" then
       -- The one thing no keypress can reach: the rocket only lifts off once a
       -- transfer is confirmed, and confirming one needs a funded account and a

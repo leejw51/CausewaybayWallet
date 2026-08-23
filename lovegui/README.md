@@ -14,7 +14,7 @@ There is no cryptography in this directory, no store, and no argument parsing.
 ```sh
 make run       # opens the window
 make app       # a double-clickable macOS .app with LÖVE inside it
-make test      # 147 headless tests, no LÖVE required
+make test      # 155 headless tests, no LÖVE required
 make shots     # writes a PNG of each screen, for review from a terminal
 make sfx       # re-synthesises the sound effects
 ```
@@ -83,7 +83,28 @@ an address without touching the store, and only then does the model choose
 between selecting a wallet it knows and importing one it does not. A typo
 produces a message, never a stray account.
 
-**LOGOUT** in the header comes back here.
+**Unlocking makes that wallet the one in use** — both branches, the phrase the
+store already knew and the one it did not. Logging in *as* a wallet while the
+money moves from a different one is exactly the mismatch this screen exists to
+prevent. It used to be true of a known phrase and not of a new one, so NEW
+MNEMONIC → COPY → UNLOCK created the wallet, put it on screen, and left the
+store spending from whichever wallet was active before.
+
+**LOGOUT** in the header comes back here, to a screen holding nothing: no
+phrase, not minted, offering PASTE rather than COPY. Nothing carries over from
+the session that ended, so NEW MNEMONIC after a logout starts a genuinely new
+wallet.
+
+The phrase is wiped rather than merely dropped — `login:forget()` runs the
+moment a session opens and again on the way out. Releasing the last reference
+to a string is not the same as clearing it, and "no mnemonic outlives the
+session" should be a property with a test on it rather than a consequence of
+who remembers to rebuild the screen.
+
+Pasting goes through one path whether it came from the button or `Ctrl+V`.
+They were separate, and the key left `minted` alone — so pasting over a freshly
+minted phrase left the screen still offering to COPY it while holding a
+different one.
 
 ## The look
 

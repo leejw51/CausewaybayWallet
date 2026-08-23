@@ -187,6 +187,79 @@ t.suite("login / paste or copy", function()
   end)
 end)
 
+t.suite("login / forgetting", function()
+  t.case("nothing about the phrase survives", function()
+    local screen = Login.new()
+    screen:type_into(PHRASE)
+    screen.minted = true
+    screen.copied = true
+
+    screen:forget()
+    t.equal(screen.phrase, "", "the phrase")
+    t.equal(screen.minted, false, "and that it was minted")
+    t.equal(screen.copied, false, "and that it had been copied")
+    t.equal(screen:shown(), "", "with nothing left to draw")
+  end)
+
+  t.case("a successful login forgets it", function()
+    local model = model_over()
+    local screen = Login.new()
+    screen:type_into(PHRASE)
+    screen:submit(model)
+    t.equal(screen.phrase, "", "the phrase has done its job")
+    t.equal(screen.minted, false)
+  end)
+
+  t.case("the screen after a logout holds nothing", function()
+    -- What LOGOUT builds. Nothing is carried over from the session that
+    -- ended, including whether the last phrase was minted — a stale `minted`
+    -- is the difference between the button offering COPY and offering PASTE.
+    local model = model_over()
+    local first = Login.new()
+    first:type_into(PHRASE)
+    first:submit(model)
+    model:logout()
+
+    local fresh = Login.new()
+    t.equal(fresh.phrase, "")
+    t.equal(fresh.minted, false, "so the button offers PASTE, not COPY")
+    t.equal(fresh.copied, false)
+  end)
+end)
+
+t.suite("login / pasting", function()
+  t.case("a pasted phrase is tidied", function()
+    local screen = Login.new()
+    t.ok(screen:paste("  " .. PHRASE:gsub(" ", "\n") .. "  "))
+    t.equal(screen.phrase, PHRASE, "newlines and edges should be gone")
+    t.equal(screen:words(), 12)
+  end)
+
+  t.case("pasting over a minted phrase stops offering COPY", function()
+    -- The bug this exists for: the button and Ctrl+V used to be separate
+    -- paths, and the key left `minted` alone. The screen went on offering to
+    -- COPY a phrase it had minted while holding a different, pasted one.
+    local screen = Login.new()
+    screen.phrase, screen.minted, screen.copied = PHRASE, true, true
+
+    screen:paste("alpha bravo charlie")
+    t.equal(screen.phrase, "alpha bravo charlie")
+    t.equal(screen.minted, false, "the pasted phrase was not minted here")
+    t.equal(screen.copied, false, "and has not been copied anywhere")
+  end)
+
+  t.case("an empty clipboard changes nothing", function()
+    -- `getClipboardText` returns nil when there is nothing on it, and an
+    -- accidental Ctrl+V must not wipe a phrase already typed.
+    local screen = Login.new()
+    screen:type_into(PHRASE)
+    t.equal(screen:paste(nil), false)
+    t.equal(screen:paste(""), false)
+    t.equal(screen:paste("   \n  "), false)
+    t.equal(screen.phrase, PHRASE, "what was typed should still be there")
+  end)
+end)
+
 t.suite("login / submitting", function()
   t.case("a good phrase gets in and clears the field", function()
     local model = model_over()

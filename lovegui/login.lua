@@ -92,13 +92,44 @@ function login:shown()
   return (self.phrase:gsub("%S", MASK))
 end
 
+--- Take a phrase from the clipboard. Returns whether there was one.
+---
+--- The button and Ctrl+V both come here. They used to be separate: the button
+--- tidied the text and cleared `minted`, the key assigned the phrase raw and
+--- left `minted` alone — so pasting over a freshly minted phrase left the
+--- screen still offering to COPY it, and copying would have handed back the
+--- pasted one under a banner describing the minted one.
+function login:paste(text)
+  if not text or text:gsub("%s", "") == "" then return false end
+  self.phrase = login.tidy(text)
+  self.minted = false
+  self.copied = false
+  return true
+end
+
+--- Wipe the phrase and everything that describes it.
+---
+--- Called on the way out as well as on the way in. Dropping the screen and
+--- building a new one would clear it just as well, but that leaves the rule
+--- "no mnemonic outlives the session" as a property of whoever remembers to
+--- rebuild the screen. Here it is one call with a test on it.
+---
+--- `minted` and `copied` go too: they describe a phrase that no longer exists,
+--- and a stale `minted` is the difference between the button offering COPY and
+--- offering PASTE.
+function login:forget()
+  self.phrase = ""
+  self.minted = false
+  self.copied = false
+end
+
 --- Try to get in. Returns whatever the model returned.
 function login:submit(model)
   local account = model:login(self.phrase)
   if account then
     sound.play("unlock")
-    self.phrase = ""
-    self.minted = false
+    -- The phrase has done its job. Nothing keeps it after this.
+    self:forget()
   else
     sound.play("deny")
     self.shake = 5
@@ -172,11 +203,7 @@ function login:draw(model, state, springs)
     end
   elseif widgets.button(springs, "loginpaste", action, "PASTE", state,
       { colour = theme.colour.cyan }) then
-    local text = love.system.getClipboardText()
-    if text and text:gsub("%s", "") ~= "" then
-      self.phrase = login.tidy(text)
-      self.minted = false
-    end
+    self:paste(love.system.getClipboardText())
   end
 
   -- ------------------------------------------------------------- the doors
