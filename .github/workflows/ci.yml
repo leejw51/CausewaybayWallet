@@ -180,11 +180,46 @@ jobs:
       - run: make test-vector-coverage
       - run: make test-parity
 
+  # Packaging, split by what a pull request can afford.
+  #
+  # The full job below needs PyApp to download a CPython distribution and build
+  # a launcher around it — minutes of work that a pull request should not pay
+  # for on every push, so it runs only after a change has landed. That gap has
+  # let two breaks through: a macOS link that lost its libraries, and before it
+  # a build nothing exercised until after merge. Both were found on main, which
+  # is the wrong place to find them.
+  #
+  # So pull requests get the same path without the expensive part: the compiled
+  # artifacts, the static link, and whether the binaries in ./dist run and still
+  # read one store. It is the platform that broke, at about a minute.
+  package-smoke:
+    name: Package (macOS, no PyApp)
+    if: github.event_name == 'pull_request'
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+        with:
+          toolchain: 1.95.0
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: rustcli
+
+      # The Lua bundle is staged and run, so the interpreter has to be here.
+      - name: Install LuaJIT
+        run: brew install luajit
+
+      # No signing secrets on a pull request; codesign-binary.sh falls back to
+      # ad-hoc, which is what this needs — the question is whether it links and
+      # runs, not whether it is notarized.
+      - run: make package-smoke
+
   package:
     name: Package (macOS)
-    # PyApp downloads a CPython distribution and builds a launcher around it —
-    # minutes of work that the release path must not discover for the first
-    # time at a tag, and that a pull request should not pay for on every push.
     if: github.event_name != 'pull_request'
     runs-on: macos-latest
     timeout-minutes: 60

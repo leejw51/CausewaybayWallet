@@ -44,6 +44,8 @@ make package          # every artifact into ./dist
 make package-rust     # only the Rust binary and shared library
 make package-python   # only the Python one
 make package-lua      # only the Lua bundle
+make package-c        # only the C binary
+make package-smoke    # everything but the Python one, checked — ~1 min, what PRs run
 make package-verify   # package, then run the parity checks against ./dist
 ```
 
