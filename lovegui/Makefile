@@ -241,7 +241,15 @@ app: build ## Build a double-clickable macOS .app with LÖVE embedded
 	@$(MAKE) --no-print-directory app-icon
 	@$(MAKE) --no-print-directory app-sign
 
-	@$(MAKE) --no-print-directory app-smoke
+	@# Skipped where there is no window server to draw into — a CI runner has
+	@# no display, and a smoke test that cannot start a window would fail for a
+	@# reason that has nothing to do with the bundle. `verify-archive` above
+	@# still runs there, and it catches the same class of fault deterministically.
+	@if [ -n "$(SKIP_SMOKE)" ]; then \
+		echo "  smoke test skipped (SKIP_SMOKE set)"; \
+	else \
+		$(MAKE) --no-print-directory app-smoke; \
+	fi
 
 	@cd "$(BUILD)" && ditto -c -k --sequesterRsrc --keepParent "$(APP_NAME).app" "$(APP_NAME)-macos.zip"
 	@rm -rf "$(BUILD)/love-macos" "$(BUILD)/love-macos.zip" "$(BUILD)/game.love"
