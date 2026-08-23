@@ -37,6 +37,13 @@ local LINE_DELAY = 0.14
 --- Characters per second, once a line starts typing.
 local TYPE_RATE = 90
 
+--- What the title card asks for, and the only key that answers.
+---
+--- Named rather than written into the drawing, because the routing in
+--- `main.lua` has to agree with it: a screen that says SPACE and accepts
+--- anything is a screen that ends a recording by accident.
+boot.PROMPT = "PRESS SPACE"
+
 --- Seconds of black before a replayed sequence begins.
 ---
 --- For recording the intro. A capture wants a moment of nothing at the head of
@@ -295,7 +302,7 @@ function boot:draw()
       theme.font.big, t * fade)
 
     local pulse = anim.pulse(self.time, 1.4, 0.30, 0.95)
-    theme.text_centred("PRESS ANY KEY", cx, height - 26,
+    theme.text_centred(boot.PROMPT, cx, height - 26,
       theme.colour.dim, theme.font.small, pulse * t * fade)
   end
 

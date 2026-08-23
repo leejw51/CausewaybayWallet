@@ -43,6 +43,13 @@ WALLETS           2
 Ok
 ```
 
+**Space is the only way past it**, and the prompt says so. It used to be any
+key, which is friendlier right up until somebody is recording the sequence:
+then every stray press ends the take, and the keys most likely to be hit by
+accident are the ones nobody thinks of as input. A click does not continue
+either — a boot screen that took one would end when you moved the window.
+Escape still quits.
+
 Pressing **`0`** on the title screen plays the whole thing again, after three
 seconds of black. That is for recording it: a capture wants somewhere to cut
 and a moment for the recorder to settle before the tube comes on, and an intro
@@ -598,6 +605,7 @@ not depend on a network reply to stop** — is a test now, not a hope.
 | `Ctrl/Cmd+V` | paste into the focused field |
 | `M` | sound on or off |
 | `F11` · `Alt+Enter` | fullscreen, or the **FULL/WIN** button |
+| `Space` | on the title screen: skip the sequence, then continue |
 | `0` | on the title screen: replay the intro from black |
 | `Esc` | cancel a confirmation, or quit |
 

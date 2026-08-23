@@ -512,7 +512,9 @@ end
 
 function love.mousepressed(_, _, button)
   if game.boot then
-    game.boot:skip()
+    -- A click does not continue either. The prompt asks for space, and a
+    -- boot screen that also took a click would be a boot screen that ends
+    -- when somebody moves the window.
     return
   end
   if button == 1 then game.clicked = true end
@@ -536,8 +538,14 @@ function love.keypressed(key)
   end
 
   if game.boot then
-    -- Any key: the first skips the sequence, the second hands over. Escape
-    -- still quits, because being trapped in a boot screen is not charming.
+    -- Space, and only space: the first press skips the typing, the second
+    -- hands over. It used to be any key, which is friendlier right up until
+    -- somebody is recording the sequence — then every stray press ends the
+    -- take, and the keys most likely to be pressed by accident are the ones
+    -- nobody thinks of as input. The prompt says which key it wants.
+    --
+    -- Escape still quits, because being trapped in a boot screen is not
+    -- charming, and `0` still replays it.
     if key == "escape" then love.event.quit() end
     -- `0` plays the whole intro again from black, for recording it. A capture
     -- wants to be able to go round twice without restarting the process, and
@@ -547,7 +555,7 @@ function love.keypressed(key)
       game.boot = Boot.new(game.model and game.model.wallet, game.error, Boot.REPLAY_HOLD)
       return
     end
-    game.boot:skip()
+    if key == "space" then game.boot:skip() end
     return
   end
 
