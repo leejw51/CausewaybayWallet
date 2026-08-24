@@ -116,8 +116,13 @@ def globals_from(argv: Sequence[str]) -> dict[str, Any]:
     """
     found: dict[str, Any] = {}
     words = list(argv)
-    wanted = {"--home": "home", "--network": "network", "-n": "network",
-              "--chain": "chain", "-c": "chain"}
+    wanted = {
+        "--home": "home",
+        "--network": "network",
+        "-n": "network",
+        "--chain": "chain",
+        "-c": "chain",
+    }
     index = 0
     while index < len(words):
         word = words[index]
@@ -153,8 +158,9 @@ def _session_for(argv: Sequence[str]) -> Wallet:
     return wallet
 
 
-def main(argv: Sequence[str] | None = None, out: TextIO | None = None,
-         err: TextIO | None = None) -> int:
+def main(
+    argv: Sequence[str] | None = None, out: TextIO | None = None, err: TextIO | None = None
+) -> int:
     """Run the CLI, returning an exit status rather than calling ``sys.exit``.
 
     ``out`` and ``err`` let the tests capture output instead of writing to the
@@ -195,9 +201,7 @@ def main(argv: Sequence[str] | None = None, out: TextIO | None = None,
         return EXIT_ERROR
 
     try:
-        envelope = wallet.envelope(
-            argv, stdin=sys.stdin.read() if wants_stdin(argv) else None
-        )
+        envelope = wallet.envelope(argv, stdin=sys.stdin.read() if wants_stdin(argv) else None)
     except errors.WalletError as failure:
         err.write(f"error [{failure.code}]: {failure.message}\n")
         return EXIT_ERROR
@@ -206,15 +210,15 @@ def main(argv: Sequence[str] | None = None, out: TextIO | None = None,
         # One envelope on stdout, which stays the single machine-readable
         # channel.
         out.write(envelope_line(envelope) + "\n")
-        return EXIT_OK if envelope.get("ok") else exit_status(
-            (envelope.get("error") or {}).get("code")
+        return (
+            EXIT_OK
+            if envelope.get("ok")
+            else exit_status((envelope.get("error") or {}).get("code"))
         )
 
     if not envelope.get("ok"):
         failure = envelope.get("error") or {}
-        err.write(
-            f"error [{failure.get('code', 'internal')}]: {failure.get('message', '')}\n"
-        )
+        err.write(f"error [{failure.get('code', 'internal')}]: {failure.get('message', '')}\n")
         return exit_status(failure.get("code"))
 
     asked_for_help = has_flag(argv, "--help") or has_flag(argv, "-h")

@@ -26,8 +26,9 @@ EXIT_ERROR = 1
 class Session:
     """One interactive session: a wallet, and the two streams to talk on."""
 
-    def __init__(self, wallet: Wallet, out: TextIO, err: TextIO,
-                 read: Callable[[], str | None]) -> None:
+    def __init__(
+        self, wallet: Wallet, out: TextIO, err: TextIO, read: Callable[[], str | None]
+    ) -> None:
         self.wallet = wallet
         self.out = out
         self.err = err
@@ -49,8 +50,7 @@ class Session:
         answer = self.read()
         return None if answer is None else answer.strip()
 
-    def choose(self, question: str, items: list[Any],
-               render: Callable[[Any], str]) -> Any | None:
+    def choose(self, question: str, items: list[Any], render: Callable[[Any], str]) -> Any | None:
         """Offer a numbered list and return the chosen entry."""
         if not items:
             return None
@@ -105,7 +105,8 @@ def select_wallet(session: Session) -> None:
     if not accounts:
         return session.say("no wallets yet — create one first.")
     chosen = session.choose(
-        "wallet", accounts,
+        "wallet",
+        accounts,
         lambda a: f"{a['label']:<20} {a['chain']:<9} {a['address']}",
     )
     if chosen is None:
@@ -252,13 +253,16 @@ def draw_menu(session: Session) -> None:
     session.write("  help [command]   menu   quit\n\n")
 
 
-def run(wallet: Wallet, out: TextIO, err: TextIO,
-        read: Callable[[], str | None] | None = None) -> int:
+def run(
+    wallet: Wallet, out: TextIO, err: TextIO, read: Callable[[], str | None] | None = None
+) -> int:
     """Run the session until the user quits or the input ends."""
     if read is None:
+
         def read() -> str | None:  # pragma: no cover - real terminal input
             line = out and input()
             return line
+
     session = Session(wallet, out, err, read)
 
     try:
@@ -268,9 +272,7 @@ def run(wallet: Wallet, out: TextIO, err: TextIO,
         return EXIT_ERROR
 
     session.write("\n  Causewaybay Wallet — interactive\n")
-    session.write(
-        f"  {info['network']} · {info['accounts']} wallets · {info['home']}\n"
-    )
+    session.write(f"  {info['network']} · {info['accounts']} wallets · {info['home']}\n")
     session.write("  Educational software. Keys are stored unencrypted.\n")
 
     by_key = {key: action for key, _, action in ACTIONS}

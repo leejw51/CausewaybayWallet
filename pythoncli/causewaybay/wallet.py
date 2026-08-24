@@ -105,8 +105,7 @@ class Wallet:
                 # would otherwise reach the wallet as "1.5" only by luck of
                 # formatting.
                 raise errors.usage(
-                    f"argv[{index}] is a {type(word).__name__}; "
-                    "every argument must be a string"
+                    f"argv[{index}] is a {type(word).__name__}; every argument must be a string"
                 )
 
         request: dict[str, Any] = {"argv": list(argv)}
@@ -132,9 +131,7 @@ class Wallet:
         envelope = self.envelope(argv, **options)
         if not envelope.get("ok"):
             failure = envelope.get("error") or {}
-            raise errors.WalletError(
-                failure.get("code", "internal"), failure.get("message", "")
-            )
+            raise errors.WalletError(failure.get("code", "internal"), failure.get("message", ""))
         return envelope.get("data")
 
     def text(self, argv: list[str], **options: Any) -> str:
@@ -146,9 +143,7 @@ class Wallet:
         envelope = self.envelope(argv, **options)
         if not envelope.get("ok"):
             failure = envelope.get("error") or {}
-            raise errors.WalletError(
-                failure.get("code", "internal"), failure.get("message", "")
-            )
+            raise errors.WalletError(failure.get("code", "internal"), failure.get("message", ""))
         return envelope.get("human") or ""
 
     @staticmethod
@@ -181,9 +176,7 @@ class Wallet:
         ``output`` path is given. With ``secret`` the file carries private keys
         and mnemonics, and is written owner-only.
         """
-        return self.call(
-            _flags(["account", "list"], format=fmt, output=output, secret=secret)
-        )
+        return self.call(_flags(["account", "list"], format=fmt, output=output, secret=secret))
 
     def account(self, selector: str | None = None, *, secret: bool = False) -> dict[str, Any]:
         """One account by id, label or address; ``None`` means the active one."""
@@ -330,9 +323,7 @@ class Wallet:
 
     def verify(self, message: str, signature: str, address: str | None = None) -> dict[str, Any]:
         """Check a signature. Without an address, EVM recovers the signer."""
-        return self.call(
-            _flags(["verify"], message=message, signature=signature, address=address)
-        )
+        return self.call(_flags(["verify"], message=message, signature=signature, address=address))
 
     # ---------------------------------------------------------------- tokens
 
@@ -340,9 +331,7 @@ class Wallet:
         return self.call(_flags(["erc20", "info"], token=token, **opts), **_call_options(opts))
 
     def token_balance(self, token: str, **opts: Any) -> dict[str, Any]:
-        return self.call(
-            _flags(["erc20", "balance"], token=token, **opts), **_call_options(opts)
-        )
+        return self.call(_flags(["erc20", "balance"], token=token, **opts), **_call_options(opts))
 
     def token_send(self, *, yes: bool = False, **opts: Any) -> dict[str, Any]:
         return self.call(_flags(["erc20", "send"], **opts), yes=yes, **_call_options(opts))
@@ -376,9 +365,7 @@ class Wallet:
 
     def sign_with(self, private_key: str, message: str) -> dict[str, Any]:
         """Sign with a key the wallet does not hold."""
-        return self.call(
-            _flags(["utils", "sign"], private_key=private_key, message=message)
-        )
+        return self.call(_flags(["utils", "sign"], private_key=private_key, message=message))
 
     def validate_mnemonic(self, phrase: str) -> dict[str, Any]:
         return self.call(["utils", "validate-mnemonic", phrase])

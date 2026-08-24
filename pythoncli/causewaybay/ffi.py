@@ -163,11 +163,7 @@ def load(explicit: str | None = None) -> Library:
     override = explicit or os.environ.get("CAUSEWAYBAY_LIB") or None
     # A path passed in is exclusive, not merely first: a caller that named a
     # library and got a different one would have no way to tell.
-    candidates = (
-        [explicit]
-        if explicit
-        else search_paths(Path(__file__).resolve().parent, override)
-    )
+    candidates = [explicit] if explicit else search_paths(Path(__file__).resolve().parent, override)
     tried: list[str] = []
     for candidate in candidates:
         tried.append(candidate)
@@ -191,6 +187,7 @@ def load(explicit: str | None = None) -> Library:
 
     raise errors.WalletError(
         "io_error",
-        "cannot find the wallet library; looked in:\n  " + "\n  ".join(tried)
+        "cannot find the wallet library; looked in:\n  "
+        + "\n  ".join(tried)
         + "\nBuild it with `make -C rustcli build`, or set CAUSEWAYBAY_LIB.",
     )
