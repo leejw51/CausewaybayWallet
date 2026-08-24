@@ -1,4 +1,19 @@
 -r requirements.txt
+
+# The test runner and the linter.
 pytest>=8.0.0
 pytest-cov>=5.0.0
 ruff>=0.6.0
+
+# Not the wallet's. These belong to `scripts/gen-vectors.py`, which regenerates
+# the shared fixtures in `testvectors/` from third-party reference
+# implementations — eth-account for signing, mnemonic for BIP-39. The whole
+# point of that generator is that it does *not* use this project's code: a
+# vector produced by the thing it is checking would prove nothing. They live
+# here because this is the repository's Python environment, and they reach no
+# further than that script; the wheel has no dependencies at all.
+eth-account>=0.13.0
+eth-utils>=5.0.0
+eth-hash[pycryptodome]>=0.7.0
+mnemonic>=0.21
+rlp>=4.0.0
