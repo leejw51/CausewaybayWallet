@@ -59,6 +59,12 @@ function Model.new(wallet, jobs)
     next_id = 0,
     form = { to = "", amount = "" },
     confirm = nil,
+    -- A file the window is about to write, waiting to be approved. See
+    -- `ask_save` below for why writing one is a question and not a button.
+    write = nil,
+    -- And where the last one actually went, so the view can say so somewhere
+    -- roomier than the status line.
+    written = nil,
     focus = "to",
     selected = 1,
     -- Whether the selection has ever been aimed at the active account. See
@@ -111,6 +117,15 @@ end
 
 function Model:busy()
   return next(self.pending) ~= nil
+end
+
+--- Whether a modal is up. Both of them take the keyboard and the mouse.
+---
+--- The send confirmation must not have the form edited underneath it — that
+--- would change what was approved — and the write dialog must not have the
+--- list scrolled or a field typed into behind it either.
+function Model:asking()
+  return self.confirm ~= nil or self.write ~= nil
 end
 
 -- ------------------------------------------------------------------- session
@@ -410,8 +425,119 @@ end
 
 --- Where this window writes: the directory the wallet already keeps its store
 --- in. Somewhere a person can find, beside the thing it describes.
+---
+--- `~/.causewaybaywallet` unless `CAUSEWAYBAY_HOME` or `--home` said otherwise.
+--- The wallet is the one that resolved it and this asks rather than guessing,
+--- so what the window shows is where the bytes really go — and there is only
+--- ever this one directory. Nothing here writes anywhere else.
 function Model:home()
   return self.info and self.info.home or nil
+end
+
+--- A path as a person says it: `~/.causewaybaywallet`, not `/Users/…`.
+---
+--- Only the leading home directory is folded, and only when it really is the
+--- prefix. Everywhere else the path is left exactly as the wallet resolved it,
+--- because a path nobody can paste is not an answer to "where is my file".
+function Model.tilde(path)
+  local home = os.getenv("HOME")
+  if not home or home == "" or type(path) ~= "string" then return path end
+  if path == home then return "~" end
+  if path:sub(1, #home + 1) == home .. "/" then
+    return "~" .. path:sub(#home + 1)
+  end
+  return path
+end
+
+-- ------------------------------------------------------- asking before writing
+--
+-- Both verbs below write into a directory nobody chose and most people have
+-- never opened, and one of them writes every private key this wallet holds.
+-- Somebody who does not know where the file went cannot delete it, cannot move
+-- it onto the machine they meant to move it to, and cannot tell whether the
+-- copy they found is the only one.
+--
+-- So neither writes on the click. The click describes the write — the full
+-- directory, every file by name, and for the keys what the file is worth to
+-- whoever reads it — and the write happens on the answer.
+
+--- Describe saving the address list, and wait to be told to go ahead.
+function Model:ask_save()
+  local home = self:home()
+  if not home then return self:fail({ code = "io_error", message = "no wallet home" }) end
+  if #self.wallets == 0 then
+    return self:fail({ code = "usage", message = "no wallets to save" })
+  end
+
+  local files = {}
+  for _, name in ipairs(export.ADDRESS_FILES) do files[#files + 1] = name end
+  table.sort(files)
+
+  self.write = {
+    kind = "addresses",
+    title = "SAVE ADDRESSES",
+    verb = "SAVE",
+    dir = home,
+    files = files,
+    count = #self.wallets,
+    note = "Addresses and labels only. Public information.",
+    secret = false,
+  }
+  self.status = nil
+  self:emit("ask")
+  return true
+end
+
+--- Describe exporting the keys, and wait to be told to go ahead.
+function Model:ask_export()
+  local home = self:home()
+  if not home then return self:fail({ code = "io_error", message = "no wallet home" }) end
+  if #self.wallets == 0 then
+    return self:fail({ code = "usage", message = "no wallets to export" })
+  end
+
+  self.write = {
+    kind = "secrets",
+    title = "EXPORT PRIVATE KEYS",
+    verb = "WRITE KEYS",
+    dir = home,
+    files = { export.SECRET_FILE },
+    count = #self.wallets,
+    note = "Mnemonics and private keys. Anyone who reads this file owns the money.",
+    secret = true,
+  }
+  self.status = nil
+  self:emit("ask")
+  return true
+end
+
+--- Do the write that was described. Returns whatever the writer returned.
+function Model:confirm_write()
+  local pending = self.write
+  if not pending then return false end
+  self.write = nil
+  if pending.kind == "secrets" then return self:export_wallets() end
+  return self:save_wallets()
+end
+
+--- Change your mind. Nothing is written and nothing is lost.
+function Model:cancel_write()
+  if not self.write then return false end
+  local pending = self.write
+  self.write = nil
+  self:say(("Nothing written to %s"):format(Model.tilde(pending.dir)))
+  self:emit("cancelled")
+  return true
+end
+
+--- Make sure the directory a file is about to land in exists.
+---
+--- The wallet creates its home when it opens, so this is only ever a no-op —
+--- unless somebody moved or deleted the directory while the window was up, in
+--- which case a save would otherwise fail with a bare "No such file". There is
+--- exactly one directory this window writes to, and it is the wallet's own.
+local function ensure_dir(dir)
+  os.execute(("mkdir -p %q 2>/dev/null"):format(dir))
 end
 
 local function write_file(path, contents, private)
@@ -444,6 +570,7 @@ function Model:save_wallets()
     return self:fail({ code = "usage", message = "no wallets to save" })
   end
 
+  ensure_dir(home)
   local written = {}
   for name, contents in pairs(export.addresses(self.wallets)) do
     local path, err = write_file(home .. "/" .. name, contents, false)
@@ -454,7 +581,10 @@ function Model:save_wallets()
   end
   table.sort(written)
 
-  self:say(("Saved %d to %s"):format(#self.wallets, home))
+  -- The directory, not just a count. It is the only place this window ever
+  -- says where the files it just wrote can be found.
+  self:say(("Saved %d wallets to %s"):format(#self.wallets, Model.tilde(home)))
+  self.written = { dir = home, where = Model.tilde(home) }
   self:emit("saved")
   return written
 end
@@ -494,13 +624,17 @@ function Model:export_wallets()
     }
   end
 
+  ensure_dir(home)
   local path, err = write_file(home .. "/" .. export.SECRET_FILE,
     export.secrets(rows), true)
   if not path then
     return self:fail({ code = "io_error", message = "cannot write: " .. tostring(err) })
   end
 
-  self:say(("Exported %d keys to %s"):format(#rows, export.SECRET_FILE), "error")
+  -- The whole path. A bare file name is not an answer to "where are my keys
+  -- now?" — it is the half of the answer that a person already had.
+  self:say(("Exported %d keys to %s"):format(#rows, Model.tilde(path)), "error")
+  self.written = { dir = home, where = Model.tilde(path) }
   self:emit("exported")
   return path
 end
@@ -763,6 +897,18 @@ function Model:begin_send(to, amount)
   if to == "" or amount == "" then
     return self:fail({ code = "usage", message = "a recipient and an amount are needed" })
   end
+  -- Paying the wallet you are paying *from* moves nothing and still costs the
+  -- gas. The wallet refuses it too, and that refusal is the one that counts —
+  -- but it costs a round trip through the worker to hear, and the answer is
+  -- already on this side of it. Compared case-insensitively, because EIP-55 is
+  -- a property of the text: the same account pasted in lower case is the same
+  -- account.
+  if self.active and to:lower() == tostring(self.active):lower() then
+    return self:fail({
+      code = "usage",
+      message = "sending to yourself would only pay the gas",
+    })
+  end
   self:say("Pricing the transaction…", "busy")
   self:submit({
     argv = { "send", "--to", to, "--amount", amount },
@@ -825,12 +971,12 @@ end
 -- --------------------------------------------------------------- text entry
 
 function Model:type_into(text)
-  if self.confirm then return end -- the dialog owns the keyboard
+  if self:asking() then return end -- the dialog owns the keyboard
   self.form[self.focus] = (self.form[self.focus] or "") .. text
 end
 
 function Model:backspace()
-  if self.confirm then return end
+  if self:asking() then return end
   local field = self.form[self.focus] or ""
   self.form[self.focus] = field:sub(1, -2)
 end
@@ -841,7 +987,7 @@ end
 --- chat message arrives wrapped in whitespace more often than not, and the
 --- wallet would reject it for a reason nobody could see.
 function Model:set_field(field, text)
-  if self.confirm then return false end
+  if self:asking() then return false end
   if type(text) ~= "string" then return false end
   self.form[field] = (text:gsub("^%s+", ""):gsub("%s+$", ""))
   self.focus = field
@@ -849,7 +995,7 @@ function Model:set_field(field, text)
 end
 
 function Model:clear_field(field)
-  if self.confirm then return false end
+  if self:asking() then return false end
   self.form[field] = ""
   return true
 end

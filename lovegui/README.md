@@ -398,6 +398,15 @@ flattening into an opaque blob.
 
 Two buttons under the card, and they are deliberately different verbs.
 
+Both ask first, in a dialog that names **the directory they are about to write
+into** — `~/.causewaybaywallet` unless `CAUSEWAYBAY_HOME` or `--home` said
+otherwise — every file by name, and what the file is worth to whoever reads it.
+Nothing is written until that is answered; CANCEL writes nothing at all. There
+is only ever this one directory: everything this window writes goes beside the
+store it came from, and a file somebody cannot find is a file they cannot move
+or delete. The path is shown the way a person says it (`~/…`), and the status
+line repeats it once the write is done.
+
 **SAVE** writes the address list in all four formats at once —
 `wallets.jsonl`, `.csv`, `.md`, `.txt` — into the wallet's own home directory.
 Public information: labels, addresses, indices, derivation paths. Which format
@@ -425,8 +434,9 @@ the conversion themselves, and getting it subtly wrong is a way to lose money.
 The public keys are not in the store — it keeps only what it needs to sign — so
 each is derived from the private key as the file is written.
 
-Anyone who reads that file owns the money in it. So it arms like LOGOUT does,
-it is written owner-only (`chmod 600`), and it is named `-secret` on purpose:
+Anyone who reads that file owns the money in it. So the dialog says exactly
+that in red before anything happens, the file is written owner-only
+(`chmod 600`), and it is named `-secret` on purpose:
 the repository ignores `*secret*.jsonl` by name at its root, which closes the
 single most likely way for it to escape.
 
@@ -625,6 +635,20 @@ recipient field, **USE CARD** to spend from the one on screen, **SFX**,
 that nobody retypes correctly, so the clipboard is not a convenience here, it
 is the only realistic way to move one.
 
+**FULL/WIN** is on three screens, not one: the title sequence, the login gate
+and the wallet header. The window opens fullscreen, so the way back out has to
+be visible from the first frame rather than from whenever somebody gets past
+the mnemonic prompt — and a keyboard shortcut nobody is told about is not a way
+out.
+
+The change itself happens in `love.update`, never where the button is drawn.
+Every screen here renders to a canvas that `theme.frame` sets and unsets around
+the whole scene, and resizing the window in the middle of that pass pulls the
+render target out from under the drawing that has not happened yet: the window
+stops answering and has to be killed. `F11` never showed it because
+`love.keypressed` runs outside the pass. So both routes call `ask_fullscreen`,
+which leaves a note for the next frame to act on.
+
 ## Tests
 
 ```sh
@@ -681,9 +705,13 @@ CWB_SHOT=/tmp/x.png CWB_SHOT_AFTER=2.5 CWB_SHOT_SCREEN=send \
 
 Runs normally for that long — so the entrance has settled and effects have
 played — writes a PNG, and quits. `CWB_SHOT_KEYS` takes `type:…` for text and a
-key name for anything else, plus one step that is not a key at all: `launch`
-starts the rocket, because the only other way to reach it is a funded account
-and a node, and the flight itself is pure animation.
+key name for anything else, plus a few steps that are not keys at all:
+`click:390x12` presses a point on the canvas (an `x` between the coordinates,
+because the comma already separates one step from the next), which is how the
+buttons get exercised — `launch` starts the rocket, because the only other way
+to reach it is a funded account and a node, and the flight itself is pure
+animation; `save` and `keys` open the two write dialogs by name, which survives
+those buttons moving in a way a coordinate does not.
 
 ## Shipping it
 

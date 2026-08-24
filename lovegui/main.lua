@@ -58,6 +58,8 @@ local game = {
   screen_slide = nil,
   balance_shown = 0,
   confirm_t = 0,
+  -- The same tween, for the dialog that asks before a file is written.
+  write_t = 0,
   toast = nil,
   boot = nil,  -- the MSX-style boot sequence, until it hands over
   login = nil, -- the mnemonic gate, until a session is open
@@ -73,15 +75,45 @@ local game = {
   face = { shown = nil, next = nil, turn = 1, key = nil, index = nil, dir = 1 },
   -- Seconds left on an armed destructive button. See ARM_TIME.
   armed = {},
+  -- A window mode change waiting for the frame to end. See `ask_fullscreen`.
+  window = nil,
+  -- Where the screenshot harness is pointing, when there is one. See CAPTURING.
+  pointer = nil,
 }
+
+--- Ask for windowed or fullscreen, to happen between frames rather than now.
+---
+--- Never from inside `love.draw`. Every screen here is drawn to a canvas —
+--- `theme.frame` sets it and unsets it around the whole scene — and changing
+--- the window mode in the middle of that pass tears the render target out from
+--- under the drawing that has not happened yet, which is a crash and not a
+--- resize. The keyboard shortcut always worked because `love.keypressed` runs
+--- outside the pass; the button beside it did not, because a button is drawn.
+---
+--- So both go through here, and `love.update` performs it before it does
+--- anything else.
+local function ask_fullscreen(wanted)
+  game.window = { fullscreen = wanted and true or false }
+end
+
+--- Fullscreen as far as the interface is concerned, including a change that
+--- has been asked for and not yet applied — so the label under the pointer
+--- does not flick back to what it said before the click for one frame.
+local function fullscreen_now()
+  if game.window then return game.window.fullscreen end
+  return love.window.getFullscreen()
+end
 
 --- How long a destructive button stays armed after the first press.
 ---
---- LOGOUT deletes the store and EXPORT writes every private key to a file.
---- Neither should happen because a pointer was in the wrong place, and neither
---- is worth a modal — a button that says what it is about to do, and waits, is
+--- LOGOUT deletes the store, and it should not happen because a pointer was in
+--- the wrong place. A button that says what it is about to do, and waits, is
 --- the smallest thing that makes a misclick harmless. It disarms itself, so
 --- walking away does not leave the wallet one stray click from being wiped.
+---
+--- SAVE and KEYS used to arm the same way and no longer do: they write files
+--- somewhere, and *where* is the part a person needs told. That does not fit
+--- on a button, so those two ask in a dialog. See `draw_write`.
 local ARM_TIME = 4
 
 --- How long one card takes to swipe out and the next to swipe in.
@@ -364,6 +396,19 @@ local function celebrate(event)
     game.shake = 6
     game.fx:burst(cx, cy, { count = 22, speed = 260, colour = { 1, 0.3, 0.4 },
       life = 0.6, gravity = 320 })
+  elseif event == "saved" or event == "exported" then
+    -- With the path under it, in full. The status line on this screen is a
+    -- hundred pixels wide — it sits between + NEW and REFRESH — and every path
+    -- is longer than that, so a person who took their eyes off the dialog for
+    -- a second would have no way left to find out where their keys went.
+    local secret = event == "exported"
+    sound.play(secret and "power" or "created")
+    game.toast = {
+      text = secret and "KEYS WRITTEN" or "ADDRESSES SAVED",
+      detail = (game.model.written or {}).where,
+      colour = secret and theme.colour.red or theme.colour.green,
+      life = 2.6,
+    }
   elseif event == "selected" or event == "network" then
     sound.play("blip", { pitch = 1.25 })
     game.fx:burst(cx, cy, { count = 12, speed = 140, colour = { 0.3, 0.94, 1 }, life = 0.5 })
@@ -371,6 +416,15 @@ local function celebrate(event)
 end
 
 function love.update(dt)
+  -- Before anything else, and before the boot screen's early return below:
+  -- this is the one place in the file allowed to resize the window, because it
+  -- is the one place that is not inside a canvas pass.
+  if game.window then
+    local wanted = game.window.fullscreen
+    game.window = nil
+    love.window.setFullscreen(wanted, "desktop")
+  end
+
   -- A frame that ran long — the window was dragged, the wallet blocked — must
   -- not be integrated in one step. Everything here is exponential and stable,
   -- but a 2-second dt would still teleport particles across the screen.
@@ -386,6 +440,11 @@ function love.update(dt)
   end
 
   if game.boot then
+    -- The springs move during the boot too, because one widget is drawn over
+    -- it: without this the mode button would be clickable but dead — no hover
+    -- glow, no press, since both of those are springs and nothing was
+    -- integrating them.
+    game.springs:update(dt)
     game.boot:update(dt)
     if game.boot:complete() then
       game.boot = nil
@@ -475,6 +534,8 @@ function love.update(dt)
   -- The confirmation dialog fades in, and snaps out.
   local wanted = game.model.confirm and 1 or 0
   game.confirm_t = anim.approach(game.confirm_t, wanted, wanted == 1 and 14 or 22, dt)
+  local asked = game.model.write and 1 or 0
+  game.write_t = anim.approach(game.write_t, asked, asked == 1 and 14 or 22, dt)
 
   -- Count the balance up rather than replacing the number, which turns a value
   -- arriving into an event you can watch.
@@ -497,12 +558,21 @@ end
 -- --------------------------------------------------------------------- input
 
 local function mouse_state()
+  -- `game.pointer` is the screenshot harness pressing a button — see CAPTURING
+  -- at the foot of this file. Nothing else ever sets it, and with it unset this
+  -- is the real pointer and nothing else.
+  if game.pointer then
+    return { mouse_x = game.pointer.x, mouse_y = game.pointer.y, clicked = game.clicked }
+  end
   local mx, my = theme.to_canvas(love.mouse.getPosition())
   return { mouse_x = mx, mouse_y = my, clicked = game.clicked }
 end
 
 function love.wheelmoved(_, y)
   if game.boot or game.login or not game.model then return end
+  -- A dialog owns the wheel too, or the list scrolls under the panel that is
+  -- describing what is about to happen to it.
+  if game.model:asking() then return end
   if game.model.screen == "wallets" then
     -- Three rows a notch, which is the step that feels like a list rather
     -- than a slingshot.
@@ -511,12 +581,13 @@ function love.wheelmoved(_, y)
 end
 
 function love.mousepressed(_, _, button)
-  if game.boot then
-    -- A click does not continue either. The prompt asks for space, and a
-    -- boot screen that also took a click would be a boot screen that ends
-    -- when somebody moves the window.
-    return
-  end
+  -- A click does not continue the boot. The prompt asks for space, and a boot
+  -- screen that also took a click would be a boot screen that ends when
+  -- somebody moves the window — `boot:skip` is reached from the keyboard only.
+  --
+  -- The click is still recorded, because one thing on that screen does want
+  -- it: the window-mode button. It is the only widget drawn over the boot, so
+  -- there is nothing else for the click to fall through to.
   if button == 1 then game.clicked = true end
 end
 
@@ -561,7 +632,7 @@ function love.keypressed(key)
 
   -- The window is fullscreen by default, so a way back out matters.
   if key == "f11" or (key == "return" and love.keyboard.isDown("lalt", "ralt")) then
-    love.window.setFullscreen(not love.window.getFullscreen(), "desktop")
+    ask_fullscreen(not fullscreen_now())
     return
   end
 
@@ -586,6 +657,9 @@ function love.keypressed(key)
     if game.model and game.model.confirm then
       sound.play("back")
       game.model:cancel_send()
+    elseif game.model and game.model.write then
+      sound.play("back")
+      game.model:cancel_write()
     else
       love.event.quit()
     end
@@ -600,6 +674,13 @@ function love.keypressed(key)
     if key == "return" or key == "kpenter" then
       if model:confirm_send() then begin_launch() end
     end
+    return
+  end
+
+  if model.write then
+    -- So does this one. ENTER writes the files it just named; ESCAPE, handled
+    -- above, writes nothing.
+    if key == "return" or key == "kpenter" then model:confirm_write() end
     return
   end
 
@@ -764,6 +845,24 @@ local function paste_from_clipboard(model, field)
   return true
 end
 
+--- The window-mode button: FULL when windowed, WIN when it is not.
+---
+--- One function rather than one per screen, because it is on three of them —
+--- the boot sequence, the login gate, and the wallet header. A window that
+--- opens fullscreen needs a visible way back out from the first frame, not
+--- from whenever somebody gets past the mnemonic prompt, and a keyboard
+--- shortcut nobody is told about is not a way out.
+local function draw_mode_button(box, state)
+  local full = fullscreen_now()
+  if widgets.button(game.springs, "mode", box, full and "WIN" or "FULL", state,
+      { colour = theme.colour.cyan, font = theme.font.small }) then
+    ask_fullscreen(not full)
+  end
+end
+
+--- Where that button goes on a screen that has no header to hang it in.
+local MODE_BOX = { x = theme.WIDTH - 50, y = 4, w = 44, h = 15 }
+
 --- The header's two buttons: the window mode, and the way out.
 local function draw_header_buttons(model, state)
   -- A button as well as the `M` key. The key cannot be the only way: every
@@ -784,12 +883,8 @@ local function draw_header_buttons(model, state)
     sound.play("press")
   end
 
-  local full = love.window.getFullscreen()
   local mode = { x = theme.WIDTH - 112, y = 5, w = 44, h = 15 }
-  if widgets.button(game.springs, "mode", mode, full and "WIN" or "FULL", state,
-      { colour = theme.colour.cyan, font = theme.font.small }) then
-    love.window.setFullscreen(not full, "desktop")
-  end
+  draw_mode_button(mode, state)
 
   -- LOGOUT deletes the store, so it asks. The first press arms it and the
   -- label says what the second one does; it disarms itself after a few
@@ -904,8 +999,29 @@ local function draw_wallets(model, state, x)
   local height = L.bottom - L.top
 
   -- ------------------------------------------------------------ the list
+  --
+  -- Two lines per wallet — a name is not enough to tell two apart, and an
+  -- address alone is unreadable — so how many fit is known before the frame is
+  -- drawn, and the frame's own inner height (13 less than the outer) is what
+  -- they have to fit inside.
+  local row_h = 27
+  local rows = math.floor((height - 13) / row_h)
+  -- Published so the wheel and the arrow keys, which are handled far from
+  -- here, know how big a page is.
+  game.list_rows = rows
+  model.scroll = math.max(0, math.min(math.max(0, #model.wallets - rows), model.scroll))
+
+  -- How far down the list you are goes in the frame's top edge rather than
+  -- along its bottom. The bottom line was a row of content that could not hold
+  -- content: it sat over the last wallet of a full list and hung through the
+  -- border into the action bar.
+  local range = nil
+  if #model.wallets > rows then
+    range = ("%d-%d OF %d"):format(model.scroll + 1,
+      math.min(#model.wallets, model.scroll + rows), #model.wallets)
+  end
   local list = widgets.frame(x + L.left, L.top, L.column, height,
-    ("WALLETS %d"):format(#model.wallets))
+    ("WALLETS %d"):format(#model.wallets), { note = range })
 
   if #model.wallets == 0 then
     theme.text_centred("no wallets yet", x + L.left + L.column / 2, L.top + height / 2 - 16,
@@ -913,16 +1029,6 @@ local function draw_wallets(model, state, x)
     theme.text_centred("press + NEW below", x + L.left + L.column / 2,
       L.top + height / 2 - 2, theme.colour.faint, theme.font.small)
   end
-
-  -- Two lines each — a name is not enough to tell two wallets apart, and an
-  -- address alone is unreadable.
-  local row_h = 27
-  local rows = math.floor(list.h / row_h)
-  -- Published so the wheel and the arrow keys, which are handled far from
-  -- here, know how big a page is.
-  game.list_rows = rows
-
-  model.scroll = math.max(0, math.min(math.max(0, #model.wallets - rows), model.scroll))
 
   for slot = 1, rows do
     local i = slot + model.scroll
@@ -955,12 +1061,10 @@ local function draw_wallets(model, state, x)
     local thumb = math.max(8, track_h * rows / #model.wallets)
     local travel = (track_h - thumb) * (model.scroll / math.max(1, #model.wallets - rows))
     theme.rect(theme.colour.cyan, track_x, list.y + travel, 2, thumb, 0.7)
-
-    theme.text(("%d-%d OF %d"):format(model.scroll + 1,
-      math.min(#model.wallets, model.scroll + rows), #model.wallets),
-      list.x, list.y + list.h - 8, theme.colour.faint, theme.font.small)
-  elseif #model.wallets > 0 then
-    theme.text("UP / DOWN TO MOVE", list.x, list.y + list.h - 8,
+  elseif #model.wallets > 0 and #model.wallets < rows then
+    -- Under the last wallet, in the empty row below it — never over one. A
+    -- list with no room to spare has a scrollbar saying the same thing.
+    theme.text("UP / DOWN TO MOVE", list.x, list.y + #model.wallets * row_h + 4,
       theme.colour.faint, theme.font.small)
   end
 
@@ -1021,7 +1125,13 @@ local function draw_wallets(model, state, x)
   --
   -- Five buttons across the card's column, so they are all narrow and all in
   -- the small font. Widths are hand-fitted to their labels rather than shared,
-  -- because REFRESH is seven characters and USE is three.
+  -- because REFRESH is seven characters and SAVE is four — and fitted with two
+  -- clear pixels either side of the longest label each one ever shows. USE
+  -- reads IN USE while that card is the one being spent from, and at the width
+  -- that fitted USE the longer label ran into its own border.
+  --
+  -- 60 + 40 + 56 + 40 + 40 across five buttons and 6 between them is exactly
+  -- the 260 the column has, so the row is flush at both ends.
   local small = theme.font.small
   local refresh = { x = x + L.right, y = L.bar, w = 60, h = L.button_h }
   if widgets.button(game.springs, "refresh", refresh, "REFRESH", state,
@@ -1038,14 +1148,14 @@ local function draw_wallets(model, state, x)
   -- The card's own verbs. COPY takes the address the card is showing — the one
   -- on screen, not the one the wallet happens to be spending from, because the
   -- card is what a person is looking at.
-  local copy = { x = x + L.right + 64, y = L.bar, w = 46, h = L.button_h }
+  local copy = { x = x + L.right + 66, y = L.bar, w = 40, h = L.button_h }
   if widgets.button(game.springs, "copy", copy, "COPY", state,
       { font = small, colour = theme.colour.cyan, disabled = selected == nil }) then
     copy_to_clipboard(model, selected.address, "address")
   end
 
   local usable = selected ~= nil and selected.address ~= model.active
-  local use = { x = x + L.right + 114, y = L.bar, w = 48, h = L.button_h }
+  local use = { x = x + L.right + 112, y = L.bar, w = 56, h = L.button_h }
   if widgets.button(game.springs, "use", use, usable and "USE" or "IN USE",
       state, { font = small, colour = theme.colour.gold, disabled = not usable }) then
     model:select(model.selected)
@@ -1053,27 +1163,24 @@ local function draw_wallets(model, state, x)
 
   -- Addresses, in four formats at once. Public information: which format you
   -- want depends on where it is going, and the file costs nothing to lose.
-  local save = { x = x + L.right + 166, y = L.bar, w = 44, h = L.button_h }
+  --
+  -- It still asks, because the question is not *whether* — it is *where*. The
+  -- directory these land in is one nobody chose and most people have never
+  -- opened, and a file you cannot find is a file you cannot delete.
+  local save = { x = x + L.right + 174, y = L.bar, w = 40, h = L.button_h }
   if widgets.button(game.springs, "save", save, "SAVE", state,
       { font = small, colour = theme.colour.green, disabled = #model.wallets == 0 }) then
-    model:save_wallets()
+    model:ask_save()
   end
 
-  -- And the keys. Arms first, like LOGOUT: this writes every mnemonic and
-  -- every private key to a file, and a misclick should not be how that
-  -- happens.
-  local ready = game.armed.keys ~= nil
-  local keys = { x = x + L.right + 214, y = L.bar, w = 46, h = L.button_h }
-  if widgets.button(game.springs, "keys", keys, ready and "SURE?" or "KEYS", state,
-      { font = small, colour = ready and theme.colour.gold or theme.colour.red,
+  -- And the keys: every mnemonic and every private key, in one file, in the
+  -- clear. The dialog spells out the path and what the file is worth to
+  -- whoever reads it, and nothing is written until it is answered.
+  local keys = { x = x + L.right + 220, y = L.bar, w = 40, h = L.button_h }
+  if widgets.button(game.springs, "keys", keys, "KEYS", state,
+      { font = small, colour = theme.colour.red,
         disabled = #model.wallets == 0 }) then
-    if ready then
-      game.armed.keys = nil
-      model:export_wallets()
-    else
-      game.armed.keys = ARM_TIME
-      model:say("KEYS again to write every private key", "error")
-    end
+    model:ask_export()
   end
 end
 
@@ -1081,7 +1188,12 @@ local function draw_send(model, state, x)
   local height = L.bottom - L.top
 
   -- The rocket gets its own column, so the exhaust has somewhere to go.
-  local pad = widgets.frame(x + L.left, L.top, 96, height, "LAUNCH")
+  --
+  -- As wide as the wallet list on the screen next door, rather than the 96 it
+  -- used to be. The columns are supposed to line up between screens, and a
+  -- narrow pad left a hundred pixels of nothing between it and the form —
+  -- which read as the form having drifted right rather than as space.
+  local pad = widgets.frame(x + L.left, L.top, L.column, height, "LAUNCH")
   rocket.x, rocket.y = pad.x + pad.w / 2, pad.y + 42
   local risen, t = flight()
   local thrust = model:busy() and 1 or 0
@@ -1126,27 +1238,34 @@ local function draw_send(model, state, x)
     theme.text("no wallet in use", form.x + 38, form.y + 2,
       theme.colour.red, theme.font.small)
   end
-  theme.rule(form.x, form.y + 16, form.w, theme.colour.raised, 0.6)
+  theme.rule(form.x, form.y + 20, form.w, theme.colour.raised, 0.6)
+
+  -- Everything below is placed against `form`, which is the *inside* of the
+  -- frame — `height` is the outside, and measuring the bottom of the form from
+  -- it is what pushed the last line of this screen through the border and out
+  -- into the action bar. A field's label sits 13px above it, so the first row
+  -- starts far enough below the rule for the two not to touch.
+  local field_h = 19
 
   -- The recipient field gives up room to its own buttons: pasting is how an
   -- address realistically gets in here, and typing 42 hex characters is not.
-  local to = { x = form.x, y = form.y + 32, w = form.w - 108, h = 19 }
+  local to = { x = form.x, y = form.y + 42, w = form.w - 108, h = field_h }
   widgets.field(game.springs, "to", to, model.form.to, "RECIPIENT",
     model.focus == "to", { placeholder = "0x…", ellipsis = 8 })
 
-  local paste = { x = form.x + form.w - 104, y = form.y + 32, w = 56, h = 19 }
+  local paste = { x = form.x + form.w - 104, y = to.y, w = 56, h = field_h }
   if widgets.button(game.springs, "paste", paste, "PASTE", state,
       { colour = theme.colour.cyan }) then
     paste_from_clipboard(model, "to")
   end
 
-  local clear = { x = form.x + form.w - 44, y = form.y + 32, w = 44, h = 19 }
+  local clear = { x = form.x + form.w - 44, y = to.y, w = 44, h = field_h }
   if widgets.button(game.springs, "clear", clear, "CLR", state,
       { colour = theme.colour.red, disabled = model.form.to == "" }) then
     model:clear_field("to")
   end
 
-  local amount = { x = form.x, y = form.y + 74, w = 120, h = 19 }
+  local amount = { x = form.x, y = form.y + 85, w = 120, h = field_h }
   widgets.field(game.springs, "amount", amount, model.form.amount, "AMOUNT",
     model.focus == "amount", { placeholder = "0.0" })
 
@@ -1155,18 +1274,22 @@ local function draw_send(model, state, x)
     if widgets.hit(state.mouse_x, state.mouse_y, amount) then model.focus = "amount" end
   end
 
-  -- What it will be sent as, so the network is never a surprise. Right-aligned
-  -- inside the frame rather than at a fixed offset, which is what ran it off
-  -- the edge when the network name got longer.
+  -- What it will be sent as, so the network is never a surprise.
+  --
+  -- On the amount's own row, in the space to its right: an amount is four
+  -- characters wide and the field cannot honestly be as wide as the frame, so
+  -- that gap was going to hold something. Right-aligned against the frame
+  -- rather than at a fixed offset, which is what ran it off the edge when the
+  -- network name got longer.
   if model.info then
     local name = model.info.network or "?"
     local width = theme.width(name, theme.font.small) + 10
-    local _ = width
-    theme.text("SENDING ON", form.x, form.y + 104, theme.colour.faint, theme.font.small)
-    widgets.chip(form.x + 88, form.y + 102, name, theme.colour.cyan)
+    theme.text_right("SENDING ON", form.x + form.w, amount.y - 13,
+      theme.colour.faint, theme.font.small)
+    widgets.chip(form.x + form.w - width, amount.y + 3, name, theme.colour.cyan)
   end
 
-  local send = { x = form.x, y = form.y + height - 36, w = form.w, h = 21 }
+  local send = { x = form.x, y = form.y + form.h - 25, w = form.w, h = 21 }
   if widgets.button(game.springs, "send", send,
       game.launch and "LAUNCHING…" or "SEND >", state,
       { colour = theme.colour.gold,
@@ -1175,8 +1298,18 @@ local function draw_send(model, state, x)
     model:begin_send(model.form.to, model.form.amount)
   end
 
-  theme.text_centred("CTRL+V pastes · ENTER sends",
-    form.x + form.w / 2, form.y + height - 16, theme.colour.faint, theme.font.small)
+  -- The keyboard shortcuts go at the foot of the launch column rather than
+  -- under the SEND button, where they used to hang through the bottom of the
+  -- frame and into the action bar. On a plate of their own, because the
+  -- exhaust falls straight through this spot and faint text under a shower of
+  -- embers is text nobody reads.
+  local legend = { x = pad.x, y = pad.y + pad.h - 28, w = pad.w, h = 26 }
+  theme.rect(theme.colour.void, legend.x, legend.y, legend.w, legend.h, 0.85)
+  theme.rule(legend.x, legend.y, legend.w, theme.colour.raised, 0.5)
+  theme.text_centred("CTRL+V PASTES", legend.x + legend.w / 2, legend.y + 2,
+    theme.colour.faint, theme.font.small)
+  theme.text_centred("ENTER SENDS", legend.x + legend.w / 2, legend.y + 13,
+    theme.colour.faint, theme.font.small)
 end
 
 local function draw_network(model, state, x)
@@ -1215,8 +1348,11 @@ local function draw_network(model, state, x)
     end
   end
 
+  -- A line of text is 16 pixels tall, so a footer placed 6 above the inside of
+  -- the frame is a footer drawn through its bottom border. Placed a whole line
+  -- up instead, which is where it looks like it was meant to be.
   theme.text_centred("the store is shared - a wallet works on either",
-    frame.x + frame.w / 2, frame.y + frame.h - 6, theme.colour.faint, theme.font.small)
+    frame.x + frame.w / 2, frame.y + frame.h - 16, theme.colour.faint, theme.font.small)
 end
 
 local function draw_status(model)
@@ -1231,13 +1367,136 @@ local function draw_status(model)
   if status.kind == "error" then
     sprite.draw("skull", 103, L.bar + 9, 13, { alpha = 0.9 })
   end
-  local room = (L.right - 6) - x
+  -- As far as the next thing in the bar, which is not the same on every
+  -- screen: the wallet screen puts five buttons in the right column and the
+  -- others put nothing there at all. Measuring to the wallet screen's buttons
+  -- everywhere cut a message that had the width of the window to spread out
+  -- in — "the recipient is this…" is not a refusal anybody can act on.
+  local edge = model.screen == "wallets" and (L.right - 6) or (theme.WIDTH - L.margin)
+  local room = edge - x
   local text = status.text
   while theme.width(text, theme.font.small) > room and #text > 1 do
     text = text:sub(1, -2)
   end
   if text ~= status.text then text = text:sub(1, -2) .. "…" end
   theme.text(text, x, L.bar + 3, colour, theme.font.small)
+end
+
+--- Break text into lines that fit a width.
+---
+--- At word boundaries where it can and mid-word where it cannot, because the
+--- longest single thing this has to lay out is a filesystem path, and a path
+--- has no spaces in it. Falling back to a character break is the difference
+--- between a path that wraps and a path that runs off the panel.
+local function wrap(text, width, font)
+  font = font or theme.font.small
+  local lines, line = {}, ""
+
+  local function flush()
+    if line ~= "" then lines[#lines + 1] = line end
+    line = ""
+  end
+
+  for word in tostring(text):gmatch("%S+") do
+    local candidate = line == "" and word or (line .. " " .. word)
+    if theme.width(candidate, font) <= width then
+      line = candidate
+    else
+      flush()
+      -- A word that does not fit on a line of its own is cut where it stops
+      -- fitting, and the rest carries on below.
+      while theme.width(word, font) > width do
+        local cut = #word
+        while cut > 1 and theme.width(word:sub(1, cut), font) > width do
+          cut = cut - 1
+        end
+        lines[#lines + 1] = word:sub(1, cut)
+        word = word:sub(cut + 1)
+      end
+      line = word
+    end
+  end
+  flush()
+  return lines
+end
+
+--- The dialog that stands between a click and a file on disk.
+---
+--- Both files this window writes go somewhere a person did not choose: the
+--- wallet's own home, `~/.causewaybaywallet` unless something said otherwise.
+--- One of them holds every private key in the wallet. Somebody who does not
+--- know where it landed cannot move it, cannot delete it, and cannot tell
+--- whether the copy they later find is the only one — so the path is the
+--- loudest thing on this panel, spelled out in full and never abbreviated.
+local function draw_write(model, state)
+  if game.write_t < 0.01 then return end
+  local pending = model.write
+  if not pending then return end
+
+  local files = pending.files or {}
+  local accent = pending.secret and theme.colour.red or theme.colour.green
+  -- Sized to its contents: one line per file, however many the path wraps to,
+  -- and however many the warning does. A fixed height would leave the
+  -- four-file save gaping and push a long path through the buttons — and a
+  -- home is as long as somebody's home directory is.
+  local inner = theme.WIDTH - 68 - 24
+  -- `~/.causewaybaywallet` rather than `/Users/somebody/.causewaybaywallet`:
+  -- the same directory, said the way a person says it, and short enough to
+  -- read in one line. There is only ever this one directory — the wallet's own
+  -- home — and every file this window writes goes into it.
+  local where = wrap(Model.tilde(pending.dir), inner)
+  local note = wrap(pending.note or "", inner)
+  local h = 90 + (#where + #files) * 11 + #note * 10
+  local box = widgets.dialog({ x = 34, y = math.floor((theme.HEIGHT - h) / 2),
+    w = theme.WIDTH - 68, h = h }, game.write_t, pending.title)
+
+  local alpha = box.eased
+  sprite.draw_glowing(pending.secret and "key" or "wallet",
+    box.x + box.w - 26, box.y + 14, 22, {
+      angle = math.sin(game.time * 3) * 0.12,
+      glow = 0.7, glow_colour = pending.secret and theme.colour.red or theme.colour.green,
+    })
+
+  local y = box.y + 26
+  theme.text("WRITING TO", box.x + 12, y, theme.colour.faint, theme.font.small, alpha)
+  y = y + 13
+
+  -- The directory, in full. This is the answer to the only question this
+  -- dialog exists to answer, so it is the one thing drawn in the wallet's own
+  -- colour rather than in ink.
+  for _, line in ipairs(where) do
+    theme.text(line, box.x + 12, y, theme.colour.cyan, theme.font.small, alpha)
+    y = y + 11
+  end
+
+  y = y + 4
+  for _, name in ipairs(files) do
+    theme.text("·", box.x + 12, y, theme.colour.faint, theme.font.small, alpha)
+    theme.text(name, box.x + 22, y, theme.colour.text, theme.font.small, alpha)
+    y = y + 11
+  end
+
+  y = y + 4
+  theme.rule(box.x + 12, y, box.w - 24, theme.colour.raised, 0.6 * alpha)
+  y = y + 6
+  for _, line in ipairs(note) do
+    theme.text(line, box.x + 12, y, accent, theme.font.small, alpha)
+    y = y + 10
+  end
+
+  theme.text_right(("%d wallets"):format(pending.count or 0),
+    box.x + box.w - 12, box.y + 26, theme.colour.faint, theme.font.small, alpha)
+
+  local no = { x = box.x + 16, y = box.y + box.h - 24, w = 70, h = 16 }
+  local yes = { x = box.x + box.w - 96, y = box.y + box.h - 24, w = 80, h = 16 }
+  if widgets.button(game.springs, "write_no", no, "CANCEL", state,
+      { colour = theme.colour.red }) then
+    model:cancel_write()
+  end
+  if widgets.button(game.springs, "write_yes", yes, pending.verb, state,
+      { colour = accent }) then
+    model:confirm_write()
+  end
 end
 
 local function draw_confirm(model, state)
@@ -1293,17 +1552,7 @@ local function draw_confirm(model, state)
   -- The wallet's own words underneath, still. It priced this — the nonce, the
   -- gas, the balance check are all behind that sentence — and the rows above
   -- are a reading of it, not a replacement for it.
-  local words, line = {}, ""
-  for word in plan.summary:gmatch("%S+") do
-    local candidate = line == "" and word or (line .. " " .. word)
-    if theme.width(candidate, theme.font.small) > box.w - 24 then
-      words[#words + 1] = line
-      line = word
-    else
-      line = candidate
-    end
-  end
-  words[#words + 1] = line
+  local words = wrap(plan.summary, box.w - 24)
   local note = y + 22
   for _, text in ipairs(words) do
     theme.text_centred(text, box.x + box.w / 2, note, theme.colour.faint,
@@ -1336,6 +1585,19 @@ local function draw_toast()
   love.graphics.scale(scale, scale)
   theme.text_centred(toast.text, 0, 0, toast.colour, theme.font.big, fade)
   love.graphics.pop()
+
+  -- The line under it is not scaled with the pop: a path read at 1.4× and
+  -- shrinking is a path nobody can read. It sits still, on a plate of its own
+  -- — this lands over the wallet list and a card, and faint text over a wall
+  -- of hex is not a path anybody can read either — and only fades.
+  if toast.detail then
+    local width = theme.width(toast.detail, theme.font.small) + 12
+    local y = 66 - rise + 26
+    theme.rect(theme.colour.void, (theme.WIDTH - width) / 2, y, width, 14, 0.88 * fade)
+    theme.outline(theme.colour.raised, (theme.WIDTH - width) / 2, y, width, 14, 0.6 * fade)
+    theme.text_centred(toast.detail, theme.WIDTH / 2, y + 1,
+      theme.colour.text, theme.font.small, fade)
+  end
 end
 
 local function draw_fatal()
@@ -1359,7 +1621,13 @@ end
 
 function love.draw()
   if game.boot then
-    theme.frame(function() game.boot:draw() end)
+    theme.frame(function()
+      game.boot:draw()
+      -- The way back out of a fullscreen window, from the very first screen.
+      -- Not during the black hold or the power-on flash, which are a machine
+      -- coming up and not a screen with controls on it.
+      if game.boot:lit() then draw_mode_button(MODE_BOX, mouse_state()) end
+    end)
     game.clicked = false
     return
   end
@@ -1373,6 +1641,7 @@ function love.draw()
       })
       game.stars:draw(game.time)
       game.login:draw(game.model, mouse_state(), game.springs)
+      draw_mode_button(MODE_BOX, mouse_state())
       game.fx:draw(sprite.images)
       theme.scanlines(0.10)
       theme.vignette(0.4)
@@ -1416,7 +1685,7 @@ function love.draw()
       -- The keyboard had this right already — `love.keypressed` gives the
       -- dialog the keys and returns. This is the same rule for clicks.
       local behind = state
-      if model and model.confirm then
+      if model and model:asking() then
         behind = { mouse_x = state.mouse_x, mouse_y = state.mouse_y, clicked = false }
       end
 
@@ -1443,7 +1712,10 @@ function love.draw()
 
       game.fx:draw(sprite.images)
       draw_toast()
-      if model then draw_confirm(model, state) end
+      if model then
+        draw_confirm(model, state)
+        draw_write(model, state)
+      end
     end
 
     love.graphics.pop()
@@ -1576,6 +1848,25 @@ local function advance_replay(dt)
           to = game.model.form.to,
           amount = game.model.form.amount,
         }
+      end
+    elseif step:match("^click:") then
+      -- A press at a point on the canvas, for the buttons that no key reaches.
+      -- The pointer stays where it was put, so the shot also shows the button
+      -- lit under it — which is what a picture of a click should look like.
+      --
+      -- `click:390x12`, not `click:390,12`: the comma already separates one
+      -- step from the next, so a pair written with one arrives here as two
+      -- steps, the second of which is the number 12 and means nothing.
+      local cx, cy = step:match("^click:(-?%d+)x(-?%d+)$")
+      if cx then
+        game.pointer = { x = tonumber(cx), y = tonumber(cy) }
+        game.clicked = true
+      end
+    elseif step == "save" or step == "keys" then
+      -- The two dialogs that stand in front of a file being written. They open
+      -- on a click rather than a key, so there is no keypress to replay.
+      if game.model then
+        if step == "save" then game.model:ask_save() else game.model:ask_export() end
       end
     elseif step == "mint" then
       -- NEW MNEMONIC has no key, only a button, so a shot of the

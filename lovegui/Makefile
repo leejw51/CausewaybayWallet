@@ -498,6 +498,12 @@ shots: require-love build ## Write a PNG of each screen into ./shots
 	@cd .. && CAUSEWAYBAY_HOME="$(CURDIR)/shots/.home" \
 		CWB_SHOT="$(CURDIR)/shots/login.png" CWB_SHOT_AFTER=1.8 \
 		CWB_SHOT_SCREEN=login CWB_SHOT_KEYS="type:$(SHOT_WORDS)" $(LOVE) lovegui
+	@# The two dialogs that stand between a click and a file on disk. Neither
+	@# can be reached by a keypress, so the harness opens them directly.
+	@cd .. && CWB_SHOT="$(CURDIR)/shots/save.png" CWB_SHOT_AFTER=1.6 \
+		CWB_SHOT_KEYS="wait:0.5,save" $(LOVE) lovegui
+	@cd .. && CWB_SHOT="$(CURDIR)/shots/keys.png" CWB_SHOT_AFTER=1.6 \
+		CWB_SHOT_KEYS="wait:0.5,keys" $(LOVE) lovegui
 	@# Two frames of the flight rather than one, because the whole point of
 	@# expo_in is that the first half and the second half look nothing alike.
 	@cd .. && CWB_SHOT="$(CURDIR)/shots/launch-ignition.png" CWB_SHOT_AFTER=0.6 \

@@ -586,6 +586,96 @@ t.suite("model / saving and exporting", function()
     t.equal(model.status.kind, "error")
     t.equal(model:export_wallets(), false)
   end)
+
+  t.case("saving asks first, and names the directory and every file", function()
+    local model, home = stocked()
+    t.ok(model:ask_save(), "it should have something to ask about")
+    t.ok(model.write ~= nil, "a pending write")
+    t.equal(model.write.dir, home, "the full directory, which is the point")
+    t.equal(#model.write.files, 4, "every file it would write")
+    t.equal(model.write.secret, false)
+    -- Asked, not done: nothing may exist yet.
+    t.equal(read(home .. "/wallets.csv"), nil, "nothing may be written before the answer")
+  end)
+
+  t.case("exporting asks first, and says what the file is worth", function()
+    local model, home = stocked()
+    t.ok(model:ask_export())
+    t.equal(model.write.dir, home)
+    t.equal(model.write.files[1], require("export").SECRET_FILE)
+    t.equal(model.write.secret, true, "the dialog has to be able to shout")
+    t.contains(model.write.note, "owns the money")
+    t.equal(read(home .. "/" .. require("export").SECRET_FILE), nil,
+      "no keys may be written before the answer")
+  end)
+
+  t.case("answering yes writes what was described", function()
+    local model, home = stocked()
+    model:ask_export()
+    local path = model:confirm_write()
+    t.equal(path, home .. "/" .. require("export").SECRET_FILE)
+    t.ok(read(path) ~= nil, "the keys should be there now")
+    t.equal(model.write, nil, "and nothing should still be pending")
+    -- Where they went, in full, because a file name alone answers nothing.
+    t.contains(model.status.text, home)
+  end)
+
+  t.case("it records where the file went, for the view to say so", function()
+    -- The status line on the wallet screen is a hundred pixels wide and every
+    -- path is longer, so the path has to survive somewhere the view can put it
+    -- in more room than that.
+    local model, home = stocked()
+    model:ask_export()
+    model:confirm_write()
+    t.ok(model.written ~= nil)
+    t.equal(model.written.dir, home)
+    t.contains(model.written.where, require("export").SECRET_FILE)
+
+    model:ask_save()
+    model:confirm_write()
+    t.equal(model.written.dir, home, "and the save records the directory it filled")
+  end)
+
+  t.case("answering no writes nothing at all", function()
+    local model, home = stocked()
+    model:ask_export()
+    t.ok(model:cancel_write())
+    t.equal(model.write, nil)
+    t.equal(read(home .. "/" .. require("export").SECRET_FILE), nil,
+      "cancelling must leave the disk alone")
+    t.contains(model.status.text, home, "and still say which directory was spared")
+  end)
+
+  t.case("a save that is asked about and approved lands beside the store", function()
+    local model, home = stocked()
+    model:ask_save()
+    local written = model:confirm_write()
+    t.equal(#written, 4)
+    t.ok(read(home .. "/wallets.csv") ~= nil)
+    t.contains(model.status.text, home)
+  end)
+
+  t.case("a path is shown the way a person says it", function()
+    local home = os.getenv("HOME") or "/root"
+    t.equal(Model.tilde(home .. "/.causewaybaywallet"), "~/.causewaybaywallet")
+    t.equal(Model.tilde(home), "~")
+    -- Only a real prefix folds; anything else is left exactly as it resolved.
+    t.equal(Model.tilde("/opt/wallets"), "/opt/wallets")
+    t.equal(Model.tilde(home .. "-elsewhere/x"), home .. "-elsewhere/x")
+  end)
+
+  t.case("nothing to write is refused before anything is asked", function()
+    local wallet = support.wallet()
+    local model = Model.new(wallet, nil)
+    model:refresh()
+    t.equal(model:ask_save(), false)
+    t.equal(model.write, nil, "a refusal must not leave a dialog behind")
+    t.equal(model:ask_export(), false)
+    t.equal(model.write, nil)
+    -- And with nothing pending there is nothing to confirm.
+    t.equal(model:confirm_write(), false)
+    t.equal(model:cancel_write(), false)
+  end)
 end)
 
 t.suite("model / wiping the store", function()
@@ -860,6 +950,22 @@ t.suite("model / sending", function()
     t.equal(model:begin_send("", ""), false)
     t.equal(model.status.code, "usage")
     t.equal(model.confirm, nil)
+  end)
+
+  t.case("refuses a transfer to the wallet it would leave", function()
+    -- The sender's own address is the one most likely to be on the clipboard,
+    -- so this is a realistic paste — and it moves nothing while paying the gas.
+    -- The wallet refuses it too; this is the same refusal without the round
+    -- trip, so the form says so as soon as SEND is pressed.
+    local model = model_over()
+    model:create("only")
+    t.equal(model:begin_send(model.active, "1"), false)
+    t.equal(model.status.code, "usage")
+    t.equal(model.confirm, nil, "nothing may be priced, let alone signed")
+
+    -- Lower case is the same account: EIP-55 is a property of the text.
+    t.equal(model:begin_send(model.active:lower(), "1"), false)
+    t.equal(model.status.code, "usage")
   end)
 
   t.case("the confirmation drops the CLI's advice", function()

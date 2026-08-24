@@ -237,6 +237,18 @@ function widgets.frame(x, y, w, h, title, options)
     theme.text(title, x + 10, y - 7, ink, theme.font.small, options.alpha)
   end
 
+  -- A second caption, at the other end of the same edge. For the thing that
+  -- describes the frame's contents rather than naming them — how far down a
+  -- list you are, how many of something there is. It goes here because the
+  -- alternative is a line inside the frame, and a line inside the frame is a
+  -- row of content that cannot be used for content.
+  if options.note then
+    local width = theme.width(options.note, theme.font.small)
+    theme.rect(theme.colour.void, x + w - width - 13, y - 1, width + 6, 3, 1)
+    theme.text(options.note, x + w - width - 10, y - 7, theme.colour.faint,
+      theme.font.small, options.alpha)
+  end
+
   return { x = x + 5, y = y + 8, w = w - 10, h = h - 13 }
 end
 

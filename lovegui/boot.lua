@@ -119,6 +119,16 @@ function boot:visible()
   return math.min(self.shown, #self.lines)
 end
 
+--- Whether the tube is on: past the black hold and past the power-on flash.
+---
+--- The window-mode button is drawn over this screen and must not be, while
+--- either of those is playing. Both are meant to look like a machine coming
+--- up, and a button floating in the middle of the flash is a button that says
+--- this is a picture of a machine coming up.
+function boot:lit()
+  return self.hold <= 0 and self.time >= POWER_ON
+end
+
 --- Skip to the end. Any key does this; a second one hands over.
 function boot:skip()
   if self.halted then return end
