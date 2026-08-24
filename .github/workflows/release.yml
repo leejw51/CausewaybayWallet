@@ -174,9 +174,131 @@ jobs:
           security delete-keychain "$RUNNER_TEMP/build.keychain-db" 2>/dev/null || true
           rm -f "$RUNNER_TEMP/cert.p12"
 
+  # ---------------------------------------------------------------- the app
+  #
+  # CAUSEWAYBAY BANK as a double-clickable macOS bundle: LÖVE downloaded and
+  # embedded, the game and the wallet's shared library inside it, signed,
+  # notarised and stapled.
+  #
+  # Notarising is what makes the difference between a bundle that opens and one
+  # that shows "Apple could not verify…". A Developer ID signature with the
+  # hardened runtime is necessary and not sufficient — since macOS 10.15
+  # anything distributed outside the App Store must be notarised too, and
+  # `spctl` asked the way Finder asks will say so.
+  #
+  # The recipe is `lovegui/Makefile`'s, not this file's. Everything here is
+  # credentials and plumbing, so that `make app && make notarize` on a laptop
+  # and a tagged release do the same thing.
+  package-gui:
+    name: Package the LÖVE app (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal --no-self-update
+
+      - uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0 # v2.8.1
+        with:
+          workspaces: rustcli
+
+      # The same check the other job makes: a tag that disagrees with the
+      # version of record is a mistake worth stopping for, not shipping.
+      - name: Resolve the version
+        id: version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version=$(make version)
+          if [ "${{ github.ref_type }}" = "tag" ] && [ "${TAG#v}" != "$version" ]; then
+            echo "tag $TAG does not match the version of record $version" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "arch=$(uname -m)" >> "$GITHUB_OUTPUT"
+
+      - name: Import codesigning certificate
+        env:
+          P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          if [ -z "$P12_BASE64" ]; then
+            echo "::warning::MACOS_CERTIFICATE_P12_BASE64 not set, using ad-hoc signing"
+            echo "APPLE_SIGNING_IDENTITY=-" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          echo "$P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -base64 32)"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$RUNNER_TEMP/cert.p12" \
+            -k "$KEYCHAIN_PATH" \
+            -P "$P12_PASSWORD" \
+            -T /usr/bin/codesign \
+            -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
+          CERT_INFO=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | grep "Developer ID Application" || true)
+          if [ -n "$CERT_INFO" ]; then
+            CERT_ID=$(echo "$CERT_INFO" | head -1 | awk -F'"' '{print $2}')
+            echo "APPLE_SIGNING_IDENTITY=$CERT_ID" >> "$GITHUB_ENV"
+            echo "Found certificate: $CERT_ID"
+          else
+            echo "::warning::No Developer ID Application certificate found, using ad-hoc signing"
+            echo "APPLE_SIGNING_IDENTITY=-" >> "$GITHUB_ENV"
+          fi
+
+      # `make app` reads APPLE_SIGNING_IDENTITY, downloads LÖVE, embeds the
+      # game, signs inside-out and checks the archive carries every module.
+      #
+      # The smoke test it normally runs is skipped: it starts the bundle and
+      # waits for a frame, and a runner has no window server to draw into.
+      # `verify-archive` still runs and catches the same fault — a module left
+      # out of the staging — deterministically.
+      - name: Build and sign the app
+        run: make -C lovegui app SKIP_SMOKE=1
+
+      # Only with a real certificate: Apple refuses an ad-hoc signature, and a
+      # fork's dry run has no secrets. The Makefile checks this too and would
+      # stop before uploading; this keeps the log honest about why.
+      - name: Notarize and staple
+        if: env.APPLE_SIGNING_IDENTITY != '-'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.TEAM_ID }}
+        run: make -C lovegui notarize
+
+      # What a person downloading it will actually get. Printed either way,
+      # because "signed but not notarised" is the state worth seeing in a log.
+      - name: Assess with Gatekeeper
+        run: make -C lovegui gatekeeper
+
+      - name: Name the archive
+        run: |
+          mkdir -p dist-gui
+          cp "lovegui/build/CausewaybayBank-macos.zip" \
+            "dist-gui/CausewaybayBank-${{ steps.version.outputs.version }}-${{ steps.version.outputs.arch }}-apple-darwin.zip"
+          cd dist-gui && shasum -a 256 *.zip > SHA256SUMS-gui
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: causewaybay-bank-macos-${{ steps.version.outputs.arch }}
+          path: dist-gui/
+
+      - name: Cleanup keychain
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/build.keychain-db" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/cert.p12"
+
+
   release:
     name: Create GitHub release
-    needs: package
+    needs: [package, package-gui]
     if: github.ref_type == 'tag'
     runs-on: ubuntu-24.04
     steps:
@@ -199,6 +321,7 @@ jobs:
             | `cwbwallet-python-…apple-darwin.tar.gz` | the Python build, CPython embedded |
             | `cwbwallet-lua-…apple-darwin.tar.gz` | the Lua front end plus `libcausewaybay_ffi.dylib` (needs LuaJIT) |
             | `cwbwallet-c-…apple-darwin.tar.gz` | the C build, the wallet statically linked in |
+            | `CausewaybayBank-…apple-darwin.zip` | CAUSEWAYBAY BANK, the wallet as an 8-bit game — a double-clickable `.app` with LÖVE inside, signed and notarised |
 
             Verify a download against `SHA256SUMS`, then:
 

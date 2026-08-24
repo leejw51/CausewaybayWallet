@@ -36,7 +36,7 @@ MAIN RAM      65536 BYTES OK
 VRAM          16384 BYTES OK
 
 FFI ABI           1   OK
-VERSION       1.0.1   OK
+VERSION       1.0.2   OK
 NETWORK  cronos-testnet
 CHAIN           338
 WALLETS           2
@@ -725,7 +725,9 @@ Three details of the signing are not optional:
   bundle. Signing the outer bundle first invalidates it the moment anything
   inside is signed afterwards.
 
-It signs with a Developer ID if the machine has one and falls back to ad-hoc.
+It signs with a Developer ID — `APPLE_SIGNING_IDENTITY` when the release
+workflow has imported one, otherwise whatever the keychain holds — and falls
+back to ad-hoc.
 
 **Signed is not the same as notarized**, and the difference decides whether it
 opens on somebody else's Mac. A Developer ID signature with the hardened
@@ -740,10 +742,33 @@ source=Unnotarized Developer ID
 ```
 
 so a person who downloads the zip gets "Apple could not verify…" and has to
-right-click → Open. Notarizing needs an Apple ID with an app-specific password
-and a round trip to Apple's service (`xcrun notarytool submit --wait`, then
-`xcrun stapler staple`), which is why it is not wired into `make app`: it needs
-credentials this repository must not carry.
+right-click → Open. `make notarize` closes that. It submits the bundle, waits, staples the ticket
+so Gatekeeper can check it offline, and rebuilds the distribution zip — which
+matters, because the zip `make app` wrote was made before any of this and
+carries an unstapled copy.
+
+```sh
+export APPLE_ID=you@example.com
+export APPLE_PASSWORD=abcd-efgh-ijkl-mnop   # app-specific
+export APPLE_TEAM_ID=ABCDE12345
+make app && make notarize
+```
+
+Those are `scripts/codesign-binary.sh`'s variable names, not new ones — that
+script already notarizes the four CLI binaries here, and a second set of names
+for the same three secrets is a trap. The release workflow exports them from
+the `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD` and `TEAM_ID` secrets, which is
+how bfvegas and bfagent name them too.
+
+It is not part of `make app` because it uploads to Apple and waits, which a
+build should not do unasked, and because the credentials must never live here.
+It refuses early on an ad-hoc signature rather than finding out from Apple
+several minutes later.
+
+`make gatekeeper` answers the only question that matters — what a person who
+downloads it will get — and asks it the way Finder does. Plain `spctl -a`
+accepts an un-notarized Developer ID bundle; Finder does not, and asking the
+wrong question is how "it is signed" gets mistaken for "it opens".
 
 ## Not here
 

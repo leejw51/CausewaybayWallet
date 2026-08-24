@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "causewaybay-wallet"
-version = "1.0.1"
+version = "1.0.2"
 description = "Educational Cronos/EVM wallet with a CLI and a TUI, backed by an append-only JSONL store"
 readme = "README.md"
 requires-python = ">=3.10"
