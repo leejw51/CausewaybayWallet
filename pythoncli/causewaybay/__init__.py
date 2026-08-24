@@ -1,10 +1,21 @@
-"""Causewaybay Wallet — an educational Cronos/EVM wallet.
+"""Causewaybay Wallet for Python — a binding over the Rust core.
 
 ⚠️  EDUCATIONAL SOFTWARE. Keys are stored unencrypted on disk. Do not use with
 funds you are not prepared to lose. For real value use a hardware wallet.
 
-The on-disk format and the command surface are shared with the Rust
-implementation in ``rustcli/``; see ``SPEC.md`` at the repository root.
+The wallet itself is in ``rustcli/``: the key derivation for all four chains,
+the append-only store, the RPC and the command surface. This package loads that
+core through its C ABI and gives Python a wallet object over it, the way
+``luacli/`` does for Lua and ``ccli/`` does for C.
+
+    from causewaybay import open_wallet
+
+    wallet = open_wallet()
+    for account in wallet.accounts():
+        print(account["label"], account["chain"], account["address"])
+
+See ``SPEC.md`` at the repository root for the envelope shape and the error
+codes.
 """
 
 from __future__ import annotations
@@ -38,3 +49,8 @@ def _detect_version() -> str:
 
 
 __version__ = _detect_version()
+
+from .errors import WalletError  # noqa: E402  (after __version__, which it does not need)
+from .wallet import COMMANDS, Wallet, open_wallet  # noqa: E402
+
+__all__ = ["Wallet", "WalletError", "COMMANDS", "open_wallet", "__version__"]

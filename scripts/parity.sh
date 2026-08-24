@@ -6,13 +6,17 @@
 # read, and the results must agree — that is what "one specification, several
 # front ends" has to mean in practice.
 #
-# Rust and Python are independent implementations, so agreement between them is
-# the real evidence. Lua and C are front ends over the Rust core, so what they
-# prove is different but still worth checking: that the ABI and the argument
-# passing on either side of it do not corrupt anything on the way through. They
-# are two different routes to the same library — Lua loads the cdylib at run
-# time, C has the staticlib compiled in — so a difference between them is a
-# difference in the front end, which is the only place it could be.
+# Every front end here is a route to the same Rust core, so what this proves is
+# not that four implementations agree — there is one implementation — but that
+# nothing on the way through corrupts it. The four routes are genuinely
+# different: Python loads the cdylib through ctypes, Lua through LuaJIT'"'"'s FFI,
+# C has the staticlib compiled in, and the Rust CLI calls the crate directly.
+# A difference between any two of them is a difference in a front end, which is
+# the only place it could be.
+#
+# Python was an independent implementation until it became a binding; the
+# checks below are unchanged, but what they are evidence *of* is now the ABI
+# and the argument passing rather than two agreeing implementations.
 #
 # Lua is skipped, loudly, when LuaJIT is not installed; C when it has not been
 # built.

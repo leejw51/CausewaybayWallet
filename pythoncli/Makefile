@@ -48,13 +48,21 @@ $(PYTHON):
 .PHONY: venv
 venv: $(PYTHON) ## Create the virtualenv
 
+# What the platform calls a Rust cdylib. Staged into the package for a
+# packaged build, and ignored by git everywhere else.
+LIB_NAME := $(if $(filter Darwin,$(shell uname -s)),libcausewaybay_ffi.dylib,libcausewaybay_ffi.so)
+
 .PHONY: install
-install: $(PYTHON) ## Install runtime and development dependencies
+install: $(PYTHON) ## Install development dependencies
 	$(PIP) install --quiet -r requirements-dev.txt
 	$(PIP) install --quiet -e .
 
+.PHONY: build
+build: ## Build the shared library this binding loads
+	@$(MAKE) --no-print-directory -C ../rustcli build
+
 .PHONY: test
-test: install ## Run the test suite
+test: install build ## Run the test suite
 	$(PYTEST)
 
 .PHONY: test-verbose
@@ -66,7 +74,7 @@ coverage: install ## Run the tests with a coverage report
 	$(PYTEST) --cov=causewaybay --cov-report=term-missing
 
 .PHONY: test-vectors
-test-vectors: install ## Run only the shared-test-vector suite
+test-vectors: install build ## Run only the shared-test-vector suite
 	$(PYTEST) tests/test_vectors.py
 
 .PHONY: format
@@ -93,12 +101,12 @@ fmt-check: install ## Fail if the source is not formatted
 check: lint test ## Everything CI would run
 
 .PHONY: run
-run: install ## Run the CLI, e.g. make run ARGS="account list"
+run: install build ## Run the CLI, e.g. make run ARGS="account list"
 	$(PYTHON) -m causewaybay $(ARGS)
 
-.PHONY: tui
-tui: install ## Launch the terminal UI
-	$(PYTHON) -m causewaybay tui
+.PHONY: interactive
+interactive: install build ## The menu and REPL at one prompt
+	$(PYTHON) -m causewaybay interactive
 
 .PHONY: package
 package: wheel ## Build the standalone binary into $(DIST_DIR)
@@ -122,12 +130,20 @@ package: wheel ## Build the standalone binary into $(DIST_DIR)
 	@echo "  built $(DIST_DIR)/$(NAME) ($$(du -h "$(DIST_DIR)/$(NAME)" | cut -f1 | tr -d ' '))"
 
 .PHONY: wheel
-wheel: install ## Build the wheel PyApp embeds
+wheel: install release-lib ## Build the wheel PyApp embeds
 	@echo "==> wheel causewaybay-wallet $(VERSION)"
 	@# Rebuilt from scratch: a stale wheel of an older version would still match
 	@# the glob above and get embedded in preference to nothing.
 	@rm -rf "$(WHEEL_DIR)"
 	@$(PYTHON) -m pip wheel --no-deps --quiet --wheel-dir "$(WHEEL_DIR)" .
+
+.PHONY: release-lib
+release-lib: ## Stage the shared library inside the package for packaging
+	@# A packaged binary has no checkout to search, so the wallet travels
+	@# inside the wheel: `ffi.py` looks beside itself first for exactly this.
+	@$(MAKE) --no-print-directory -C ../rustcli release
+	@cp -f ../rustcli/target/release/$(LIB_NAME) causewaybay/$(LIB_NAME)
+	@echo "  staged causewaybay/$(LIB_NAME)"
 
 .PHONY: demo
 demo: install ## Create a throwaway wallet in ./.demo-home and show it off

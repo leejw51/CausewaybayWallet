@@ -803,6 +803,42 @@ function Model:networks()
   return self.wallet:networks() or {}
 end
 
+--- The chains this build supports, each with its own networks.
+---
+--- Read from the library rather than written down here, so a chain added in
+--- Rust appears in the GUI without anyone editing this file.
+function Model:chains()
+  return self.wallet:chains() or {}
+end
+
+--- Move to a chain, on whichever of its networks the wallet last used.
+---
+--- The two axes of the wallet are the chain and the network within it. A GUI
+--- that only switched networks made "go to Solana" a matter of knowing which
+--- network keys begin with `solana-`; this asks the wallet instead.
+function Model:switch_chain(chain)
+  local where = self.info and self.info.chains
+  if where then
+    for _, held in ipairs(where) do
+      if held.chain == chain and held.network then
+        return self:switch_network(held.network)
+      end
+    end
+  end
+  -- Nothing held on that chain yet: its first network is its default.
+  for _, known in ipairs(self:chains()) do
+    if known.chain == chain and known.networks and known.networks[1] then
+      return self:switch_network(known.networks[1])
+    end
+  end
+  return self:fail({ code = "unknown_chain", message = chain .. " is not a chain this build has" })
+end
+
+--- The chain in view, as the wallet reports it.
+function Model:chain()
+  return self.info and self.info.chain or "evm"
+end
+
 function Model:go(screen)
   for _, name in ipairs(Model.SCREENS) do
     if name == screen then

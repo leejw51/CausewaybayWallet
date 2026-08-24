@@ -245,6 +245,82 @@ t.suite("vectors / eip191", function()
   end)
 end)
 
+t.suite("vectors / multichain", function()
+  -- The three chains that are not EVM, checked through the same C ABI the
+  -- LÖVE GUI uses. The vectors come from each chain's own SDK, so agreement
+  -- here means the Lua path agrees with @solana/web3.js,
+  -- cardano-serialization-lib and the Midnight wallet SDK — not merely with
+  -- the Rust suite next door.
+  local vectors = support.vectors("multichain.json")
+  local phrase = vectors.mnemonic
+
+  local function derive(chain, index)
+    return wallet:derive({ mnemonic = phrase, index = index, chain = chain })
+  end
+
+  t.case("solana addresses and keys match the SDK", function()
+    for index, expected in ipairs(vectors.solana.accounts) do
+      local got, err = derive("solana", index - 1)
+      t.ok(got, err and err.message)
+      t.equal(got.address, expected.address, "solana address at " .. (index - 1))
+      t.equal(got.derivation_path, expected.path)
+      -- On Solana the address *is* the public key, so both come back base58
+      -- rather than one of them being hex.
+      t.equal(got.public_key, expected.address)
+      -- And the secret is the 64-byte keypair a Solana tool would import,
+      -- base58 too: 87 or 88 characters, never a 0x string.
+      t.equal(got.private_key:match("^0x") ~= nil, false, "a Solana key is not hex")
+      t.ok(#got.private_key >= 86, "a Solana keypair is 64 bytes of base58")
+      t.equal(got.chain, "solana")
+    end
+  end)
+
+  t.case("cardano addresses match the SDK, on both networks", function()
+    for index, expected in ipairs(vectors.cardano.accounts) do
+      local got, err = derive("cardano", index - 1)
+      t.ok(got, err and err.message)
+      -- The network lives inside a Cardano address, so the wallet carries
+      -- both: what it shows is testnet, and mainnet rides along in `extra`.
+      t.equal(got.address, expected.base_addr_testnet, "cardano address at " .. (index - 1))
+      t.equal(got.address_mainnet, expected.base_addr_mainnet)
+      t.equal(got.derivation_path, expected.path)
+      t.equal(got.payment_key_hash, expected.payment_keyhash_hex)
+    end
+  end)
+
+  t.case("midnight addresses match the SDK", function()
+    for index, expected in ipairs(vectors.midnight.accounts) do
+      local got, err = derive("midnight", index - 1)
+      t.ok(got, err and err.message)
+      -- Midnight puts the network in the bech32m prefix and drops it on
+      -- mainnet, so one key is three addresses. The wallet shows the network
+      -- it ships as the default and carries the others alongside.
+      t.equal(got.address_mainnet, expected.addr_mainnet, "midnight mainnet at " .. (index - 1))
+      t.ok(got.address:match("^mn_addr_"), "a testnet address names its network")
+      t.equal(got.derivation_path, expected.path)
+      t.equal(got.public_key, expected.verifying_key_hex)
+      -- The stored secret is the night key and the dust seed together, since
+      -- an account that cannot pay a fee is not a usable account; the night
+      -- half is what the SDK vector names.
+      t.equal(got.private_key:sub(1, #expected.night_sk_hex), expected.night_sk_hex)
+    end
+  end)
+
+  t.case("one phrase, four chains, four different addresses", function()
+    -- The whole claim of the wallet, in one assertion: the same mnemonic and
+    -- the same index give a distinct account per chain, each in its chain's
+    -- own encoding.
+    local seen = {}
+    for _, chain in ipairs({ "evm", "solana", "cardano", "midnight" }) do
+      local account = assert(derive(chain, 0))
+      t.equal(seen[account.address], nil, chain .. " repeats another chain's address")
+      seen[account.address] = chain
+    end
+    t.equal(seen[vectors.solana.accounts[1].address], "solana")
+    t.equal(seen[vectors.cardano.accounts[1].base_addr_testnet], "cardano")
+  end)
+end)
+
 t.suite("vectors / coverage", function()
   -- The vectors this suite reads. A file added to testvectors/ and not listed
   -- here is a file no Lua test looks at, which is the failure this catches.
@@ -257,6 +333,7 @@ t.suite("vectors / coverage", function()
     "keccak.json",
     "keys-invalid.json",
     "keys.json",
+    "multichain.json",
     "transactions.json",
     "units.json",
   }

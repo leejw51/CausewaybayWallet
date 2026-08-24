@@ -36,6 +36,12 @@ wallets-keys.jsonl
 # ------------------------------------------------------------- build artefacts
 /dist/
 
+# The shared library staged inside the Python package for a packaged build.
+# It is a build artefact of rustcli, not a source file of pythoncli.
+pythoncli/causewaybay/*.dylib
+pythoncli/causewaybay/*.so
+pythoncli/causewaybay/*.dll
+
 # --------------------------------------------------------------- editor and OS
 .DS_Store
 .idea/

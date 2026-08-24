@@ -683,7 +683,7 @@ fn event_loop<B: ratatui::backend::Backend>(
     // a real switch as a no-op.
     let current = app.store.network()?.key;
     let mut state = State::with_network(app.store.accounts()?, active.as_deref(), current);
-    refresh_detail(&app, &mut state);
+    refresh_detail(&mut state);
 
     let tick = Duration::from_millis(200);
     let mut last = Instant::now();
@@ -700,7 +700,7 @@ fn event_loop<B: ratatui::backend::Backend>(
                 None,
                 std::sync::Arc::clone(&app.host),
             )?;
-            refresh_detail(&app, &mut state);
+            refresh_detail(&mut state);
         }
 
         // The background thread's narration lands before each draw, so the
@@ -802,16 +802,16 @@ fn browse_key(app: &App, state: &mut State, code: KeyCode) {
         KeyCode::Tab | KeyCode::BackTab => {
             state.cycle_focus();
             if state.focus == Focus::Accounts {
-                refresh_detail(app, state);
+                refresh_detail(state);
             }
         }
         KeyCode::Down => {
             state.move_selection(1);
-            after_move(app, state);
+            after_move(state);
         }
         KeyCode::Up => {
             state.move_selection(-1);
-            after_move(app, state);
+            after_move(state);
         }
         // The two axes are the two pairs of arrows: down the wallets, across
         // the chains. Reaching the command list to change chain was the one
@@ -835,7 +835,7 @@ fn browse_key(app: &App, state: &mut State, code: KeyCode) {
         },
         KeyCode::Esc => {
             if state.focus == Focus::Recall {
-                close_recall(app, state);
+                close_recall(state);
             } else {
                 state.quit = true;
             }
@@ -846,10 +846,10 @@ fn browse_key(app: &App, state: &mut State, code: KeyCode) {
                 run_action(app, state, action);
             } else if key == 'j' {
                 state.move_selection(1);
-                after_move(app, state);
+                after_move(state);
             } else if key == 'k' {
                 state.move_selection(-1);
-                after_move(app, state);
+                after_move(state);
             }
         }
         _ => {}
@@ -867,14 +867,14 @@ fn step_chain(app: &App, state: &mut State, delta: isize) {
 }
 
 /// Keep the detail pane in step with whatever the arrow keys just moved.
-fn after_move(app: &App, state: &mut State) {
+fn after_move(state: &mut State) {
     // The highlight *is* the wallet cursor: standing on index 1 means the
     // "New <chain>" commands fill index 1. Keeping them separate would let the
     // screen show one index while the commands acted on another.
     if let Some(index) = state.selected_index() {
         state.current_index = index;
     }
-    refresh_detail(app, state);
+    refresh_detail(state);
 }
 
 // ================================================================== dispatch
@@ -911,7 +911,7 @@ fn run_action(app: &App, state: &mut State, action: Action) {
             state.show_secrets = !state.show_secrets;
             match state.focus {
                 Focus::Recall => refresh_recall_detail(state),
-                _ => refresh_detail(app, state),
+                _ => refresh_detail(state),
             }
             state.info(if state.show_secrets {
                 "Secrets shown — mind your shoulder"
@@ -1007,9 +1007,9 @@ fn open_recall(app: &App, state: &mut State) {
     }
 }
 
-fn close_recall(app: &App, state: &mut State) {
+fn close_recall(state: &mut State) {
     state.focus = Focus::Accounts;
-    refresh_detail(app, state);
+    refresh_detail(state);
     state.info("Ready");
 }
 
@@ -1933,10 +1933,10 @@ fn reload(app: &App, state: &mut State) {
         state.select_index(keep);
         state.clamp_selection();
     }
-    refresh_detail(app, state);
+    refresh_detail(state);
 }
 
-fn refresh_detail(app: &App, state: &mut State) {
+fn refresh_detail(state: &mut State) {
     let Some(index) = state.selected_index() else {
         state.detail = Vec::new();
         return;
@@ -2013,7 +2013,7 @@ fn draw(frame: &mut Frame, app: &App, state: &mut State) {
         ])
         .split(frame.area());
 
-    draw_header(frame, app, state, chunks[0]);
+    draw_header(frame, app, chunks[0]);
 
     let body = Layout::default()
         .direction(Direction::Horizontal)
@@ -2106,7 +2106,7 @@ fn pane_style(focused: bool) -> Style {
 /// The second line is the multi-chain one. A wallet spread over four chains
 /// otherwise gives no sign that the other three exist, and "my funds are gone"
 /// is the reading that follows.
-fn draw_header(frame: &mut Frame, app: &App, state: &State, area: Rect) {
+fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
     let network = app.store.network().unwrap_or(app.network);
     let chain = network.chain;
 
@@ -2659,15 +2659,6 @@ fn fit_pair(value: &str, column: Option<usize>) -> String {
     }
 }
 
-/// Clip a label to the column width, marking that it was cut.
-fn truncate(text: &str, width: usize) -> String {
-    if text.chars().count() <= width {
-        return text.to_string();
-    }
-    let kept: String = text.chars().take(width.saturating_sub(1)).collect();
-    format!("{kept}…")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2707,13 +2698,6 @@ mod tests {
         assert!(short.starts_with("0x9858Ef"));
         assert!(short.ends_with("aEda94"));
         assert!(short.len() < 42);
-    }
-
-    #[test]
-    fn truncates_long_labels() {
-        assert_eq!(truncate("short", 12), "short");
-        assert_eq!(truncate("a-very-long-label", 8), "a-very-…");
-        assert_eq!(truncate("exactlyeight", 12), "exactlyeight");
     }
 
     #[test]
@@ -2779,9 +2763,6 @@ mod tests {
                 Action::Reload => Some('r'),
                 Action::Help => Some('?'),
                 Action::Quit => Some('q'),
-                // Networks are menu-only: the list grows, and hand-assigned
-                // letters would start colliding.
-                Action::SelectNetwork(_) => None,
             }
         }
 
@@ -3529,7 +3510,7 @@ mod tests {
 
     fn draw_on(app: &App, state: &mut State, width: u16, height: u16) -> Vec<String> {
         use ratatui::backend::TestBackend;
-        refresh_detail(app, state);
+        refresh_detail(state);
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         terminal.draw(|frame| draw(frame, app, state)).unwrap();
         let buffer = terminal.backend().buffer().clone();

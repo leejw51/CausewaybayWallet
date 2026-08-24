@@ -203,14 +203,57 @@ t.suite("wallet / confirmation", function()
 end)
 
 t.suite("wallet / networks", function()
-  t.case("lists both Cronos networks", function()
+  t.case("lists every chain's networks, not just the EVM ones", function()
     local wallet = support.wallet()
     local networks = wallet:networks()
-    t.equal(#networks, 2)
-    local ids = {}
-    for _, n in ipairs(networks) do ids[n.key] = n.chain_id end
-    t.equal(ids["cronos-testnet"], 338)
-    t.equal(ids["cronos-mainnet"], 25)
+
+    local by_key, chains = {}, {}
+    for _, n in ipairs(networks) do
+      by_key[n.key] = n
+      chains[n.chain] = (chains[n.chain] or 0) + 1
+    end
+
+    -- The EVM pair keeps its chain ids; the other three chains have none, and
+    -- say so with null rather than with a number that would mean something.
+    t.equal(by_key["cronos-testnet"].chain_id, 338)
+    t.equal(by_key["cronos-mainnet"].chain_id, 25)
+    t.equal(tonumber(by_key["solana-devnet"].chain_id), nil)
+
+    -- Every chain the library reports contributes at least one network, so a
+    -- chain added in Rust cannot quietly go missing from this list.
+    for _, chain in ipairs(wallet:chains()) do
+      t.ok(chains[chain.chain], chain.chain .. " has no network in the list")
+    end
+    t.equal(#networks >= 4, true)
+  end)
+
+  t.case("every chain describes itself: path, networks, capabilities", function()
+    local wallet = support.wallet()
+    local chains = wallet:chains()
+
+    local by_name = {}
+    for _, c in ipairs(chains) do by_name[c.chain] = c end
+    for _, name in ipairs({ "evm", "solana", "cardano", "midnight" }) do
+      local chain = by_name[name]
+      t.ok(chain, name .. " is missing from the chain list")
+      -- Cardano derives on CIP-1852, not BIP-44 — a chain describes its own
+      -- path rather than being assumed into someone else's.
+      t.ok(chain.derivation_path:match("^m/%d+'"), name .. " has no derivation path")
+      t.ok(#chain.networks > 0, name .. " has no networks")
+    end
+    t.equal(by_name["solana"].derivation_path, "m/44'/501'/0'/0'")
+    t.equal(by_name["cardano"].derivation_path, "m/1852'/1815'/0'/0/0")
+    -- Capabilities are per chain, and are what a GUI should grey a button on.
+    t.equal(by_name["evm"].capabilities.tokens, true)
+    t.equal(by_name["solana"].capabilities.faucet, true)
+    t.equal(by_name["cardano"].capabilities.tokens, false)
+
+    -- The command surface reports the same chains as the handshake.
+    local listed = {}
+    for _, c in ipairs(wallet:chain_list()) do listed[c.chain] = true end
+    for name in pairs(by_name) do
+      t.ok(listed[name], name .. " is missing from `chains`")
+    end
   end)
 
   t.case("defaults to testnet and can be switched", function()

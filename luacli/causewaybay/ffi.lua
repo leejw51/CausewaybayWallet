@@ -13,13 +13,18 @@ local M = {}
 
 --- The ABI this binding was written against. A library reporting anything else
 --- is refused rather than guessed at: the envelope shape is the whole contract.
-M.ABI_VERSION = 1
+---
+--- 2 is the multi-chain contract: requests carry a `chain`, account records
+--- carry the chain they belong to, and `cwb_chains` exists to be asked what
+--- those chains are.
+M.ABI_VERSION = 2
 
 -- Kept byte-identical to rustcli/ffi/include/causewaybay.h.
 ffi.cdef([[
 int   cwb_abi_version(void);
 char *cwb_version(void);
 char *cwb_describe(void);
+char *cwb_chains(void);
 char *cwb_commands(void);
 char *cwb_execute(const char *request_json);
 void  cwb_string_free(char *s);
@@ -153,6 +158,15 @@ end
 --- The library's self-description, as raw JSON text.
 function M.describe(lib)
   return take(lib, lib.cwb_describe())
+end
+
+--- The chains the library supports, as raw JSON text.
+---
+--- Added in ABI 2. Declaring it against an ABI 1 library would fail at the
+--- first call rather than at load, which is what the version check above is
+--- there to prevent.
+function M.chains(lib)
+  return take(lib, lib.cwb_chains())
 end
 
 --- The command tree the library accepts, as raw JSON text.

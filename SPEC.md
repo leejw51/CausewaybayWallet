@@ -1,9 +1,10 @@
 # Causewaybay Wallet — Shared Specification
 
-Both implementations (`rustcli/`, `pythoncli/`) are byte-compatible: they read and
-write the same on-disk store, expose the same command surface, and emit the same
-JSON envelope. A store written by the Rust CLI can be driven by the Python CLI and
-vice versa.
+One implementation (`rustcli/`), reached four ways. This document is what that
+core does: the on-disk store, the command surface and the JSON envelope every
+front end returns. `pythoncli/`, `luacli/` and `ccli/` are bindings over its C
+ABI rather than second implementations, so a store written through any of them
+can be driven through any other.
 
 > **Multi-chain, as of ABI 2.** The wallet holds accounts on four chains: `evm`
 > (Cronos), `solana`, `cardano` and `midnight`. Everything below that does not
@@ -11,14 +12,10 @@ vice versa.
 > with no `chain` field — is an EVM account, so an existing store replays
 > unchanged and needs no migration.
 >
-> The Rust implementation supports all four. The Python implementation currently
-> supports `evm` only; it reads a store containing other chains' accounts and
-> leaves them alone.
+> Every front end has all four, because there is one implementation of them.
 
-Sections 1–7 are what an implementation must do. Section 8 describes the C ABI
-the Rust implementation additionally exposes, which is not a third
-implementation but a way of reaching the first one from another language —
-`luacli/` is built on it.
+Sections 1–7 are what the implementation does. Section 8 describes the C ABI it
+exposes — the way the other front ends reach it from another language.
 
 ## 1. Storage
 
@@ -234,7 +231,7 @@ network — Cardano's header nibble, Midnight's bech32m prefix — is checked
 against the network in play before a transfer, because crossing that line puts
 the funds on a chain nobody is watching.
 
-Both implementations are tested against the shared fixtures in `testvectors/`,
+The core and its bindings are tested against the shared fixtures in `testvectors/`,
 which carry the official BIP-39 and EIP-55 vectors, the worked example from
 EIP-155, and the mnemonics and keys published by Anvil, Hardhat and Ganache.
 `testvectors/multichain.json` carries the Solana, Cardano and Midnight
@@ -315,7 +312,7 @@ chain and the flag: `erc20` is EVM only, `airdrop` needs a chain with a faucet,
 
 ## 8. The C ABI
 
-`rustcli/ffi/` exposes the Rust implementation as a shared library
+`rustcli/ffi/` exposes the wallet as a shared library
 (`libcausewaybay_ffi.{dylib,so}`, `causewaybay_ffi.dll`) whose header is
 `rustcli/ffi/include/causewaybay.h`. It is an embedding surface, not a second
 specification: everything above still holds, because the code behind it is the
@@ -376,7 +373,7 @@ The envelope of §4, plus the human rendering the CLI would have printed:
 `human` exists so a front end in another language prints what `cwbwallet`
 prints without knowing its formatting rules. It is **not** part of §4: a CLI
 built on this ABI must drop it before emitting a `--json` envelope, or its
-output will differ from the two implementations'.
+output will differ from the Rust CLI's.
 
 ### 8.3 Guarantees
 

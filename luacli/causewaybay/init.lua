@@ -68,6 +68,10 @@ M.Wallet = Wallet
 --- `options`:
 ---   `home`     wallet directory; default `$CAUSEWAYBAY_HOME` or `~/.causewaybaywallet`
 ---   `network`  default network for every call ("testnet", "cronos-mainnet", …)
+---   `chain`    default chain for every call ("evm", "solana", "cardano",
+---              "midnight"). Naming a network settles the chain too, so this
+---              is for a caller that picks a chain and lets each one keep its
+---              own network — which is what a chain picker in a GUI does.
 ---   `yes`      answer confirmations with yes. A GUI sets this once it shows
 ---              its own dialog; a CLI passes the user's `--yes`.
 ---   `lib`      an explicit path to the shared library, skipping the search
@@ -83,6 +87,7 @@ function M.open(options)
     lib = lib,
     home = options.home,
     network = options.network,
+    chain = options.chain,
     yes = options.yes and true or false,
   }, Wallet)
 end
@@ -95,6 +100,19 @@ end
 --- The library's handshake: name, version, ABI, networks, and error codes.
 function Wallet:describe()
   local envelope, err = json.try_decode(binding.describe(self.lib))
+  if not envelope then return nil, make_error("internal", err) end
+  return envelope.data
+end
+
+--- The chains this build supports: `{chain, name, derivation_path, networks,
+--- capabilities}` each.
+---
+--- Read from the library rather than listed here, so a chain picker cannot go
+--- stale when a chain is added — the same reason `codes` and `commands` are
+--- read rather than written down. `wallet:chain_list()` is the same data
+--- through the command surface; this one is the handshake, and needs no store.
+function Wallet:chains()
+  local envelope, err = json.try_decode(binding.chains(self.lib))
   if not envelope then return nil, make_error("internal", err) end
   return envelope.data
 end
@@ -151,11 +169,13 @@ function Wallet:envelope(argv, options)
 
   local home = options.home or self.home
   local network = options.network or self.network
+  local chain = options.chain or self.chain
   local yes = options.yes
   if yes == nil then yes = self.yes end
 
   if home then request.home = home end
   if network then request.network = network end
+  if chain then request.chain = chain end
   if yes then request.yes = true end
   if options.stdin then request.stdin = options.stdin end
 
@@ -389,7 +409,28 @@ function Wallet:set_rpc(network, url)
   return self:call({ "network", "set-rpc", network, url or "" })
 end
 
+-- ------------------------------------------------------------------- the chains
+
+--- The chains this wallet supports, through the command surface.
+---
+--- The same list `Wallet:chains()` reads straight from the library. This one
+--- goes through `call`, so it honours a per-call `home` the way every other
+--- command does; the handshake does not need one.
+function Wallet:chain_list()
+  return self:call({ "chains" })
+end
+
 -- ----------------------------------------------------------------------- chain
+
+--- Ask a test network for funds.
+---
+--- Only Solana's devnet and testnet have a faucet this wallet can call; the
+--- others say so rather than pretending to try. `opts.address` funds an
+--- address other than the active account's, `opts.amount` asks for a size.
+function Wallet:airdrop(opts)
+  opts = opts or {}
+  return self:call(with_flags({ "airdrop" }, opts, { "address", "amount" }), opts)
+end
 
 --- The native token balance.
 function Wallet:balance(opts)
@@ -520,8 +561,10 @@ function Wallet:derive(opts)
   if (opts.mnemonic == nil) == (opts.private_key == nil) then
     return nil, make_error("usage", "pass exactly one of mnemonic or private_key")
   end
+  -- `opts` is passed on as well as read: `chain` is a request field rather
+  -- than a flag, and without it every chain's answer would be the EVM one.
   return self:call(with_flags({ "utils", "derive" }, opts,
-    { "mnemonic", "private_key", "index", "passphrase" }))
+    { "mnemonic", "private_key", "index", "passphrase" }), opts)
 end
 
 --- Sign a message with a private key the wallet does not hold.
@@ -615,6 +658,9 @@ M.COMMANDS = {
   ["recent show"] = "recent_entry",
   ["recent forget"] = "forget_recent",
   ["recent clear"] = "clear_recent",
+
+  ["chains"] = { "chains", "chain_list" },
+  ["airdrop"] = "airdrop",
 
   ["network list"] = "networks",
   ["network current"] = "current_network",

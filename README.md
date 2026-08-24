@@ -1,16 +1,14 @@
 # Causewaybay Wallet
 
 An educational multi-chain wallet — Cronos EVM, Solana, Cardano and Midnight —
-with a command line interface and a terminal UI, implemented twice: once in
-Rust, once in Python. Both write the same append-only JSONL store, so either can
-drive a wallet the other created.
+with a command line interface and a terminal UI.
 
-The Rust front end supports all four chains. The Python one supports Cronos EVM;
-it reads a store containing the others' accounts and leaves them alone.
-
-A third front end, in Lua, calls the Rust core through a C ABI rather than
-reimplementing it — the same wallet reached differently, and the module a
-[LÖVE](https://love2d.org) GUI loads.
+The wallet is one implementation, in Rust: the key derivation for all four
+chains, the append-only JSONL store, the RPC and the command surface. Everything
+else is a front end over that core's C ABI — Python and Lua load the shared
+library at run time, C links the static one in, and a
+[LÖVE](https://love2d.org) GUI sits on the Lua binding. Four routes to one
+wallet, so a store any of them creates is a store all of them can drive.
 
 > ⚠️ **Educational software.** Private keys are stored unencrypted on disk. Use
 > it on the testnet. For anything of value, use a hardware wallet.
@@ -121,11 +119,11 @@ implementation checks against the packaged artifacts rather than the source
 tree. The Lua bundle is self-contained: copy the directory anywhere and it finds
 the library beside it.
 
-Packaging the Python one needs a Rust toolchain, because PyApp is itself a Rust
-program. **Its first run downloads the Python dependencies** (eth-account and
-friends) into `~/Library/Application Support/pyapp`, which takes ten seconds or
-so and needs network; every run after that is local and starts in well under a
-second. The interpreter is embedded, the third-party packages are not.
+Packaging the Python one needs a Rust toolchain twice over: PyApp is itself a
+Rust program, and the wallet it wraps is the Rust shared library, staged into
+the wheel so a packaged binary carries its own core. There are no third-party
+Python dependencies to fetch — the binding is ctypes from the standard library
+— so the first run is local like every run after it.
 
 ### macOS signing
 
@@ -209,10 +207,10 @@ The signing secrets the release needs: `MACOS_CERTIFICATE_P12_BASE64`,
 
 | path | what it is |
 | ---- | ---------- |
-| `SPEC.md` | the shared specification every implementation follows |
+| `SPEC.md` | the specification the core implements and every front end relies on |
 | `.github/workflows/` | CI on every push, and the tagged macOS release |
 | `rustcli/` | the Rust workspace: `core/` the wallet, `ffi/` the C ABI, `cli/` the `cwbwallet` binary and TUI |
-| `pythoncli/` | Python CLI and TUI (`cwbwallet`), its own `Makefile` and `.gitignore` |
+| `pythoncli/` | the Python binding over the C ABI, its CLI and menu (`cwbwallet`) |
 | `luacli/` | the Lua CLI over the C ABI, and the module the LÖVE GUI loads |
 | `lovegui/` | the wallet as an 8-bit LÖVE game, built on that module |
 | `testvectors/` | shared fixtures every implementation is tested against |
@@ -370,8 +368,10 @@ worst lose the last partial line, and the whole history stays readable with
   and checked against the official vectors; the CLI is exercised end to end
   against a scripted in-process JSON-RPC node, and the C ABI is called the way
   a C host would call it.
-* **Python** — 450 tests covering the same ground, plus the Textual UI driven
-  through its test pilot.
+* **Python** — 168 tests over the binding: the shared vectors driven through
+  ctypes and the C ABI, a coverage suite that reads the command list out of the
+  library and fails if any command has no Python method, and the CLI end to end
+  against a real store.
 * **Lua** — 187 tests. Not the cryptography again, but the path through the
   boundary: that a 256-bit integer stays a string rather than becoming a
   double, that an emoji arrives as the bytes that were hashed, that an error

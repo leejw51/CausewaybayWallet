@@ -40,6 +40,13 @@ LUA_EXEMPT = {
     "transactions.json": "signing needs a node, which the Rust suite mocks",
 }
 
+# Files the Python suite cannot be expected to catch, and why.
+#
+# The same two as Lua, for the same reason: Python is a binding over the core
+# now rather than a second implementation, so it can only assert on what the
+# command surface exposes.
+PYTHON_EXEMPT = dict(LUA_EXEMPT)
+
 VALID_PHRASE = (
     "abandon abandon abandon abandon abandon abandon abandon abandon "
     "abandon abandon abandon about"
@@ -79,6 +86,10 @@ MUTATIONS = {
         raw=flip(d["vectors"][0]["raw"])
     ),
     "units.json": lambda d: d["valid"][2].update(value=flip(d["valid"][2]["value"])),
+    # A Solana address the Rust and Lua suites both derive and compare.
+    "multichain.json": lambda d: d["solana"]["accounts"][0].update(
+        address=flip(d["solana"]["accounts"][0]["address"])
+    ),
 }
 
 
@@ -131,9 +142,9 @@ def main() -> int:
         print(f"  no mutation defined for: {', '.join(sorted(unmutated))}", file=sys.stderr)
         return 1
 
-    unknown_exempt = LUA_EXEMPT.keys() - on_disk
+    unknown_exempt = (LUA_EXEMPT.keys() | PYTHON_EXEMPT.keys()) - on_disk
     if unknown_exempt:
-        print(f"  LUA_EXEMPT names a file that is gone: {', '.join(sorted(unknown_exempt))}",
+        print(f"  an exemption names a file that is gone: {', '.join(sorted(unknown_exempt))}",
               file=sys.stderr)
         return 1
 
@@ -163,7 +174,7 @@ def main() -> int:
             missed = []
             if run_rust():
                 missed.append("rust")
-            if run_python():
+            if name not in PYTHON_EXEMPT and run_python():
                 missed.append("python")
             # An exempt file is not asked about at all, so a suite cannot be
             # blamed for a value it has no way to see.

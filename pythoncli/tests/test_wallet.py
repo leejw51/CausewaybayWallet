@@ -1,220 +1,223 @@
-"""Key derivation, address computation and EIP-191 signing."""
+"""The Python binding, over a real library and a real store.
+
+What this suite is for is the *path*: these values travel through the C ABI and
+ctypes before being compared, which is where a binding's own class of mistake
+lives — a truncated string, a pointer freed twice, a flag that never made it
+into the request.
+"""
+
+from __future__ import annotations
 
 import pytest
-from constants import (
-    KNOWN_ADDRESSES,
-    TEST_ADDRESS_0,
-    TEST_ADDRESS_1,
-    TEST_MNEMONIC,
-    TEST_PRIVATE_KEY,
-)
+from constants import TEST_MNEMONIC, TEST_PRIVATE_KEY
 
-from causewaybay import errors, wallet
+from causewaybay import COMMANDS, Wallet, open_wallet
+from causewaybay.errors import WalletError
 
-# Official Trezor BIP-39 vectors: (entropy hex, phrase).
-BIP39_VECTORS = [
-    (
-        "00000000000000000000000000000000",
-        "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
-    ),
-    (
-        "7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f",
-        "legal winner thank year wave sausage worth useful legal winner thank yellow",
-    ),
-    (
-        "80808080808080808080808080808080",
-        "letter advice cage absurd amount doctor acoustic avoid letter advice cage above",
-    ),
-    ("ffffffffffffffffffffffffffffffff", "zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo wrong"),
-    (
-        "9e885d952ad362caeb4efe34a8e91bd2",
-        "ozone drill grab fiber curtain grace pudding thank cruise elder eight picnic",
-    ),
-]
+CHAINS = ("evm", "solana", "cardano", "midnight")
 
 
-@pytest.mark.parametrize(("entropy_hex", "phrase"), BIP39_VECTORS)
-def test_official_bip39_vectors_validate(entropy_hex, phrase):
-    assert wallet.validate_mnemonic(phrase)
+# ------------------------------------------------------------------- opening
 
 
-@pytest.mark.parametrize(("index", "expected"), list(enumerate(KNOWN_ADDRESSES)))
-def test_bip44_derivation_matches_the_reference_addresses(index, expected):
-    assert wallet.Keypair.from_mnemonic(TEST_MNEMONIC, index).address == expected
+def test_reports_what_it_loaded(wallet: Wallet):
+    assert wallet.version()[0].isdigit()
+    described = wallet.describe()
+    assert described["name"] == "causewaybay-wallet"
+    assert "unencrypted" in described["warning"]
+    assert described["abi"] == 2
 
 
-def test_index_zero_private_key_is_stable():
-    assert wallet.Keypair.from_mnemonic(TEST_MNEMONIC, 0).private_key == TEST_PRIVATE_KEY
+def test_the_error_vocabulary_comes_from_the_library(wallet: Wallet):
+    codes = wallet.codes()
+    for code in ("usage", "account_not_found", "confirmation_required", "internal"):
+        assert code in codes
+    assert "code_from_a_future_version" not in codes
 
 
-def test_derivation_paths_are_bip44():
-    assert wallet.ethereum_path(0) == "m/44'/60'/0'/0/0"
-    assert wallet.ethereum_path(7) == "m/44'/60'/0'/0/7"
-    for bad in [-1, 2**31, True]:
-        with pytest.raises(errors.WalletError):
-            wallet.ethereum_path(bad)
+def test_a_missing_library_is_an_io_error(tmp_path):
+    with pytest.raises(WalletError) as caught:
+        open_wallet(lib=str(tmp_path / "no-such-library.so"))
+    assert caught.value.code == "io_error"
+    assert "looked in" in caught.value.message
 
 
-def test_generate_produces_every_supported_length():
-    for words in (12, 15, 18, 21, 24):
-        phrase = wallet.generate_mnemonic(words)
-        assert len(phrase.split()) == words
-        assert wallet.validate_mnemonic(phrase)
+def test_a_fresh_home_starts_empty(wallet: Wallet):
+    assert wallet.accounts() == []
+    assert wallet.info()["accounts"] == 0
+    with pytest.raises(WalletError) as caught:
+        wallet.account()
+    assert caught.value.code == "no_active_account"
 
 
-def test_generated_phrases_do_not_collide():
-    assert wallet.generate_mnemonic(12) != wallet.generate_mnemonic(12)
+# ------------------------------------------------------------------ coverage
 
 
-def test_unsupported_word_counts_are_rejected():
-    for words in (0, 11, 13, 25):
-        with pytest.raises(errors.WalletError) as excinfo:
-            wallet.generate_mnemonic(words)
-        assert excinfo.value.code == errors.INVALID_MNEMONIC
+def test_every_command_the_library_has_is_mapped_to_a_method(wallet: Wallet):
+    """Adding a command in Rust and forgetting the Python method fails here."""
+    unmapped = [c["name"] for c in wallet.commands() if c["name"] not in COMMANDS]
+    assert unmapped == []
 
 
-@pytest.mark.parametrize(
-    "bad",
-    [
-        "",
-        "not a mnemonic",
-        # Right length, wrong checksum.
-        "abandon " * 11 + "abandon",
-        # Right length, unknown word.
-        "abandon " * 11 + "notaword",
-        "abandon about",
-    ],
-)
-def test_invalid_mnemonics_are_rejected(bad):
-    assert not wallet.validate_mnemonic(bad.strip())
-    with pytest.raises(errors.WalletError) as excinfo:
-        wallet.Keypair.from_mnemonic(bad.strip())
-    assert excinfo.value.code == errors.INVALID_MNEMONIC
+def test_every_mapped_method_exists(wallet: Wallet):
+    for command, mapped in COMMANDS.items():
+        if mapped is None:
+            continue
+        for name in (mapped,) if isinstance(mapped, str) else mapped:
+            assert callable(getattr(Wallet, name, None)), f"{command} -> {name}"
 
 
-def test_whitespace_and_case_are_normalised():
-    messy = "  ABANDON   abandon\tabandon abandon abandon abandon abandon abandon abandon abandon abandon\nabout "
-    assert wallet.validate_mnemonic(messy)
-    assert wallet.Keypair.from_mnemonic(messy).address == TEST_ADDRESS_0
-    assert wallet.normalize_mnemonic(messy) == TEST_MNEMONIC
+def test_nothing_is_mapped_that_the_library_does_not_have(wallet: Wallet):
+    known = {c["name"] for c in wallet.commands()}
+    assert [name for name in COMMANDS if name not in known] == []
 
 
-def test_a_passphrase_yields_a_different_wallet():
-    plain = wallet.Keypair.from_mnemonic(TEST_MNEMONIC, 0)
-    salted = wallet.Keypair.from_mnemonic(TEST_MNEMONIC, 0, passphrase="hunter2")
-    assert plain.address != salted.address
+def test_only_the_terminal_ui_is_left_unexposed():
+    assert [name for name, mapped in COMMANDS.items() if mapped is None] == ["tui"]
 
 
-def test_private_key_round_trips_with_and_without_the_prefix():
-    keypair = wallet.Keypair.from_mnemonic(TEST_MNEMONIC, 3)
-    assert wallet.Keypair.from_private_key(keypair.private_key).address == keypair.address
-    assert wallet.Keypair.from_private_key(keypair.private_key[2:]).address == keypair.address
-    assert wallet.Keypair.from_private_key(keypair.private_key.upper()).address == keypair.address
+# ------------------------------------------------------------------ accounts
 
 
-@pytest.mark.parametrize(
-    "bad",
-    [
-        "",
-        "0x1234",
-        "z" * 64,
-        "0" * 64,  # zero is not a valid scalar
-        "f" * 64,  # above the curve order
-        None,
-    ],
-)
-def test_invalid_private_keys_are_rejected(bad):
-    with pytest.raises(errors.WalletError) as excinfo:
-        wallet.Keypair.from_private_key(bad)
-    assert excinfo.value.code == errors.INVALID_PRIVATE_KEY
+def test_creates_an_account_and_finds_it_again(wallet: Wallet):
+    created = wallet.new_account(label="alpha")
+    address = created[0]["address"] if isinstance(created, list) else created["address"]
+    assert wallet.account("alpha")["address"] == address
+    assert wallet.account()["label"] == "alpha", "the first account becomes active"
 
 
-def test_public_key_forms_are_consistent():
-    keypair = wallet.Keypair.from_mnemonic(TEST_MNEMONIC, 0)
-    assert len(keypair.public_key) == 2 + 128
-    assert len(keypair.public_key_compressed) == 2 + 66
-    # The compressed form carries the same X coordinate.
-    assert keypair.public_key_compressed[4:] == keypair.public_key[2:66]
+def test_one_wallet_is_one_index_on_every_chain(wallet: Wallet):
+    """The claim the whole wallet rests on, through the binding."""
+    wallet.new_account(every_chain=True)
+    accounts = wallet.accounts()
+    assert [a["chain"] for a in accounts] == list(CHAINS)
+    assert {a["index"] for a in accounts} == {0}
+    # One mnemonic, four addresses, each in its chain's own encoding.
+    assert len({a["address"] for a in accounts}) == 4
+    assert [a["label"] for a in accounts] == [f"account0-{chain}" for chain in CHAINS]
 
 
-def test_repr_does_not_leak_the_secret():
-    keypair = wallet.Keypair.from_mnemonic(TEST_MNEMONIC, 0)
-    assert TEST_PRIVATE_KEY not in repr(keypair)
-    assert "redacted" in repr(keypair)
+def test_labels_are_auto_assigned_from_the_index_and_chain(wallet: Wallet):
+    wallet.new_account()
+    wallet.new_account()
+    assert [a["label"] for a in wallet.accounts()] == ["account0-evm", "account1-evm"]
 
 
-def test_eip191_hash_matches_the_reference():
-    assert (
-        wallet.eip191_hash("Hello World").hex()
-        == "a1de988600a42c4b4ab089b619297c17d53cffae5d5120d82d8a92d0bb3b78f2"
-    )
+def test_a_duplicate_label_is_refused(wallet: Wallet):
+    wallet.new_account(label="dup")
+    with pytest.raises(WalletError) as caught:
+        wallet.new_account(label="dup")
+    assert caught.value.code == "duplicate_label"
 
 
-def test_signing_and_recovery_round_trip():
-    keypair = wallet.Keypair.from_mnemonic(TEST_MNEMONIC, 0)
-    signature = keypair.sign_message("hello causewaybay")
-    assert len(signature) == 2 + 130
-    assert wallet.recover_message("hello causewaybay", signature) == TEST_ADDRESS_0
+def test_importing_a_mnemonic_gives_the_known_address(wallet: Wallet):
+    imported = wallet.import_mnemonic(TEST_MNEMONIC, label="known")
+    account = imported[0] if isinstance(imported, list) else imported
+    assert account["address"] == "0x9858EfFD232B4033E47d90003D41EC34EcaEda94"
 
 
-def test_recovery_of_a_tampered_message_gives_a_different_address():
-    keypair = wallet.Keypair.from_mnemonic(TEST_MNEMONIC, 0)
-    signature = keypair.sign_message("original")
-    assert wallet.recover_message("tampered", signature) != TEST_ADDRESS_0
+def test_importing_a_private_key_gives_the_known_address(wallet: Wallet):
+    imported = wallet.import_key(TEST_PRIVATE_KEY, label="raw")
+    account = imported[0] if isinstance(imported, list) else imported
+    assert account["address"] == "0x9858EfFD232B4033E47d90003D41EC34EcaEda94"
+    assert account["source"] == "private_key"
 
 
-def test_signatures_are_deterministic():
-    keypair = wallet.Keypair.from_mnemonic(TEST_MNEMONIC, 0)
-    assert keypair.sign_message("same") == keypair.sign_message("same")
+def test_removing_an_account_asks_first(seeded: Wallet):
+    with pytest.raises(WalletError) as caught:
+        seeded.remove_account("alpha-evm")
+    assert caught.value.code == "confirmation_required"
+    seeded.remove_account("alpha-evm", yes=True)
+    assert all(a["label"] != "alpha-evm" for a in seeded.accounts())
 
 
-@pytest.mark.parametrize("message", ["", "héllo 🌏", "a" * 5000])
-def test_signs_edge_case_messages(message):
-    keypair = wallet.Keypair.from_mnemonic(TEST_MNEMONIC, 0)
-    assert wallet.recover_message(message, keypair.sign_message(message)) == TEST_ADDRESS_0
+# -------------------------------------------------------------------- chains
 
 
-def test_malformed_signatures_are_rejected():
-    for bad in ["0x", "0x00", "0x" + "11" * 64]:
-        with pytest.raises(errors.WalletError):
-            wallet.recover_message("x", bad)
+def test_every_chain_describes_itself(wallet: Wallet):
+    by_name = {c["chain"]: c for c in wallet.chains()}
+    assert set(by_name) == set(CHAINS)
+    assert by_name["solana"]["derivation_path"] == "m/44'/501'/0'/0'"
+    assert by_name["cardano"]["derivation_path"] == "m/1852'/1815'/0'/0/0"
+    # Capabilities are per chain, and are what a caller should branch on.
+    assert by_name["evm"]["capabilities"]["tokens"] is True
+    assert by_name["solana"]["capabilities"]["faucet"] is True
+    assert by_name["cardano"]["capabilities"]["tokens"] is False
 
 
-def test_address_parsing_and_checksumming():
-    assert wallet.parse_address(TEST_ADDRESS_0) == TEST_ADDRESS_0
-    assert wallet.parse_address(TEST_ADDRESS_0.lower()) == TEST_ADDRESS_0
-    assert wallet.parse_address(f"  {TEST_ADDRESS_1}  ") == TEST_ADDRESS_1
-    for bad in ["", "0x123", "nonsense", TEST_ADDRESS_0 + "00"]:
-        with pytest.raises(errors.WalletError) as excinfo:
-            wallet.parse_address(bad)
-        assert excinfo.value.code == errors.INVALID_ADDRESS
+def test_the_command_surface_reports_the_same_chains(wallet: Wallet):
+    assert {c["chain"] for c in wallet.chain_list()} == {c["chain"] for c in wallet.chains()}
 
 
-def test_hex_parsing():
-    assert wallet.parse_hex("0xdeadbeef") == b"\xde\xad\xbe\xef"
-    assert wallet.parse_hex("deadbeef") == b"\xde\xad\xbe\xef"
-    assert wallet.parse_hex("") == b""
-    with pytest.raises(errors.WalletError):
-        wallet.parse_hex("0xzz")
+def test_lists_every_chains_networks(wallet: Wallet):
+    networks = wallet.networks()
+    by_key = {n["key"]: n for n in networks}
+    assert by_key["cronos-testnet"]["chain_id"] == 338
+    assert by_key["cronos-mainnet"]["chain_id"] == 25
+    # Only EVM has a chain id; the others say null rather than a number that
+    # would mean something.
+    assert by_key["solana-devnet"]["chain_id"] is None
+    for chain in CHAINS:
+        assert any(n["chain"] == chain for n in networks), chain
 
 
-def test_mnemonics_are_nfkd_normalised():
-    """SPEC.md §3 requires NFKD; without it the two CLIs sharing one store write
-    different bytes — and different recall ids — for the same phrase."""
-    import unicodedata
-
-    # U+FB01 'ﬁ' decomposes to 'fi' under NFKD.
-    composed = "ﬁnd"
-    assert wallet.normalize_mnemonic(composed) == unicodedata.normalize("NFKD", composed)
-    assert wallet.normalize_mnemonic(composed) == "find"
-    # The canonical phrase is unaffected.
-    assert wallet.normalize_mnemonic(TEST_MNEMONIC) == TEST_MNEMONIC
+def test_switching_network_settles_the_chain_too(wallet: Wallet):
+    wallet.use_network("solana-devnet")
+    assert wallet.current_network()["chain"] == "solana"
+    assert wallet.info()["chain"] == "solana"
+    wallet.use_network("mainnet")
+    assert wallet.current_network()["chain_id"] == 25
 
 
-# Surrounding whitespace is trimmed, as it is on the Rust side; what must be
-# refused is loose hex inside the key itself.
-@pytest.mark.parametrize("bad", ["0x" + "a" * 62 + "_1", "0x+" + "a" * 63])
-def test_private_keys_reject_loose_hex(bad):
-    """`int(body, 16)` accepts underscores and signs; a key is 64 hex digits."""
-    with pytest.raises(errors.WalletError):
-        wallet.Keypair.from_private_key(bad)
+def test_an_unknown_network_is_named_in_the_error(wallet: Wallet):
+    with pytest.raises(WalletError) as caught:
+        wallet.use_network("ethereum")
+    assert caught.value.code == "unknown_network"
+    assert "ethereum" in caught.value.message
+
+
+def test_a_per_call_chain_does_not_change_the_stored_one(wallet: Wallet):
+    derived = wallet.derive(mnemonic=TEST_MNEMONIC, index=0, chain="solana")
+    assert derived["chain"] == "solana"
+    assert derived["derivation_path"] == "m/44'/501'/0'/0'"
+    assert wallet.info()["chain"] == "evm", "the stored chain did not move"
+
+
+# ------------------------------------------------------------------ requests
+
+
+def test_argv_must_be_strings(wallet: Wallet):
+    with pytest.raises(WalletError) as caught:
+        wallet.envelope(["utils", "to-wei", 1.5])  # type: ignore[list-item]
+    assert caught.value.code == "usage"
+    assert "argv[2]" in caught.value.message
+
+
+def test_a_failed_command_is_an_envelope_not_a_raise(wallet: Wallet):
+    envelope = wallet.envelope(["account", "show", "nobody"])
+    assert envelope["ok"] is False
+    assert envelope["error"]["code"] == "account_not_found"
+
+
+def test_text_is_what_the_cli_would_have_printed(seeded: Wallet):
+    printed = seeded.text(["account", "list"])
+    assert "alpha-evm" in printed
+    assert "0x" in printed
+
+
+# ------------------------------------------------------------------- offline
+
+
+def test_the_offline_helpers_need_no_store(wallet: Wallet):
+    assert wallet.keccak("")["keccak256"].startswith("0xc5d2460186f7")
+    assert wallet.to_wei("1.5")["value"] == "1500000000000000000"
+    assert wallet.from_wei("1500000000000000000")["amount"] == "1.5"
+    assert wallet.validate_mnemonic(TEST_MNEMONIC)["valid"] is True
+
+
+def test_secrets_are_only_in_the_export(seeded: Wallet):
+    listed = seeded.accounts()[0]
+    assert "private_key" not in listed
+    exported = seeded.export_account("alpha-evm")
+    assert exported["private_key"].startswith("0x")
+    assert exported["mnemonic"]

@@ -5,21 +5,18 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "causewaybay-wallet"
 version = "1.0.2"
-description = "Educational Cronos/EVM wallet with a CLI and a TUI, backed by an append-only JSONL store"
+description = "Educational multi-chain wallet: a Python binding over the Rust core's C ABI"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
 authors = [{ name = "Causewaybay Wallet" }]
-keywords = ["ethereum", "cronos", "evm", "wallet", "cli", "tui"]
+keywords = ["ethereum", "cronos", "solana", "cardano", "midnight", "wallet", "cli", "ffi"]
 
-dependencies = [
-    "eth-account>=0.13.0",
-    "eth-utils>=5.0.0",
-    "eth-hash[pycryptodome]>=0.7.0",
-    "mnemonic>=0.21",
-    "requests>=2.32.0",
-    "textual>=1.0.0",
-]
+# None. The wallet is the Rust core, loaded through ctypes from the standard
+# library: the cryptography, the store and the RPC all live there. A second set
+# of Python crypto dependencies would be a second implementation to keep in
+# step, which is exactly what this package stopped being.
+dependencies = []
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0.0", "pytest-cov>=5.0.0", "ruff>=0.6.0", "anyio>=4.0.0"]
@@ -29,6 +26,14 @@ cwbwallet = "causewaybay.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["causewaybay*"]
+
+# The wallet itself, when one has been staged by `make release-lib`. A packaged
+# binary has no checkout to search, so the shared library travels inside the
+# wheel and `ffi.py` looks beside itself first. A plain `pip install` finds no
+# library here and falls back to the search path, which is what a developer
+# with a checkout wants.
+[tool.setuptools.package-data]
+causewaybay = ["*.dylib", "*.so", "*.dll"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

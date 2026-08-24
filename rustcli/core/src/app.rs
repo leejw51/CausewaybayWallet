@@ -2030,7 +2030,11 @@ impl App {
     ///
     /// The same derivation `account import-mnemonic` does, with the wallet
     /// left out of it — for a caller that wants an address from a phrase
-    /// without acquiring an account and a recall entry as side effects.
+    /// without acquiring an account and a recall entry as side effects. It
+    /// follows `--chain` like everything else: the whole point of an offline
+    /// helper is answering "what would this phrase give me over there?", and
+    /// an EVM-only answer to that question is the wrong answer three times
+    /// out of four.
     fn utils_derive(
         &self,
         mnemonic: Option<String>,
@@ -2038,49 +2042,52 @@ impl App {
         index: u32,
         passphrase: &str,
     ) -> Result<CommandOutput> {
+        let chain = chain::chain(self.chain);
         // clap's ArgGroup guarantees exactly one of the two is present.
-        let (keypair, data) = match (mnemonic, private_key) {
+        let (derived, source) = match (mnemonic, private_key) {
             (Some(phrase), _) => {
                 let phrase = read_secret(self.host.as_ref(), Some(phrase), "mnemonic")?;
-                let keypair = Keypair::from_mnemonic(&phrase, index, passphrase)?;
-                let path = crate::bip32::ethereum_path(index);
-                (
-                    keypair,
-                    json!({
-                        "source": "mnemonic",
-                        "derivation_path": path,
-                        "index": index,
-                    }),
-                )
+                let seed = Seed::new(&phrase, passphrase)?;
+                (chain.derive(&seed, index)?, "mnemonic")
             }
             (None, Some(key)) => {
                 let key = read_secret(self.host.as_ref(), Some(key), "private key")?;
-                (Keypair::from_hex(&key)?, json!({"source": "private_key"}))
+                (chain.account_from_secret(&key)?, "private_key")
             }
             (None, None) => return Err(error::usage("pass either --mnemonic or --private-key")),
         };
 
-        let address = keypair.address().to_checksum(None);
         let mut payload = json!({
-            "address": address,
-            "private_key": keypair.private_key_hex(),
-            "public_key": keypair.public_key_hex(),
-            "public_key_compressed": keypair.public_key_compressed_hex(),
+            "chain": self.chain.as_str(),
+            "address": derived.address,
+            "private_key": derived.secret,
+            "public_key": derived.public_key,
+            "source": source,
         });
-        // Merge the source-specific half in, so both shapes share one schema.
-        if let (Some(target), Some(extra)) = (payload.as_object_mut(), data.as_object()) {
+        // The chain's own extras — an EVM compressed key, a Cardano reward
+        // address, a Midnight dust seed — are merged in flat, so a caller
+        // reading `public_key_compressed` finds it where it has always been.
+        if let (Some(target), Some(extra)) = (payload.as_object_mut(), derived.extra.as_object()) {
             for (key, value) in extra {
                 target.insert(key.clone(), value.clone());
             }
         }
+        if derived.derivation_path.is_some() {
+            payload["derivation_path"] = json!(derived.derivation_path);
+            payload["index"] = json!(index);
+        }
 
-        let mut rows = vec![("Address", address), ("Source", source_of(&payload))];
-        if let Some(path) = payload["derivation_path"].as_str() {
+        let mut rows = vec![
+            ("Chain", self.chain.as_str().to_string()),
+            ("Address", derived.address.clone()),
+            ("Source", source_of(&payload)),
+        ];
+        if let Some(path) = derived.derivation_path.as_deref() {
             rows.push(("Path", path.to_string()));
             rows.push(("Address index", index.to_string()));
         }
-        rows.push(("Public key", keypair.public_key_compressed_hex()));
-        rows.push(("Private key", keypair.private_key_hex()));
+        rows.push(("Public key", derived.public_key.clone()));
+        rows.push(("Private key", derived.secret.clone()));
         Ok(CommandOutput::new(payload.clone(), output::table(&rows)))
     }
 

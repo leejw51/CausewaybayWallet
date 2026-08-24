@@ -1,48 +1,18 @@
-"""The error type, carrying a stable machine-readable code.
+"""The error type, carrying the stable code the core returned.
 
-Every code here is part of the public contract in ``SPEC.md``; the Rust
-implementation emits the same strings so callers can branch on them.
+The codes themselves are not listed here. They belong to the wallet, which
+reports them through ``cwb_describe`` — a second copy in Python is a copy that
+goes stale without anything noticing. Ask a wallet: ``wallet.codes()``.
+
+What is here is the one case that never reaches the core at all: the library
+would not load, or its reply was not something this binding could read.
 """
 
 from __future__ import annotations
 
-USAGE = "usage"
-NOT_FOUND = "not_found"
-ACCOUNT_NOT_FOUND = "account_not_found"
-DUPLICATE_LABEL = "duplicate_label"
-INVALID_MNEMONIC = "invalid_mnemonic"
-INVALID_PRIVATE_KEY = "invalid_private_key"
-INVALID_ADDRESS = "invalid_address"
-INVALID_AMOUNT = "invalid_amount"
-NO_ACTIVE_ACCOUNT = "no_active_account"
-UNKNOWN_NETWORK = "unknown_network"
-RPC_ERROR = "rpc_error"
-INSUFFICIENT_FUNDS = "insufficient_funds"
-CONFIRMATION_REQUIRED = "confirmation_required"
-IO_ERROR = "io_error"
-INTERNAL = "internal"
-
-ALL_CODES = (
-    USAGE,
-    NOT_FOUND,
-    ACCOUNT_NOT_FOUND,
-    DUPLICATE_LABEL,
-    INVALID_MNEMONIC,
-    INVALID_PRIVATE_KEY,
-    INVALID_ADDRESS,
-    INVALID_AMOUNT,
-    NO_ACTIVE_ACCOUNT,
-    UNKNOWN_NETWORK,
-    RPC_ERROR,
-    INSUFFICIENT_FUNDS,
-    CONFIRMATION_REQUIRED,
-    IO_ERROR,
-    INTERNAL,
-)
-
 
 class WalletError(Exception):
-    """An error the CLI knows how to report, with a stable code."""
+    """An error with a stable machine-readable code from ``SPEC.md``."""
 
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
@@ -52,26 +22,20 @@ class WalletError(Exception):
     def __str__(self) -> str:  # pragma: no cover - trivial
         return self.message
 
-
-def _maker(code: str):
-    def make(message: str) -> WalletError:
-        return WalletError(code, message)
-
-    return make
+    def __repr__(self) -> str:  # pragma: no cover - trivial
+        return f"WalletError({self.code!r}, {self.message!r})"
 
 
-usage = _maker(USAGE)
-not_found = _maker(NOT_FOUND)
-account_not_found = _maker(ACCOUNT_NOT_FOUND)
-duplicate_label = _maker(DUPLICATE_LABEL)
-invalid_mnemonic = _maker(INVALID_MNEMONIC)
-invalid_private_key = _maker(INVALID_PRIVATE_KEY)
-invalid_address = _maker(INVALID_ADDRESS)
-invalid_amount = _maker(INVALID_AMOUNT)
-no_active_account = _maker(NO_ACTIVE_ACCOUNT)
-unknown_network = _maker(UNKNOWN_NETWORK)
-rpc_error = _maker(RPC_ERROR)
-insufficient_funds = _maker(INSUFFICIENT_FUNDS)
-confirmation_required = _maker(CONFIRMATION_REQUIRED)
-io_error = _maker(IO_ERROR)
-internal = _maker(INTERNAL)
+def usage(message: str) -> WalletError:
+    """The one code this front end raises on its own: a bad call into it."""
+    return WalletError("usage", message)
+
+
+def internal(message: str) -> WalletError:
+    """A reply this binding could not read. Never a wallet failure."""
+    return WalletError("internal", message)
+
+
+def io_error(message: str) -> WalletError:
+    """The library is missing or unreadable — a setup problem, not a wallet one."""
+    return WalletError("io_error", message)

@@ -777,9 +777,11 @@ local function draw_header(model)
   theme.text("CAUSEWAYBAY", 38, 3, theme.colour.cyan, theme.font.body, t)
   theme.text("BANK", 38, 18, theme.colour.dim, theme.font.small, t)
 
+  -- The chain, then the network within it. Not the chain *id*: only EVM has
+  -- one, and "chain nil" was what the other three used to render.
   local network = model and model.info and model.info.network or "…"
-  local chain = model and model.info and model.info.chain_id or ""
-  theme.text_right(("%s · chain %s"):format(network, chain),
+  local chain = model and model.info and model.info.chain or ""
+  theme.text_right(("%s · %s"):format(chain, network),
     theme.WIDTH - 158, 11, theme.colour.dim, theme.font.small, t)
 
   -- A spinner while the node is thinking, so "busy" is never just a word.
@@ -1050,6 +1052,13 @@ local function draw_wallets(model, state, x)
     theme.text(account.label, row_x + 26, box.y + 1, ink, theme.font.small)
     theme.text(theme.ellipsis(account.address, 8, 6), row_x + 26, box.y + 14,
       selected and theme.colour.cyan_dark or theme.colour.faint, theme.font.small)
+    -- Which chain this account is on, in that chain's colour. A list holding
+    -- four address formats is unreadable without it: `addr_test1…` and
+    -- `mn_addr…` are not guesses a reader should have to make.
+    if account.chain then
+      theme.text_right(account.chain, row_x + box.w - 6, box.y + 7,
+        theme.chain_colour(account.chain), theme.font.small)
+    end
   end
 
   -- A scrollbar, so a list longer than the frame says so and shows where in
@@ -1317,9 +1326,22 @@ local function draw_network(model, state, x)
   local frame = widgets.frame(x + L.margin, L.top, theme.WIDTH - L.margin * 2, height,
     "NETWORK")
 
-  local row_h = 46
-  for i, network in ipairs(model:networks()) do
-    local box = { x = frame.x, y = frame.y + (i - 1) * (row_h + 6), w = frame.w, h = row_h }
+  -- Every network on screen at once, in two columns: ten of them will not fit
+  -- in one, and a network you have to scroll to find is a network the wallet
+  -- has hidden from you.
+  local networks = model:networks()
+  local rows = math.ceil(#networks / 2)
+  local row_h = math.min(46, math.floor((height - 6) / math.max(rows, 1)) - 4)
+  local column_w = math.floor((frame.w - 6) / 2)
+  for i, network in ipairs(networks) do
+    local column = (i - 1) >= rows and 1 or 0
+    local row = (i - 1) % rows
+    local box = {
+      x = frame.x + column * (column_w + 6),
+      y = frame.y + row * (row_h + 4),
+      w = column_w,
+      h = row_h,
+    }
     local current = model.info and model.info.network == network.key
     local clicked, hovered, row_x, slide = widgets.row(game.springs, "net" .. i, box, state,
       current)
@@ -1329,22 +1351,26 @@ local function draw_network(model, state, x)
     theme.outline(current and theme.colour.green or theme.colour.raised,
       row_x, box.y, box.w, box.h, current and 0.8 or 0.4)
 
-    sprite.draw_glowing("globe", row_x + 28, box.y + box.h / 2, 32, {
+    local tint = theme.chain_colour(network.chain)
+    sprite.draw_glowing("globe", row_x + 18, box.y + box.h / 2, 22, {
       angle = game.time * (current and 0.5 or 0.15),
       glow = current and 0.6 or 0.15,
-      glow_colour = current and theme.colour.green or theme.colour.faint,
+      glow_colour = current and theme.colour.green or tint,
       alpha = 0.5 + slide * 0.5,
     })
 
     local ink = current and theme.colour.green or (hovered and theme.colour.text
       or theme.colour.dim)
-    theme.text(network.name, row_x + 54, box.y + 8, ink, theme.font.body)
-    stat(row_x + 54, box.y + 26, "CHAIN " .. network.chain_id, "", theme.colour.faint)
-    theme.text(network.symbol, row_x + 54 + 90, box.y + 26, theme.colour.faint,
-      theme.font.small)
+    -- The key, not the name: `solana-devnet` says the chain and the network in
+    -- the width a row of this size has, where "Solana Devnet" says one of them
+    -- and "Cronos EVM Testnet" runs off the end.
+    theme.text(network.key, row_x + 34, box.y + math.floor(box.h / 2) - 5, ink,
+      theme.font.body)
+    theme.text_right(network.symbol, row_x + box.w - 8,
+      box.y + math.floor(box.h / 2) - 4, tint, theme.font.small)
 
     if current then
-      widgets.chip(row_x + box.w - 62, box.y + 8, "ACTIVE", theme.colour.green)
+      widgets.chip(row_x + box.w - 46, box.y + 2, "NOW", theme.colour.green)
     end
   end
 

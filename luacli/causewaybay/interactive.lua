@@ -333,9 +333,14 @@ local function switch_network(ctx)
   if not networks then return report(ctx, err) end
   local current = ctx.wallet:current_network()
   local chosen = choose(ctx, "network", networks, function(network)
-    return ("%-16s chain %-5d %s%s"):format(
+    -- Only EVM networks have a numeric chain id; the others carry JSON null,
+    -- which `%d` cannot render and which is not a fact about them anyway.
+    -- What every network has is the chain it belongs to.
+    local chain_id = tonumber(network.chain_id)
+    local where = chain_id and ("%s %d"):format(network.chain, chain_id) or network.chain
+    return ("%-17s %-11s %-5s%s"):format(
       network.key,
-      network.chain_id,
+      where,
       network.symbol,
       current and network.key == current.key and "  (current)" or ""
     )
@@ -347,6 +352,48 @@ local function switch_network(ctx)
   say(ctx, "now on " .. chosen.name)
 end
 
+--- Move to another chain, on whichever of its networks the wallet last used.
+---
+--- The wallet has two axes — the chain and the network within it — and a menu
+--- that only offered networks made "work on Solana" a matter of knowing which
+--- keys begin with `solana-`. This offers the chains themselves, with what
+--- each one can do beside it.
+local function switch_chain(ctx)
+  local chains, err = ctx.wallet:chains()
+  if not chains then return report(ctx, err) end
+  local info = ctx.wallet:info()
+  local here = info and info.chain
+
+  local chosen = choose(ctx, "chain", chains, function(chain)
+    local can = {}
+    for name, allowed in pairs(chain.capabilities or {}) do
+      if allowed then can[#can + 1] = name end
+    end
+    table.sort(can)
+    return ("%-9s %-22s %s%s"):format(
+      chain.chain,
+      chain.derivation_path,
+      table.concat(can, ", "),
+      chain.chain == here and "  (current)" or ""
+    )
+  end)
+  if not chosen then return end
+
+  -- The chain is settled by the network, so moving to a chain means moving to
+  -- one of its networks: the one already selected there, or its first.
+  local target = chosen.networks and chosen.networks[1]
+  for _, held in ipairs((info and info.chains) or {}) do
+    if held.chain == chosen.chain and held.network then target = held.network end
+  end
+  if not target then
+    return report(ctx, { code = "usage", message = chosen.chain .. " has no networks" })
+  end
+
+  local ok, switch_err = ctx.wallet:use_network(target)
+  if not ok then return report(ctx, switch_err) end
+  say(ctx, ("now on %s · %s"):format(chosen.name, target))
+end
+
 --- The menu. Order is roughly the order a new wallet is used in.
 interactive.ACTIONS = {
   { key = "1", label = "create a wallet", run = create_wallet },
@@ -356,7 +403,8 @@ interactive.ACTIONS = {
   { key = "5", label = "send", run = send_amount },
   { key = "6", label = "export wallets to a file", run = export_wallets },
   { key = "7", label = "reveal a wallet's secrets", run = reveal_secrets },
-  { key = "8", label = "switch network", run = switch_network },
+  { key = "8", label = "switch chain", run = switch_chain },
+  { key = "9", label = "switch network", run = switch_network },
 }
 
 -- ------------------------------------------------------------------ the REPL

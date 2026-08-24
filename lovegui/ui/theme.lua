@@ -263,6 +263,20 @@ function theme.height(font)
   return font.font:getHeight() * font.scale
 end
 
+--- The colour a chain is drawn in, everywhere it is named.
+---
+--- The wallet holds four chains and shows them mixed: a list of accounts, a
+--- flat list of every network. Colour is what turns that into groups without
+--- an indent or a heading, so the mapping lives here with the palette rather
+--- than beside one of the places that draws it.
+function theme.chain_colour(chain)
+  if chain == "solana" then return theme.colour.green end
+  if chain == "cardano" then return theme.colour.cyan end
+  if chain == "midnight" then return theme.colour.amber end
+  -- EVM, and anything a future build adds before this list catches up.
+  return theme.colour.magenta
+end
+
 --- Text, snapped to whole pixels. Sub-pixel text on a pixel canvas shimmers.
 function theme.text(string, x, y, colour, font, a)
   font = font or theme.font.body
