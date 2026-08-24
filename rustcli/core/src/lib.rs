@@ -39,6 +39,7 @@ pub mod api;
 pub mod app;
 pub mod bip32;
 pub mod bip39;
+pub mod chain;
 pub mod command;
 pub mod erc20;
 pub mod error;
@@ -50,12 +51,14 @@ pub mod paths;
 pub mod request;
 pub mod rlp;
 pub mod rpc;
+pub mod runtime;
 pub mod store;
 pub mod tx;
 pub mod units;
 pub mod wallet;
 
 pub use app::App;
+pub use chain::{Chain, ChainId};
 pub use command::{Cli, Command};
 pub use error::{Code, Error, Result};
 pub use host::Host;
@@ -70,4 +73,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Bumped whenever the shape of an [`api`] request or envelope changes in a way
 /// a caller compiled against an older header would get wrong. Hosts that load
 /// the shared library at runtime — Lua, LÖVE — check this before trusting it.
-pub const ABI_VERSION: u32 = 1;
+///
+/// Version 2 added the request's `chain` field and the `chain` key on account
+/// records, alongside the Solana, Cardano and Midnight chains.
+pub const ABI_VERSION: u32 = 2;

@@ -1,4 +1,4 @@
-//! Copying text to the system clipboard.
+//! Copying text to — and reading it from — the system clipboard.
 //!
 //! Done by piping to whatever the platform provides rather than by linking a
 //! clipboard crate: on Linux those pull in X11/Wayland development libraries,
@@ -70,6 +70,59 @@ fn write_to(program: &str, args: &[&str], text: &str) -> std::result::Result<(),
     }
 }
 
+/// The read-side candidates, in the order they are tried.
+fn read_candidates() -> Vec<(&'static str, Vec<&'static str>)> {
+    if cfg!(target_os = "macos") {
+        vec![("pbpaste", vec![])]
+    } else if cfg!(target_os = "windows") {
+        vec![(
+            "powershell",
+            vec!["-NoProfile", "-Command", "Get-Clipboard"],
+        )]
+    } else {
+        vec![
+            ("wl-paste", vec!["--no-newline"]),
+            ("xclip", vec!["-selection", "clipboard", "-o"]),
+            ("xsel", vec!["--clipboard", "--output"]),
+        ]
+    }
+}
+
+/// Read the clipboard's current text.
+///
+/// This exists because terminal paste is at the mercy of the terminal: what
+/// arrives depends on bracketed-paste support, multiplexers in between, and
+/// how each of them mangles the escape sequences. Reading the clipboard
+/// directly through the platform's own helper depends on none of that, which
+/// is why the TUI binds it to a key of its own.
+pub fn paste() -> Result<String> {
+    let mut tried = Vec::new();
+    for (program, args) in read_candidates() {
+        match read_from(program, &args) {
+            Ok(text) => return Ok(text),
+            Err(reason) => tried.push(format!("{program} ({reason})")),
+        }
+    }
+    Err(error::internal(format!(
+        "no clipboard helper worked — tried {}",
+        tried.join(", ")
+    )))
+}
+
+/// Run one helper and collect its stdout.
+fn read_from(program: &str, args: &[&str]) -> std::result::Result<String, String> {
+    let output = Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !output.status.success() {
+        return Err(format!("exited with {}", output.status));
+    }
+    String::from_utf8(output.stdout).map_err(|_| "clipboard is not UTF-8 text".to_string())
+}
+
 /// True when some clipboard helper is on PATH.
 ///
 /// Only the tests need this: a machine with no helper must not fail a suite
@@ -92,13 +145,16 @@ fn is_available() -> bool {
     })
 }
 
+/// The clipboard is one shared resource for the whole machine, so every test
+/// that touches it — here or in the TUI — takes turns rather than racing.
+#[cfg(test)]
+pub(crate) static CLIPBOARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// The clipboard is one shared resource for the whole machine, so the tests
-    /// that write to it take turns rather than racing each other.
-    static CLIPBOARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    use super::CLIPBOARD;
 
     #[test]
     fn the_candidate_list_suits_the_platform() {

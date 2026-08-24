@@ -10,8 +10,14 @@
  *   Request  {"argv": ["account","list"],   // the command, without argv[0]
  *             "home": "/path/to/wallet",    // optional, else $CAUSEWAYBAY_HOME
  *             "network": "cronos-testnet",  // optional, this call only
+ *             "chain": "solana",            // optional, this call only
  *             "yes": false,                 // answer confirmations with yes
  *             "stdin": null}                // what an argument of "-" means
+ *
+ * `chain` is one of evm, solana, cardano, midnight. Like `network` it is a
+ * default: a --chain inside `argv` wins. Naming a network settles the chain
+ * too, because every network belongs to exactly one — so a host that already
+ * has a network picker never needs to set this.
  *
  *   Reply    {"ok":true,"data":{...},"human":"..."}
  *            {"ok":false,"error":{"code":"...","message":"..."}}
@@ -51,7 +57,7 @@ extern "C" {
  * export will fail when it first calls it, not when it loads. Checking this
  * number is what turns that into a clear message.
  */
-#define CWB_ABI_VERSION 1
+#define CWB_ABI_VERSION 2
 
 int cwb_abi_version(void);
 
@@ -59,11 +65,23 @@ int cwb_abi_version(void);
 char *cwb_version(void);
 
 /*
- * A JSON envelope describing the library: name, version, abi, and the
- * networks it knows. The first call a host should make.
- * Free with cwb_string_free.
+ * A JSON envelope describing the library: name, version, abi, the error codes
+ * it can return, and the chains and networks it knows. The first call a host
+ * should make. Free with cwb_string_free.
  */
 char *cwb_describe(void);
+
+/*
+ * The chains this build supports, as a JSON envelope whose `data` is a list of
+ * {chain, name, derivation_path, networks, capabilities}. A host with a chain
+ * picker should read it from here rather than keeping its own list, which goes
+ * stale the moment a chain is added.
+ *
+ * Added in ABI 2: a library built against ABI 1 does not export this symbol,
+ * which is why a host that loads at runtime must check cwb_abi_version first.
+ * Free with cwb_string_free.
+ */
+char *cwb_chains(void);
 
 /*
  * Every command the wallet accepts, as a JSON envelope whose `data` is a list

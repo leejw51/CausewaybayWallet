@@ -53,7 +53,7 @@ fn run(cli: Cli) -> Result<(), Error> {
     // must be refused rather than asked for — which also stops an automated
     // caller from spending funds by accident.
     let host = Arc::new(TerminalHost::new(cli.yes, !cli.json));
-    let app = App::new(cli.home, cli.network.as_deref(), host)?;
+    let app = App::new(cli.home, cli.network.as_deref(), cli.chain.as_deref(), host)?;
 
     // The TUI is the one command core will not run: it takes over the screen,
     // so it belongs to the front end that owns one.

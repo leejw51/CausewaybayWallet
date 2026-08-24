@@ -28,7 +28,7 @@ repository = "https://github.com/leejw51/CausewaybayWallet"
 causewaybay-core = { path = "core", version = "1.0.0" }
 
 alloy-primitives = "1.6"
-k256 = { version = "0.13", features = ["ecdsa"] }
+k256 = { version = "0.13", features = ["ecdsa", "schnorr", "arithmetic"] }
 sha2 = "0.10"
 hmac = "0.12"
 pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
@@ -37,11 +37,43 @@ hex = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 clap = { version = "4", features = ["derive", "env"] }
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 ratatui = "0.29"
 crossterm = "0.28"
 unicode-normalization = "0.1"
+
+# --- the async chain layer ---
+tokio = { version = "1", features = ["rt-multi-thread", "time", "macros", "sync"] }
+tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
+futures-executor = "0.3"
+async-trait = "0.1"
+anyhow = "1"
+
+# --- Solana ---
+ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+bs58 = "0.5"
+base64 = "0.22"
+
+# --- Cardano ---
+ed25519-bip32 = "0.4"
+blake2 = "0.10"
+bech32 = "0.11"
+
+# --- Midnight ---
+# Pinned to the ledger 8.1.x series the preview network runs; the wallet
+# refuses to build for a node reporting another generation rather than
+# submitting bytes it cannot read.
+midnight-ledger = { version = "=8.1.1", features = ["proving"] }
+base-crypto = { version = "1.0", package = "midnight-base-crypto" }
+coin-structure = { version = "2.0", package = "midnight-coin-structure" }
+transient-crypto = { version = "2.0", package = "midnight-transient-crypto" }
+storage = { version = "2.0", package = "midnight-storage" }
+serialize = { version = "1.0", package = "midnight-serialize" }
+onchain-runtime = { version = "3.1", package = "midnight-onchain-runtime" }
+zkir = { version = "=2.1.0", package = "midnight-zkir" }
+zswap = { version = "=8.1.1", package = "midnight-zswap" }
 
 assert_cmd = "2"
 predicates = "3"

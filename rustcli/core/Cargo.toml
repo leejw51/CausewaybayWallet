@@ -26,6 +26,31 @@ reqwest.workspace = true
 chrono.workspace = true
 unicode-normalization.workspace = true
 
+tokio.workspace = true
+tokio-tungstenite.workspace = true
+futures-util.workspace = true
+futures-executor.workspace = true
+async-trait.workspace = true
+anyhow.workspace = true
+
+ed25519-dalek.workspace = true
+bs58.workspace = true
+base64.workspace = true
+
+ed25519-bip32.workspace = true
+blake2.workspace = true
+bech32.workspace = true
+
+midnight-ledger.workspace = true
+base-crypto.workspace = true
+coin-structure.workspace = true
+transient-crypto.workspace = true
+storage.workspace = true
+serialize.workspace = true
+onchain-runtime.workspace = true
+zkir.workspace = true
+zswap.workspace = true
+
 [dev-dependencies]
 tempfile.workspace = true
 tiny_http.workspace = true

@@ -14,6 +14,11 @@ use tempfile::TempDir;
 pub struct Wallet {
     pub home: TempDir,
     pub rpc_url: Option<String>,
+    /// Per-network endpoint overrides, as `CAUSEWAYBAY_RPC_<NETWORK>` pairs.
+    ///
+    /// The Cronos pair has its own field because every existing test sets it;
+    /// this is how a test points one of the other chains at a mock instead.
+    pub endpoints: HashMap<String, String>,
 }
 
 impl Wallet {
@@ -21,15 +26,45 @@ impl Wallet {
         Wallet {
             home: TempDir::new().unwrap(),
             rpc_url: None,
+            endpoints: HashMap::new(),
         }
     }
 
-    /// Point the wallet at a mock node for both networks.
+    /// Point the wallet at a mock node for both Cronos networks.
     pub fn with_rpc(url: &str) -> Self {
         Wallet {
             home: TempDir::new().unwrap(),
             rpc_url: Some(url.to_string()),
+            endpoints: HashMap::new(),
         }
+    }
+
+    /// Point one network at a mock endpoint.
+    ///
+    /// `network` is a network key such as `solana-devnet`; the environment
+    /// variable it becomes is the wallet's own documented override, so this
+    /// exercises that path rather than going around it.
+    pub fn endpoint(mut self, network: &str, url: &str) -> Self {
+        self.endpoints.insert(
+            format!(
+                "CAUSEWAYBAY_RPC_{}",
+                network.to_uppercase().replace('-', "_")
+            ),
+            url.to_string(),
+        );
+        self
+    }
+
+    /// Point a chain that submits elsewhere at a mock for that half.
+    pub fn submit_endpoint(mut self, network: &str, url: &str) -> Self {
+        self.endpoints.insert(
+            format!(
+                "CAUSEWAYBAY_SUBMIT_{}",
+                network.to_uppercase().replace('-', "_")
+            ),
+            url.to_string(),
+        );
+        self
     }
 
     pub fn cmd(&self, args: &[&str]) -> Command {
@@ -44,6 +79,9 @@ impl Wallet {
         } else {
             command.env_remove("CAUSEWAYBAY_RPC_CRONOS_TESTNET");
             command.env_remove("CAUSEWAYBAY_RPC_CRONOS_MAINNET");
+        }
+        for (name, url) in &self.endpoints {
+            command.env(name, url);
         }
         command.args(args);
         command
@@ -225,6 +263,114 @@ impl MockRpc {
 }
 
 impl Drop for MockRpc {
+    fn drop(&mut self) {
+        self.server.unblock();
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+// ============================================================ a REST mock
+
+/// Path, then the raw body posted to it.
+type RecordedRequest = (String, Vec<u8>);
+
+/// A tiny HTTP server that answers by URL path rather than by JSON-RPC method.
+///
+/// Koios (Cardano) is plain REST, so the JSON-RPC mock above cannot stand in
+/// for it. Same idea, different key: script a path, get the body back, and
+/// every request is recorded so a test can assert what was actually asked.
+pub struct MockHttp {
+    pub url: String,
+    routes: Arc<Mutex<HashMap<String, Value>>>,
+    /// Path and raw body. Raw, because Cardano submits binary CBOR and
+    /// reading that as a string mangles it into replacement characters —
+    /// which would make an assertion about the bytes meaningless.
+    requests: Arc<Mutex<Vec<RecordedRequest>>>,
+    server: Arc<tiny_http::Server>,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl MockHttp {
+    pub fn start() -> Self {
+        let server = Arc::new(tiny_http::Server::http("127.0.0.1:0").unwrap());
+        let url = format!("http://{}", server.server_addr());
+        let routes: Arc<Mutex<HashMap<String, Value>>> = Arc::new(Mutex::new(HashMap::new()));
+        let requests: Arc<Mutex<Vec<RecordedRequest>>> = Arc::new(Mutex::new(Vec::new()));
+
+        let worker_server = Arc::clone(&server);
+        let worker_routes = Arc::clone(&routes);
+        let worker_requests = Arc::clone(&requests);
+        let handle = std::thread::spawn(move || {
+            for mut request in worker_server.incoming_requests() {
+                let path = request.url().split('?').next().unwrap_or("").to_string();
+                let mut body = Vec::new();
+                let _ = std::io::Read::read_to_end(request.as_reader(), &mut body);
+                worker_requests
+                    .lock()
+                    .unwrap()
+                    .push((path.clone(), body.clone()));
+
+                // Match on the last path segment, so a test scripts
+                // "address_info" rather than the whole prefix.
+                let key = path.rsplit('/').next().unwrap_or("").to_string();
+                let scripted = worker_routes.lock().unwrap().get(&key).cloned();
+                let response = match scripted {
+                    Some(Value::String(text)) => tiny_http::Response::from_string(text),
+                    Some(value) => tiny_http::Response::from_string(value.to_string()),
+                    None => tiny_http::Response::from_string(format!(
+                        "{{\"error\":\"{key} is not scripted\"}}"
+                    ))
+                    .with_status_code(404),
+                };
+                let response = response.with_header(
+                    tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
+                        .unwrap(),
+                );
+                let _ = request.respond(response);
+            }
+        });
+
+        MockHttp {
+            url,
+            routes,
+            requests,
+            server,
+            handle: Some(handle),
+        }
+    }
+
+    /// Script the JSON body returned for a path's last segment.
+    pub fn on(&self, path: &str, body: Value) -> &Self {
+        self.routes.lock().unwrap().insert(path.to_string(), body);
+        self
+    }
+
+    /// Every (path, raw body) pair the server was sent.
+    pub fn requests(&self) -> Vec<RecordedRequest> {
+        self.requests.lock().unwrap().clone()
+    }
+
+    /// The raw bodies posted to one path.
+    pub fn bodies_for(&self, path: &str) -> Vec<Vec<u8>> {
+        self.requests()
+            .into_iter()
+            .filter(|(url, _)| url.ends_with(path))
+            .map(|(_, body)| body)
+            .collect()
+    }
+
+    /// The bodies posted to one path, as text. For the JSON endpoints.
+    pub fn text_bodies_for(&self, path: &str) -> Vec<String> {
+        self.bodies_for(path)
+            .into_iter()
+            .map(|body| String::from_utf8_lossy(&body).into_owned())
+            .collect()
+    }
+}
+
+impl Drop for MockHttp {
     fn drop(&mut self) {
         self.server.unblock();
         if let Some(handle) = self.handle.take() {

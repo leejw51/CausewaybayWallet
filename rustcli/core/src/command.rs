@@ -39,6 +39,14 @@ pub struct Cli {
     #[arg(long, short = 'n', global = true, value_name = "NETWORK")]
     pub network: Option<String>,
 
+    /// Act on this chain: evm, solana, cardano or midnight.
+    ///
+    /// Without it, a command follows the active account's chain — so a wallet
+    /// that only ever holds EVM accounts never needs to mention it. Naming a
+    /// network settles the chain too, since every network belongs to one.
+    #[arg(long, short = 'c', global = true, value_name = "CHAIN")]
+    pub chain: Option<String>,
+
     /// Skip interactive confirmation prompts.
     #[arg(long, short = 'y', global = true)]
     pub yes: bool,
@@ -75,6 +83,18 @@ pub enum Command {
     /// Send native CRO/TCRO.
     #[command(allow_negative_numbers = true)]
     Send(SendArgs),
+    /// Ask a test network for funds.
+    ///
+    /// Only Solana's devnet and testnet have a faucet this wallet can call;
+    /// the others report that rather than pretending to try.
+    Airdrop {
+        /// How much to ask for, in whole tokens.
+        #[arg(long, default_value = "1")]
+        amount: String,
+        /// Fund this address instead of the active account's.
+        #[arg(long, short)]
+        address: Option<String>,
+    },
     /// Look a transaction up on chain.
     Tx {
         /// Transaction hash.
@@ -119,6 +139,8 @@ pub enum Command {
         #[command(subcommand)]
         command: UtilsCommand,
     },
+    /// List the chains this wallet supports and what each can do.
+    Chains,
     /// Launch the interactive terminal UI.
     Tui,
     /// Report where state lives and what is configured.
@@ -142,12 +164,22 @@ pub enum AccountCommand {
         /// Mnemonic length. Only meaningful with --new-seed.
         #[arg(long, short, default_value_t = 12, value_parser = parse_word_count)]
         words: usize,
-        /// BIP-44 address index. Defaults to the next free one.
+        /// Address index. Defaults to the next free one on this chain.
         #[arg(long, short)]
         index: Option<u32>,
         /// Also print the mnemonic (it is stored either way).
         #[arg(long)]
         show_secret: bool,
+        /// Derive on every supported chain, from the one mnemonic.
+        ///
+        /// One phrase, four addresses — which is what a multi-chain wallet
+        /// usually wants, and what makes the chains share a recall entry.
+        ///
+        /// Combines with `--index`: a wallet is one mnemonic and one index,
+        /// and every chain derives its own account there, so asking for index
+        /// 3 on all four is a sensible thing to want.
+        #[arg(long)]
+        every_chain: bool,
     },
     /// Import an existing BIP-39 mnemonic.
     ImportMnemonic {
@@ -163,8 +195,18 @@ pub enum AccountCommand {
         /// Optional BIP-39 passphrase (the "25th word").
         #[arg(long, default_value = "")]
         passphrase: String,
+        /// Import on every supported chain, not just the one in view.
+        ///
+        /// A mnemonic is a whole wallet — every chain derives its own account
+        /// at the same index — so importing one chain's worth of it is usually
+        /// not what was meant. Naming `--chain` is how you ask for just one.
+        #[arg(long)]
+        every_chain: bool,
     },
     /// Import a raw private key.
+    ///
+    /// A raw key belongs to one chain and cannot produce the others, so there
+    /// is deliberately no `--every-chain` here: use `--chain` to say which.
     ImportKey {
         /// The private key; `-` reads it from stdin. Defaults to $CAUSEWAYBAY_PRIVATE_KEY.
         #[arg(
@@ -203,9 +245,9 @@ pub enum AccountCommand {
         /// Account id, label or address.
         selector: String,
     },
-    /// Derive another address from an existing mnemonic account.
+    /// Derive another wallet index from an existing mnemonic account.
     Derive {
-        /// BIP-44 address index.
+        /// The wallet index to derive.
         #[arg(long, short)]
         index: u32,
         /// Label for the derived account.
@@ -214,6 +256,9 @@ pub enum AccountCommand {
         /// Derive from this account instead of the active one.
         #[arg(long)]
         from: Option<String>,
+        /// Derive on every supported chain, not just the one in view.
+        #[arg(long)]
+        every_chain: bool,
     },
     /// Change an account's label.
     Rename {
@@ -245,6 +290,9 @@ pub enum AccountCommand {
         /// The BIP-39 passphrase, when the entry was created with one.
         #[arg(long, default_value = "")]
         passphrase: String,
+        /// Restore on every supported chain, not just the one in view.
+        #[arg(long)]
+        every_chain: bool,
     },
 }
 
@@ -438,6 +486,12 @@ pub struct TargetArgs {
     /// Query this account instead of the active one.
     #[arg(long)]
     pub account: Option<String>,
+    /// Query every chain's active account at once.
+    ///
+    /// The queries go out together rather than one after another, so this
+    /// costs about as long as the slowest chain rather than the sum.
+    #[arg(long, conflicts_with_all = ["address", "account"])]
+    pub all: bool,
 }
 
 #[derive(Args, Debug)]
@@ -463,6 +517,14 @@ pub struct SendArgs {
     /// Wait for the receipt before returning.
     #[arg(long)]
     pub wait: bool,
+    /// Build and sign the transfer, show it, and stop without broadcasting.
+    ///
+    /// Every check a real send makes has already run by this point, so a
+    /// successful dry run means the transfer would have gone out — which is
+    /// the only way to see a Midnight fee, or a Cardano coin selection, before
+    /// committing to it.
+    #[arg(long)]
+    pub dry_run: bool,
     /// Send from this account instead of the active one.
     #[arg(long)]
     pub account: Option<String>,

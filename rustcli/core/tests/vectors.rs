@@ -75,7 +75,7 @@ fn big(value: &Value, key: &str) -> U256 {
 /// thing, so a new file has to be adopted by both before the build goes green.
 #[test]
 fn every_vector_file_is_consumed_by_this_suite() {
-    const CONSUMED: [&str; 10] = [
+    const CONSUMED: [&str; 11] = [
         "bip39.json",
         "bip39-invalid.json",
         "derivation.json",
@@ -86,6 +86,7 @@ fn every_vector_file_is_consumed_by_this_suite() {
         "eip191.json",
         "transactions.json",
         "units.json",
+        "multichain.json",
     ];
 
     let dir = vectors_dir();
@@ -112,6 +113,81 @@ fn every_vector_file_is_consumed_by_this_suite() {
             "{name} should record how it was generated"
         );
     }
+}
+
+// ====================================================== the other chains
+
+/// Solana, Cardano and Midnight against the vectors their own SDKs produced.
+///
+/// The per-chain unit tests check these in detail; this is the integration-level
+/// pass that ties the file to the wallet's public `Chain` surface, so a chain
+/// that stopped being registered would fail here rather than quietly stop being
+/// covered.
+#[test]
+fn every_chain_derives_what_its_official_sdk_derives() {
+    use causewaybay_core::chain::{self, ChainId, Seed};
+
+    let file = load("multichain.json");
+    let seed = Seed::new(text(&file, "mnemonic"), "").unwrap();
+
+    // Solana: base58 of the raw public key.
+    for (index, expected) in array(&file["solana"], "accounts").iter().enumerate() {
+        let derived = chain::chain(ChainId::Solana)
+            .derive(&seed, index as u32)
+            .unwrap();
+        assert_eq!(derived.address, text(expected, "address"), "solana {index}");
+        assert_eq!(
+            derived.derivation_path.as_deref(),
+            Some(text(expected, "path"))
+        );
+    }
+
+    // Cardano: bech32 of blake2b-224 hashes, from the *entropy* rather than
+    // the seed — the detail that most often goes wrong.
+    for (index, expected) in array(&file["cardano"], "accounts").iter().enumerate() {
+        let derived = chain::chain(ChainId::Cardano)
+            .derive(&seed, index as u32)
+            .unwrap();
+        assert_eq!(
+            derived.address,
+            text(expected, "base_addr_testnet"),
+            "cardano {index}"
+        );
+    }
+
+    // Midnight: bech32m of SHA-256 of the x-only BIP-340 public key.
+    for (index, expected) in array(&file["midnight"], "accounts").iter().enumerate() {
+        let derived = chain::chain(ChainId::Midnight)
+            .derive(&seed, index as u32)
+            .unwrap();
+        assert_eq!(
+            derived.extra["address_mainnet"].as_str().unwrap(),
+            text(expected, "addr_mainnet"),
+            "midnight {index}"
+        );
+        assert_eq!(
+            derived.public_key,
+            text(expected, "verifying_key_hex"),
+            "midnight {index}"
+        );
+    }
+}
+
+/// The BIP-39 half of the same file, which every chain starts from.
+#[test]
+fn the_shared_seed_matches_what_the_sdks_started_from() {
+    use causewaybay_core::chain::Seed;
+
+    let file = load("multichain.json");
+    let seed = Seed::new(text(&file, "mnemonic"), "").unwrap();
+    assert_eq!(
+        hex::encode(seed.bip39_seed()),
+        text(&file["bip39"], "seed_hex")
+    );
+    assert_eq!(
+        hex::encode(seed.entropy().unwrap()),
+        text(&file["bip39"], "entropy_hex")
+    );
 }
 
 // =========================================================== BIP-39

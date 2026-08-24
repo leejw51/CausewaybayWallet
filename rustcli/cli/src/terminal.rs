@@ -23,6 +23,13 @@ impl TerminalHost {
 }
 
 impl Host for TerminalHost {
+    /// Slow work narrates itself on stderr, the way test-wallet3 does it:
+    /// stdout stays the single machine-readable channel, and a Midnight dust
+    /// sync that takes minutes stops looking like a hang.
+    fn progress(&self, message: &str) {
+        eprintln!("  {message}");
+    }
+
     fn read_input(&self, what: &str) -> Result<String> {
         let mut buffer = String::new();
         std::io::stdin().read_to_string(&mut buffer)?;

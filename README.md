@@ -1,9 +1,12 @@
 # Causewaybay Wallet
 
-An educational Cronos EVM wallet — testnet and mainnet — with a command line
-interface and a terminal UI, implemented twice: once in Rust, once in Python.
-Both write the same append-only JSONL store, so either can drive a wallet the
-other created.
+An educational multi-chain wallet — Cronos EVM, Solana, Cardano and Midnight —
+with a command line interface and a terminal UI, implemented twice: once in
+Rust, once in Python. Both write the same append-only JSONL store, so either can
+drive a wallet the other created.
+
+The Rust front end supports all four chains. The Python one supports Cronos EVM;
+it reads a store containing the others' accounts and leaves them alone.
 
 A third front end, in Lua, calls the Rust core through a C ABI rather than
 reimplementing it — the same wallet reached differently, and the module a
@@ -27,6 +30,11 @@ Then, with any of them:
 rustcli/target/debug/cwbwallet account new --label main
 rustcli/target/debug/cwbwallet balance
 
+# one mnemonic, an address on every chain
+rustcli/target/debug/cwbwallet account new --every-chain --label main
+rustcli/target/debug/cwbwallet balance --all
+rustcli/target/debug/cwbwallet --chain solana balance
+
 # Python
 pythoncli/.venv/bin/python -m causewaybay account new --label main
 pythoncli/.venv/bin/python -m causewaybay balance
@@ -36,6 +44,57 @@ luacli/bin/cwbwallet-lua account new --label main
 luacli/bin/cwbwallet-lua balance
 luacli/bin/cwbwallet-lua interactive   # a menu instead of flags
 ```
+
+## The chains
+
+| chain | networks | curve and derivation | address |
+| --- | --- | --- | --- |
+| `evm` | Cronos testnet, mainnet | secp256k1, BIP-32 · `m/44'/60'/0'/0/i` | EIP-55 hex |
+| `solana` | devnet, testnet, mainnet | ed25519, SLIP-0010 hardened-only · `m/44'/501'/i'/0'` | base58 of the public key |
+| `cardano` | preprod, preview, mainnet | extended ed25519, Icarus + BIP32-Ed25519 · `m/1852'/1815'/0'/0/i` | bech32 of blake2b-224 hashes |
+| `midnight` | preview, devnet | secp256k1 → BIP-340 Schnorr, BIP-32 · `m/44'/2400'/0'/0/i` | bech32m of SHA-256(x-only pubkey) |
+
+Every network belongs to one chain, so naming a network settles the chain:
+`-n solana-devnet` and `--chain solana` reach the same place. `--chain` alone
+uses whichever of that chain's networks the wallet was last on.
+
+A bare network name that several chains share — `devnet` is Solana's *and*
+Midnight's — is refused rather than guessed, because guessing sends funds to the
+wrong chain. `testnet` and `mainnet` are the exceptions: they meant Cronos
+before the wallet had other chains, and still do.
+
+Three things worth knowing, because each otherwise produces a plausible, wrong,
+unfunded address rather than an error:
+
+* **Cardano hashes the mnemonic's entropy, not its seed**, and passes the
+  passphrase as the PBKDF2 password with the entropy as the salt. Backwards, and
+  what every Cardano wallet does.
+* **Solana's derivation is hardened-only.** `m/44'/501'/0'/0` — one apostrophe
+  short — is refused rather than silently hardened.
+* **BIP-340 negates about half of all secret keys**, so Midnight stores the
+  scalar BIP-32 derived rather than the one the signing key reports.
+
+Each chain's derivation, addresses and transaction encoding are checked against
+that chain's own SDK, through the vectors in `testvectors/multichain.json`.
+
+### Midnight fees
+
+Midnight moves NIGHT and pays its fees in DUST, and spending DUST normally needs
+a zero-knowledge proof. There is one exception, and the wallet takes it when it
+can: NIGHT that was never registered for DUST generation accrues an implicit fee
+allowance, and a transfer spending it can pay from that allowance with
+signatures alone.
+
+That registration is permanent for the address, so every later send — including
+one spending the change from the first — takes the other path: replay the dust
+ledger, generate a real proof locally (the parameters, ~4 MB, are fetched once
+and cached), and pay from a proved DUST spend. It works, and it takes minutes
+rather than milliseconds. `send --dry-run` shows which path a transfer would
+take, and its fee, before committing to it.
+
+The proving is for the *fee*. NIGHT is Midnight's unshielded token, so amounts,
+sender and recipient are all public; shielded Zswap transfers are not
+implemented.
 
 ## Packaging
 
@@ -163,9 +222,11 @@ The signing secrets the release needs: `MACOS_CERTIFICATE_P12_BASE64`,
 ## What it does
 
 **Accounts** — a wallet holds one BIP-39 mnemonic and many addresses derived
-from it, so `account new` walks the sequence 0, 1, 2, 3, … `--new-seed` starts a
-separate mnemonic when you want one. Import a phrase or a raw private key, label
-accounts, and switch between them.
+from it, so `account new` walks the sequence 0, 1, 2, 3, … on the chain in play.
+`--every-chain` derives the same mnemonic on all four at once; `--new-seed`
+starts a separate mnemonic when you want one. Import a phrase or a raw private
+key in the chain's own format, label accounts, and switch between them. Index
+sequences are per chain, so a new Solana address does not push Cardano's along.
 
 **Recall** — every mnemonic and private key the wallet has used is remembered, so
 a returning user picks from a list instead of retyping a phrase:
@@ -180,22 +241,50 @@ cwbwallet account import-recent 1 --label restored
 Previews identify an entry without revealing it; the secret itself needs an
 explicit `--secret`.
 
-**Chain** — balances, nonces, gas prices, chain info, native transfers, ERC-20
-metadata/balances/transfers, transaction lookup, and a local history of
-everything this wallet has sent.
+**Chain** — balances (`balance --all` reads every chain at once, concurrently),
+nonces, fee quotes, chain info, native transfers, a Solana faucet, transaction
+lookup, and a local history of everything this wallet has sent. ERC-20
+metadata/balances/transfers on EVM. `send --dry-run` builds and signs a transfer
+and shows exactly what would go out without broadcasting it — which is the only
+way to see a Midnight fee, or a Cardano coin selection, before committing.
 
-**Crypto** — EIP-191 message signing and verification, keccak256, EIP-55
-checksumming, and wei conversions that never touch floating point.
+**Crypto** — message signing and verification in each chain's own scheme
+(EIP-191 on EVM, ed25519 on Solana and Cardano, BIP-340 Schnorr on Midnight),
+keccak256, EIP-55 checksumming, and unit conversions that never touch floating
+point.
 
 **Export** — write the wallet list as JSONL, CSV, aligned text or a Markdown
-table, from the CLI (`account list --format md -o wallets.md`) or the TUI. Every
-format carries the address and both public key encodings (33- and 64-byte);
-`--secret` adds the private key and mnemonic and writes the file owner-only.
+table, from the CLI (`account list --format md -o wallets.md`) or the TUI. The
+list is flattened wallet by wallet, chain by chain, network by network, and each
+row names itself accordingly — `account0-cronos-testnet`,
+`account0-cronos-mainnet`, `account0-solana`, `account0-cardano`,
+`account0-midnight`, then index 1's. A chain whose address carries the network
+(Cardano, Midnight) renders the right address for each row rather than repeating
+one. Every format carries the address and both public key encodings (33- and
+64-byte); `--secret` adds the private key and mnemonic and writes the file
+owner-only.
 
 **Two front ends** — a scriptable CLI and a full-screen TUI (`cwbwallet tui`)
-built around a visible command list, so nothing has to be memorised: `Tab` moves
-between panes, `Enter` runs the highlighted command, `?` shows the full
-reference, and every command keeps a single-key shortcut.
+built around a visible command list, so nothing has to be memorised: every row
+leads with its key, `Tab` moves between panes, `↑↓` picks a wallet and `←→` the
+chain in view, `Enter` runs the highlighted command, and the bottom line always
+says what the keys under your fingers do in the pane you are in. `?` shows the
+full reference for when you want the rest.
+
+The TUI is chain-first. Every network is a row of its own in one flat list —
+`cronos testnet`, `cronos mainnet`, `solana devnet`, … — so going anywhere is one
+press from anywhere, and the rows never move. Each wears its chain's colour, a ●
+marks the network in use, and `←→` steps between chains without leaving the
+wallet list. The wallet list is one row per wallet — `index 0`,
+`index 1` — and the four accounts of the highlighted one are laid out in the
+detail pane beside it, each named for the wallet and the chain it belongs to
+(`account0-evm`, `account0-solana`, …), with the chain in view marked. Choosing
+a chain re-points balance, send and the rest at that chain's account without the
+list moving; a row says nothing but its index unless the wallet is missing a
+chain, and the header tallies what is held on each — so a wallet spread over
+four chains never looks like a wallet that lost three of them. Anything that
+waits on a node — a balance, a transfer being prepared — runs on a thread with a
+clock in the status line and Esc to stop waiting, so the screen never freezes.
 
 **Embeddable** — the Rust wallet is also a shared library with a C ABI, so a
 program in another language can hold the whole thing without shelling out to a
@@ -215,7 +304,10 @@ Every command takes `--json` and answers with one line:
 
 ```console
 $ cwbwallet --json balance
-{"data":{"address":"0x9858…","balance":"12.5","balance_wei":"12500000000000000000","network":"cronos-testnet","symbol":"TCRO"},"ok":true}
+{"data":{"address":"0x9858…","balance":"12.5","balance_wei":"12500000000000000000","chain":"evm","network":"cronos-testnet","symbol":"TCRO"},"ok":true}
+
+$ cwbwallet --json --chain solana balance
+{"data":{"address":"HAgk14Jp…","balance":"5","balance_raw":"5000000000","chain":"solana","network":"solana-devnet","symbol":"SOL"},"ok":true}
 
 $ cwbwallet --json account show ghost; echo "exit=$?"
 {"error":{"code":"account_not_found","message":"no account matching 'ghost'"},"ok":false}
@@ -231,13 +323,29 @@ accident.
 
 ## Networks
 
-| key | chain id | symbol | RPC | explorer |
-| --- | -------- | ------ | --- | -------- |
-| `cronos-testnet` (default) | 338 | TCRO | `https://evm-t3.cronos.org` | [explorer](https://explorer.cronos.org/testnet) |
-| `cronos-mainnet` | 25 | CRO | `https://evm.cronos.org` | [explorer](https://explorer.cronos.org) |
+`cwbwallet network list` prints them grouped by chain; `cwbwallet chains` prints
+what each chain can do. The default is `cronos-testnet`.
+
+| key | chain | chain id | symbol | endpoint |
+| --- | ----- | -------- | ------ | -------- |
+| `cronos-testnet` (default) | evm | 338 | TCRO | `https://evm-t3.cronos.org` |
+| `cronos-mainnet` | evm | 25 | CRO | `https://evm.cronos.org` |
+| `solana-devnet` | solana | — | SOL | `https://api.devnet.solana.com` |
+| `solana-testnet` | solana | — | SOL | `https://api.testnet.solana.com` |
+| `solana-mainnet` | solana | — | SOL | `https://api.mainnet-beta.solana.com` |
+| `cardano-preprod` | cardano | — | tADA | `https://preprod.koios.rest/api/v1` |
+| `cardano-preview` | cardano | — | tADA | `https://preview.koios.rest/api/v1` |
+| `cardano-mainnet` | cardano | — | ADA | `https://api.koios.rest/api/v1` |
+| `midnight-preview` | midnight | — | NIGHT | `https://indexer.preview.midnight.network/api/v4/graphql` |
+| `midnight-devnet` | midnight | — | NIGHT | `https://indexer.devnet.midnight.network/api/v4/graphql` |
+
+Only EVM networks have a chain id — it is the EIP-155 replay-protection number,
+omitted rather than faked for the rest.
 
 Override an endpoint with `cwbwallet network set-rpc testnet <url>` or the
-`CAUSEWAYBAY_RPC_CRONOS_TESTNET` environment variable.
+`CAUSEWAYBAY_RPC_<NETWORK>` environment variable. Midnight reads from an indexer
+and submits to a different service, its node RPC; that half is overridden with
+`CAUSEWAYBAY_SUBMIT_MIDNIGHT_PREVIEW` or the `submit.<network>` config key.
 
 ## Where state lives
 

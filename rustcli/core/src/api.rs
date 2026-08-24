@@ -91,9 +91,20 @@ pub fn describe() -> String {
             "codes": crate::error::Code::ALL.iter().map(|c| c.as_str()).collect::<Vec<_>>(),
             "networks": crate::network::ALL.iter().map(|n| json!({
                 "key": n.key,
+                "chain": n.chain.as_str(),
                 "name": n.name,
                 "chain_id": n.chain_id,
                 "symbol": n.symbol,
+                "decimals": n.decimals,
+            })).collect::<Vec<_>>(),
+            // So a host can offer the chains this build actually has rather
+            // than keeping its own list, which is a list that goes stale.
+            "chains": crate::chain::registry().iter().map(|c| json!({
+                "chain": c.id().as_str(),
+                "name": c.name(),
+                "derivation_path": c.derivation_path(0),
+                "networks": c.networks().iter().map(|n| n.key).collect::<Vec<_>>(),
+                "capabilities": c.capabilities(),
             })).collect::<Vec<_>>(),
         },
     })
@@ -375,6 +386,59 @@ mod tests {
             Code::ALL.len()
         );
         assert!(!described["data"]["networks"].as_array().unwrap().is_empty());
+
+        // Every chain is named, with the networks and capabilities a host
+        // would otherwise have to hardcode.
+        let chains = described["data"]["chains"].as_array().unwrap();
+        assert_eq!(chains.len(), crate::chain::ChainId::ALL.len());
+        for chain in chains {
+            assert!(!chain["networks"].as_array().unwrap().is_empty());
+            assert!(chain["capabilities"]["faucet"].is_boolean());
+        }
+        // And every network says which chain it belongs to, so a host can
+        // group them the way the wallet does.
+        for network in described["data"]["networks"].as_array().unwrap() {
+            assert!(network["chain"].is_string(), "{network}");
+        }
+    }
+
+    #[test]
+    fn a_request_can_name_a_chain_and_argv_still_wins() {
+        let dir = tempfile::tempdir().unwrap();
+        // The request's chain is a default …
+        let request = json!({
+            "argv": ["network", "current"],
+            "home": home(&dir),
+            "chain": "solana",
+        })
+        .to_string();
+        let envelope: Value = serde_json::from_str(&execute_json(&request)).unwrap();
+        assert_eq!(envelope["ok"], true, "{envelope}");
+        assert_eq!(envelope["data"]["chain"], "solana");
+
+        // … and a flag inside argv outranks it, like every other default.
+        let overridden = json!({
+            "argv": ["--chain", "cardano", "network", "current"],
+            "home": home(&dir),
+            "chain": "solana",
+        })
+        .to_string();
+        let envelope: Value = serde_json::from_str(&execute_json(&overridden)).unwrap();
+        assert_eq!(envelope["data"]["chain"], "cardano");
+    }
+
+    #[test]
+    fn a_chain_the_build_does_not_have_is_a_usage_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let request =
+            json!({"argv": ["info"], "home": home(&dir), "chain": "dogecoin"}).to_string();
+        let envelope: Value = serde_json::from_str(&execute_json(&request)).unwrap();
+        assert_eq!(envelope["ok"], false);
+        assert_eq!(envelope["error"]["code"], "usage");
+        assert!(envelope["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("midnight"));
     }
 
     #[test]

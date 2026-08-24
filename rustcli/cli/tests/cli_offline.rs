@@ -173,8 +173,8 @@ fn labels_must_be_unique() {
 #[test]
 fn labels_are_auto_assigned_when_omitted() {
     let wallet = Wallet::new();
-    assert_eq!(wallet.json(&["account", "new"])["label"], "account-1");
-    assert_eq!(wallet.json(&["account", "new"])["label"], "account-2");
+    assert_eq!(wallet.json(&["account", "new"])["label"], "account0-evm");
+    assert_eq!(wallet.json(&["account", "new"])["label"], "account1-evm");
 }
 
 #[test]
@@ -340,7 +340,22 @@ fn networks_can_be_listed_and_switched() {
         .iter()
         .map(|n| n["key"].as_str().unwrap())
         .collect();
-    assert_eq!(keys, ["cronos-testnet", "cronos-mainnet"]);
+    // Every chain's networks, grouped, each chain's default first.
+    assert_eq!(
+        keys,
+        [
+            "cronos-testnet",
+            "cronos-mainnet",
+            "solana-devnet",
+            "solana-testnet",
+            "solana-mainnet",
+            "cardano-preprod",
+            "cardano-preview",
+            "cardano-mainnet",
+            "midnight-preview",
+            "midnight-devnet",
+        ]
+    );
 
     assert_eq!(wallet.json(&["network", "current"])["chain_id"], 338);
     wallet.json(&["network", "use", "mainnet"]);
@@ -1106,15 +1121,18 @@ fn each_format_has_the_shape_its_readers_expect() {
     let mut lines = csv["content"].as_str().unwrap().lines();
     assert_eq!(
         lines.next().unwrap(),
-        "position,label,address,source,address_index,seed,derivation_path,created_at,\
-         active,public_key_compressed,public_key"
+        "position,name,address,network,chain,label,source,address_index,seed,\
+         derivation_path,created_at,active,public_key_compressed,public_key"
             .replace(char::is_whitespace, "")
     );
-    assert_eq!(lines.next().unwrap().split(',').count(), 11);
+    assert_eq!(lines.next().unwrap().split(',').count(), 14);
 
     let markdown = wallet.json(&["account", "list", "--format", "md"]);
     let mut md_lines = markdown["content"].as_str().unwrap().lines();
-    assert!(md_lines.next().unwrap().starts_with("| position | label |"));
+    assert!(md_lines
+        .next()
+        .unwrap()
+        .starts_with("| position | name | address | network |"));
     assert!(md_lines.next().unwrap().starts_with("| --- |"));
 
     let txt = wallet.json(&["account", "list", "--format", "txt"]);
@@ -1149,7 +1167,7 @@ fn the_wallet_list_can_be_written_to_a_file() {
     assert!(result.get("content").is_none(), "the file is the output");
 
     let written = std::fs::read_to_string(&target).unwrap();
-    assert!(written.starts_with("position,label,address,"));
+    assert!(written.starts_with("position,name,address,network,"));
     assert!(written.contains(TEST_ADDRESS_0));
 }
 
@@ -1273,29 +1291,40 @@ fn the_address_index_is_per_mnemonic_and_the_position_is_per_list() {
     wallet.json(&["account", "new", "--new-seed", "-l", "separate"]);
 
     let listed = wallet.json(&["account", "list", "--format", "jsonl"]);
-    let rows: Vec<Value> = listed["content"]
+    let all: Vec<Value> = listed["content"]
         .as_str()
         .unwrap()
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
 
-    // The list position counts 1, 2, 3 — what a reader expects of a list.
-    assert_eq!(rows[0]["position"], 1);
-    assert_eq!(rows[1]["position"], 2);
-    assert_eq!(rows[2]["position"], 3);
+    // The list position counts every row, networks included.
+    for (offset, row) in all.iter().enumerate() {
+        assert_eq!(row["position"], offset + 1);
+    }
 
-    // The address index is BIP-44's, scoped to one mnemonic, so it restarts.
+    // One row per account, taken from the network they all have in common.
+    let rows: Vec<&Value> = all
+        .iter()
+        .filter(|row| row["network"] == "cronos-testnet")
+        .collect();
+    assert_eq!(rows.len(), 3);
+
+    // Wallet by wallet: the two index 0 wallets, then index 1. The address
+    // index is BIP-44's, scoped to one mnemonic, so it restarts per phrase.
+    assert_eq!(rows[0]["label"], "first");
     assert_eq!(rows[0]["address_index"], 0);
-    assert_eq!(rows[1]["address_index"], 1);
+    assert_eq!(rows[1]["label"], "separate");
     assert_eq!(
-        rows[2]["address_index"], 0,
+        rows[1]["address_index"], 0,
         "a new phrase starts again at 0"
     );
+    assert_eq!(rows[2]["label"], "second");
+    assert_eq!(rows[2]["address_index"], 1);
 
-    // And the seed column shows why: the first two share one, the third does not.
-    assert_eq!(rows[0]["seed"], rows[1]["seed"]);
-    assert_ne!(rows[0]["seed"], rows[2]["seed"]);
+    // And the seed column shows why: the two from one phrase share it.
+    assert_eq!(rows[0]["seed"], rows[2]["seed"]);
+    assert_ne!(rows[0]["seed"], rows[1]["seed"]);
 }
 
 #[test]
@@ -1480,7 +1509,21 @@ fn the_network_table_drives_what_can_be_selected() {
         .iter()
         .map(|n| n["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names, ["Cronos EVM Testnet", "Cronos EVM Mainnet"]);
+    assert_eq!(
+        names,
+        [
+            "Cronos EVM Testnet",
+            "Cronos EVM Mainnet",
+            "Solana Devnet",
+            "Solana Testnet",
+            "Solana Mainnet Beta",
+            "Cardano Preprod",
+            "Cardano Preview",
+            "Cardano Mainnet",
+            "Midnight Preview",
+            "Midnight Devnet",
+        ]
+    );
 
     // Every listed network can actually be switched to by key.
     for entry in networks.as_array().unwrap() {
