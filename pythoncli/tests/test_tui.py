@@ -1,7 +1,7 @@
 """The Textual TUI, driven through Textual's test pilot."""
 
 import pytest
-from constants import TEST_ADDRESS_0, TEST_MNEMONIC, TEST_PRIVATE_KEY
+from constants import TEST_ADDRESS_0, TEST_ADDRESS_1, TEST_MNEMONIC, TEST_PRIVATE_KEY
 
 from causewaybay import store
 from causewaybay.app import App
@@ -217,7 +217,7 @@ async def test_sending_walks_through_recipient_amount_and_confirmation(tui, node
         await type_into_prompt(pilot, TEST_MNEMONIC)
 
         await pilot.press("s")
-        await type_into_prompt(pilot, TEST_ADDRESS_0)
+        await type_into_prompt(pilot, TEST_ADDRESS_1)
         await type_into_prompt(pilot, "0.5")
         await type_into_prompt(pilot, "yes")
 
@@ -245,7 +245,7 @@ async def test_sending_can_be_declined_at_the_confirmation(tui, node, home):
         await pilot.press("m")
         await type_into_prompt(pilot, TEST_MNEMONIC)
         await pilot.press("s")
-        await type_into_prompt(pilot, TEST_ADDRESS_0)
+        await type_into_prompt(pilot, TEST_ADDRESS_1)
         await type_into_prompt(pilot, "0.5")
         await type_into_prompt(pilot, "no")
         assert pilot.app.status_text == "Cancelled"

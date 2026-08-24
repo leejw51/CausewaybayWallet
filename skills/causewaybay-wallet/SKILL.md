@@ -57,7 +57,9 @@ Exit codes: `0` success, `1` handled error, `2` bad command line. Branch on
    `-m -` / `-k -` (read from stdin) or the `CAUSEWAYBAY_MNEMONIC` /
    `CAUSEWAYBAY_PRIVATE_KEY` environment variables.
 5. **Check before you send.** Run `balance` and `chain-info` first; the wallet
-   also refuses a transfer it can see the balance cannot cover.
+   also refuses a transfer it can see the balance cannot cover, and refuses a
+   recipient equal to the sending account (code `usage`) — that moves nothing
+   and still pays the gas.
 
 ## Accounts
 

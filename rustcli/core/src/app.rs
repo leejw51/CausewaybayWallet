@@ -910,6 +910,17 @@ impl App {
         let account = self.pick_account(args.account.as_deref())?;
         let keypair = Keypair::from_hex(&account.private_key)?;
         let to = wallet::parse_address(&args.to)?;
+        // A transfer to the account it leaves from moves nothing and costs the
+        // gas anyway. It is almost always a paste into the wrong field — the
+        // sender's own address is the one most likely to be on the clipboard —
+        // so it is refused here, before a node is asked anything.
+        if to == keypair.address() {
+            return Err(error::usage(format!(
+                "the recipient is the sending account ({}); a transfer to itself \
+                 moves nothing and still pays the gas",
+                to.to_checksum(None)
+            )));
+        }
         let value = units::parse_ether(&args.amount)?;
         let data = match &args.data {
             Some(hex_data) => wallet::parse_hex(hex_data)?,
@@ -1306,6 +1317,15 @@ impl App {
                 let keypair = Keypair::from_hex(&account.private_key)?;
                 let token = wallet::parse_address(&token)?;
                 let recipient = wallet::parse_address(&to)?;
+                // Same rule as a native transfer: sending a token to the account
+                // holding it changes no balance and still burns the gas.
+                if recipient == keypair.address() {
+                    return Err(error::usage(format!(
+                        "the recipient is the sending account ({}); a transfer to \
+                         itself moves nothing and still pays the gas",
+                        recipient.to_checksum(None)
+                    )));
+                }
 
                 let rpc = self.rpc()?;
                 let decimals = erc20::decode_u8(

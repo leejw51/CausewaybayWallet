@@ -672,6 +672,15 @@ class App:
         sender = self.pick_account(account)
         keypair = wallet.Keypair.from_private_key(sender.private_key)
         recipient = wallet.parse_address(to)
+        # A transfer to the account it leaves from moves nothing and costs the
+        # gas anyway. It is almost always a paste into the wrong field — the
+        # sender's own address is the one most likely to be on the clipboard —
+        # so it is refused here, before a node is asked anything.
+        if recipient.lower() == keypair.address.lower():
+            raise errors.usage(
+                f"the recipient is the sending account ({recipient}); a transfer to "
+                "itself moves nothing and still pays the gas"
+            )
         value = units.parse_ether(amount)
         payload = wallet.parse_hex(data) if data else b""
 
@@ -984,6 +993,13 @@ class App:
         keypair = wallet.Keypair.from_private_key(sender.private_key)
         contract = wallet.parse_address(token)
         recipient = wallet.parse_address(to)
+        # Same rule as a native transfer: sending a token to the account holding
+        # it changes no balance and still burns the gas.
+        if recipient.lower() == keypair.address.lower():
+            raise errors.usage(
+                f"the recipient is the sending account ({recipient}); a transfer to "
+                "itself moves nothing and still pays the gas"
+            )
 
         client = self.rpc()
         decimals = erc20.decode_u8(

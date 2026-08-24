@@ -167,6 +167,11 @@ protection: `nonce`, `to`, `value`, `gas` (default 21000), `gasPrice` (from
 ERC-20 transfers call `transfer(address,uint256)` (`0xa9059cbb`) with a gas limit
 from `eth_estimateGas` plus a 25 % headroom, falling back to 100000.
 
+Both refuse a recipient equal to the sending account with code `usage`, before
+any node is asked: the transfer would move nothing and still pay the gas, and
+the sender's own address is the one most likely to have been pasted by mistake.
+The comparison is case-insensitive, because EIP-55 is a property of the text.
+
 ## 7. Message signing
 
 EIP-191 personal messages: `keccak256("\x19Ethereum Signed Message:\n" + len + msg)`,

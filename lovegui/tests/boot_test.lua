@@ -222,6 +222,18 @@ t.suite("boot / skipping", function()
     t.equal(boot:complete(), true, "but shortly after")
   end)
 
+  t.case("the tube is not lit through the black or the flash", function()
+    -- The window-mode button is drawn over this screen and gated on this: it
+    -- must not appear during either, because both are a machine coming up and
+    -- a button floating in the flash says they are a picture of one.
+    local held = Boot.new(support.wallet(), nil, 1.0)
+    t.equal(held:lit(), false, "not during the black hold")
+    held:update(1.1)
+    t.equal(held:lit(), false, "nor during the power-on flash")
+    held:update(0.6)
+    t.equal(held:lit(), true, "lit once the screen is a screen")
+  end)
+
   t.case("a skipped boot shows the same lines as a watched one", function()
     -- The shortcut must not be a different screen. Somebody who skips has
     -- still been told which network they are on.

@@ -3,7 +3,7 @@
 import json
 
 import pytest
-from constants import TEST_ADDRESS_0, TEST_ADDRESS_1, TEST_MNEMONIC
+from constants import TEST_ADDRESS_0, TEST_ADDRESS_1, TEST_ADDRESS_2, TEST_MNEMONIC
 
 from causewaybay import cli
 
@@ -179,6 +179,37 @@ def test_send_refuses_when_the_balance_is_too_low(funded, sending):
     assert sending.requests_for("eth_sendRawTransaction") == []
 
 
+def test_send_refuses_a_transfer_to_the_sending_account(funded, sending):
+    """Paying yourself moves nothing and still pays the gas — refused offline."""
+    assert error_code(funded, "--yes", "send", "--to", TEST_ADDRESS_0, "--amount", "1") == "usage"
+    # Spelled in lower case it is the same account, and must be refused the same.
+    assert (
+        error_code(funded, "--yes", "send", "--to", TEST_ADDRESS_0.lower(), "--amount", "1")
+        == "usage"
+    )
+    assert sending.requests_for("eth_sendRawTransaction") == []
+    assert sending.requests_for("eth_getTransactionCount") == []
+
+
+def test_erc20_send_refuses_a_transfer_to_the_sending_account(funded, node):
+    assert (
+        error_code(
+            funded,
+            "--yes",
+            "erc20",
+            "send",
+            "-t",
+            TEST_ADDRESS_1,
+            "--to",
+            TEST_ADDRESS_0,
+            "--amount",
+            "1",
+        )
+        == "usage"
+    )
+    assert node.requests_for("eth_sendRawTransaction") == []
+
+
 def test_send_accounts_for_gas_when_checking_the_balance(funded, sending):
     # Exactly 1 ether: enough for the transfer, not enough for transfer + gas.
     sending.on("eth_getBalance", "0xde0b6b3a7640000")
@@ -343,18 +374,18 @@ def test_erc20_send_encodes_a_transfer(funded, node):
         "-t",
         TEST_ADDRESS_1,
         "--to",
-        TEST_ADDRESS_0,
+        TEST_ADDRESS_2,
         "--amount",
         "1.5",
     )
     assert sent["hash"] == "0xtokenhash"
     assert sent["token"] == TEST_ADDRESS_1
-    assert sent["to"] == TEST_ADDRESS_0
+    assert sent["to"] == TEST_ADDRESS_2
     assert sent["value_wei"] == "1500000000000000000"
     # The calldata is a transfer() call carrying the recipient and the amount.
     raw = node.requests_for("eth_sendRawTransaction")[0]["params"][0]
     assert "a9059cbb" in raw
-    assert TEST_ADDRESS_0[2:].lower() in raw
+    assert TEST_ADDRESS_2[2:].lower() in raw
 
 
 def test_erc20_send_refuses_when_the_token_balance_is_short(funded, node):
@@ -368,7 +399,7 @@ def test_erc20_send_refuses_when_the_token_balance_is_short(funded, node):
             "-t",
             TEST_ADDRESS_1,
             "--to",
-            TEST_ADDRESS_0,
+            TEST_ADDRESS_2,
             "--amount",
             "1",
         )
@@ -380,7 +411,7 @@ def test_erc20_send_needs_confirmation(funded, node):
     node.on_sequence("eth_call", [word(18), word(5 * 10**18)])
     assert (
         error_code(
-            funded, "erc20", "send", "-t", TEST_ADDRESS_1, "--to", TEST_ADDRESS_0, "--amount", "1"
+            funded, "erc20", "send", "-t", TEST_ADDRESS_1, "--to", TEST_ADDRESS_2, "--amount", "1"
         )
         == "confirmation_required"
     )
