@@ -129,12 +129,20 @@ package: wheel ## Build the standalone binary into $(DIST_DIR)
 	@"$(SIGN)" "$(DIST_DIR)/$(NAME)"
 	@echo "  built $(DIST_DIR)/$(NAME) ($$(du -h "$(DIST_DIR)/$(NAME)" | cut -f1 | tr -d ' '))"
 
+# The wheel is tagged `py3-none-any` while carrying a platform-specific library,
+# which would be a lie on PyPI. It never goes there: it is built here and handed
+# straight to PyApp on the machine that built it. A copy installed on another
+# platform still works — `ffi.py` tries the bundled library, fails to load it,
+# and falls through to the search path — but it is not a wheel to publish.
 .PHONY: wheel
 wheel: install release-lib ## Build the wheel PyApp embeds
 	@echo "==> wheel causewaybay-wallet $(VERSION)"
-	@# Rebuilt from scratch: a stale wheel of an older version would still match
-	@# the glob above and get embedded in preference to nothing.
-	@rm -rf "$(WHEEL_DIR)"
+	@# Rebuilt from scratch, both halves of it: a stale wheel of an older
+	@# version would still match the glob above and get embedded in preference
+	@# to nothing, and setuptools' own `build/lib` is a copy of the package that
+	@# outlives the files it was copied from — a module deleted from the source
+	@# tree stayed in the wheel until this line existed.
+	@rm -rf "$(WHEEL_DIR)" "$(BUILD_DIR)/lib" "$(BUILD_DIR)/bdist"* *.egg-info
 	@$(PYTHON) -m pip wheel --no-deps --quiet --wheel-dir "$(WHEEL_DIR)" .
 
 .PHONY: release-lib
