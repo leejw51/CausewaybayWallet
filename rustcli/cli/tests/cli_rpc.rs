@@ -319,6 +319,53 @@ fn send_rejects_a_bad_recipient_or_amount_before_touching_the_node() {
 }
 
 #[test]
+fn send_refuses_a_transfer_to_the_sending_account() {
+    let node = sending_node();
+    let wallet = funded(&node);
+    // The active account is TEST_ADDRESS_0; paying itself moves nothing and
+    // would still pay the gas, so it is refused before the node is asked.
+    assert_eq!(
+        wallet.json_error(&["--yes", "send", "--to", TEST_ADDRESS_0, "--amount", "1"]),
+        "usage"
+    );
+    // Spelled in lower case it is the same account, and must be refused the same.
+    assert_eq!(
+        wallet.json_error(&[
+            "--yes",
+            "send",
+            "--to",
+            &TEST_ADDRESS_0.to_lowercase(),
+            "--amount",
+            "1"
+        ]),
+        "usage"
+    );
+    assert!(node.requests_for("eth_sendRawTransaction").is_empty());
+    assert!(node.requests_for("eth_getTransactionCount").is_empty());
+}
+
+#[test]
+fn erc20_send_refuses_a_transfer_to_the_sending_account() {
+    let node = MockRpc::start().with_defaults();
+    let wallet = funded(&node);
+    assert_eq!(
+        wallet.json_error(&[
+            "--yes",
+            "erc20",
+            "send",
+            "--token",
+            TEST_ADDRESS_1,
+            "--to",
+            TEST_ADDRESS_0,
+            "--amount",
+            "1"
+        ]),
+        "usage"
+    );
+    assert!(node.requests_for("eth_sendRawTransaction").is_empty());
+}
+
+#[test]
 fn a_rejected_broadcast_surfaces_the_node_message() {
     let node = sending_node();
     node.on_error(
