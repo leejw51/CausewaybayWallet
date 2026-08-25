@@ -2,6 +2,7 @@
 
 pub mod client;
 pub mod keys;
+pub mod spl;
 pub mod tx;
 
 use std::sync::Arc;

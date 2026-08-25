@@ -308,6 +308,7 @@ impl App {
                 signature,
                 address,
             } => self.verify(&message, &signature, address.as_deref()),
+            Command::Token { command } => self.token_cmd(command),
             Command::Erc20 { command } => self.erc20(command),
             Command::Utils { command } => self.utils(command),
             Command::Chains => self.chains(),
@@ -1069,9 +1070,19 @@ impl App {
 
     fn network_cmd(&self, command: NetworkCommand) -> Result<CommandOutput> {
         match command {
-            NetworkCommand::List => {
+            NetworkCommand::List { filter, tags } => {
                 let current = self.network;
-                let data: Vec<Value> = network::ALL
+                if tags {
+                    return Ok(render_tag_list(
+                        &network::tags(),
+                        "network list",
+                        network::ALL.len(),
+                        "networks",
+                    ));
+                }
+                let query = filter.join(" ");
+                let rows = network::search(&query);
+                let data: Vec<Value> = rows
                     .iter()
                     .map(|n| {
                         json!({
@@ -1089,24 +1100,51 @@ impl App {
                             ),
                             "explorer": n.explorer,
                             "testnet": n.testnet,
+                            "tags": n.tags,
+                            "tokens": crate::token::for_network(n.key)
+                                .iter()
+                                .map(|t| t.key)
+                                .collect::<Vec<_>>(),
                             "current": n.key == current.key,
                         })
                     })
                     .collect();
 
                 // Grouped by chain, because that is how the table is laid out
-                // and how someone scanning it thinks.
+                // and how someone scanning it thinks. A chain with no
+                // surviving rows drops out entirely rather than printing a
+                // heading over nothing.
                 let mut lines = Vec::new();
                 for id in ChainId::ALL {
+                    let of_chain: Vec<&Network> = rows.iter().filter(|n| n.chain == id).collect();
+                    if of_chain.is_empty() {
+                        continue;
+                    }
                     lines.push(format!("{}:", chain::chain(id).name()));
-                    for n in network::ALL.iter().filter(|n| n.chain == id) {
+                    for n in of_chain {
                         lines.push(format!(
-                            "  {} {:<18} {}",
+                            "  {} {:<18} {:<22} {}",
                             if n.key == current.key { "*" } else { " " },
                             n.key,
-                            n.name
+                            n.name,
+                            n.tags.join(" ")
                         ));
                     }
+                }
+                if lines.is_empty() {
+                    lines.push(format!(
+                        "no network matches `{}` — `network list --tags` shows what \
+                         there is to search by",
+                        query.trim()
+                    ));
+                } else if !query.trim().is_empty() {
+                    lines.push(String::new());
+                    lines.push(format!(
+                        "{} of {} networks match `{}`",
+                        rows.len(),
+                        network::ALL.len(),
+                        query.trim()
+                    ));
                 }
                 Ok(CommandOutput::new(json!(data), lines.join("\n")))
             }
@@ -1607,11 +1645,20 @@ impl App {
     /// Read in the fee's own unit, which on Midnight is not the transfer's: a
     /// NIGHT transfer pays its fee in DUST.
     fn fee_ceiling(&self, flag: Option<&str>) -> Result<Option<u128>> {
-        let units = self.chain().fee_units(&self.network);
+        self.fee_ceiling_on(self.network, flag)
+    }
+
+    /// The same, for a network the wallet is not currently pointed at.
+    ///
+    /// A token transfer is prepared on the token's own network, and the
+    /// ceiling is a per-network setting — reading the wallet's current one
+    /// would hold a Solana transfer to a number stored for Cronos.
+    fn fee_ceiling_on(&self, network: Network, flag: Option<&str>) -> Result<Option<u128>> {
+        let units = chain::chain(network.chain).fee_units(&network);
         if let Some(ceiling) = flag {
             return Ok(Some(units.parse(ceiling)?));
         }
-        let Some(stored) = self.store.config_get(&self.network.max_fee_config_key())? else {
+        let Some(stored) = self.store.config_get(&network.max_fee_config_key())? else {
             return Ok(None);
         };
         let stored = stored.trim();
@@ -1623,7 +1670,7 @@ impl App {
         // built-in one is the safe reading of a setting nobody can read.
         // Parsed the same way it was written, so a hand-edited `2 DUST` in
         // `config.jsonl` reads as the two DUST it plainly says.
-        let Ok(parsed) = parse_fee_amount(stored, units, &self.network) else {
+        let Ok(parsed) = parse_fee_amount(stored, units, &network) else {
             return Ok(None);
         };
         Ok((parsed > 0).then_some(parsed))
@@ -1631,13 +1678,19 @@ impl App {
 
     /// Show a signed transfer without broadcasting it.
     fn render_dry_run(&self, plan: &SendPlan) -> CommandOutput {
-        let units = self.units();
-        // A chain may pay its fee in another token entirely.
-        let fee_units = plan.prepared.fee_unit.unwrap_or(units);
         let prepared = &plan.prepared;
+        // A transfer may move something other than the network's own token,
+        // and may pay its fee in a third thing again. Three units, none of
+        // which can stand in for another.
+        let units = prepared.amount_units();
+        let fee_units = prepared.fee_units();
         let mut rows: Vec<(String, String)> = vec![
-            ("Chain".into(), self.chain.as_str().to_string()),
-            ("Network".into(), self.network.name.to_string()),
+            // From the plan, not from the App: a token transfer is prepared on
+            // the token's own network, which is not always the one the wallet
+            // is pointed at. Naming the wallet's would describe a different
+            // transfer from the one that was signed.
+            ("Chain".into(), plan.network.chain.as_str().to_string()),
+            ("Network".into(), plan.network.name.to_string()),
             ("From".into(), prepared.from.clone()),
             ("To".into(), prepared.to.clone()),
             ("Amount".into(), units.format_with_symbol(prepared.amount)),
@@ -1645,13 +1698,17 @@ impl App {
             ("Id".into(), prepared.id.clone()),
             ("Signed bytes".into(), prepared.signed.len().to_string()),
         ];
+        if let Some(token) = prepared.token {
+            rows.insert(2, ("Token".into(), token.name.to_string()));
+        }
         if let Some(nonce) = prepared.nonce {
             rows.push(("Nonce".into(), nonce.to_string()));
         }
         let mut data = json!({
             "dry_run": true,
-            "chain": self.chain.as_str(),
-            "network": self.network.key,
+            "chain": plan.network.chain.as_str(),
+            "network": plan.network.key,
+            "token": prepared.token.map(|t| t.key),
             "from": prepared.from,
             "to": prepared.to,
             "amount": units.format(prepared.amount),
@@ -1699,7 +1756,10 @@ impl App {
             network,
             client,
         } = plan;
-        let units = network.units();
+        // The unit the amount is counted in, which for a token transfer is
+        // the token's and not the network's. Recording 25 USDC as "25" under
+        // a CRO heading is a history entry nobody can read back.
+        let units = prepared.amount_units();
 
         // Recorded before broadcasting, using the id computed locally: if the
         // node accepts the transaction and the reply is then lost to a
@@ -1720,7 +1780,7 @@ impl App {
             // where it does not — never the total under the price's name.
             gas_price_wei: prepared.fee_rate.unwrap_or(prepared.fee).to_string(),
             status: "submitting".into(),
-            token: None,
+            token: prepared.token.map(|t| t.id.to_string()),
             block_number: None,
             gas_used: None,
             created_at: store::now_rfc3339(),
@@ -2054,6 +2114,283 @@ impl App {
     }
 
     // =================================================================== erc20
+
+    // ================================================================== tokens
+
+    /// The token registry, and what a wallet does with a row of it.
+    ///
+    /// Every path here starts by resolving a name into a [`token::Token`],
+    /// which settles the chain, the network, the decimals and the on-chain id
+    /// at once. That is the whole reason the registry is flat: after this one
+    /// lookup there is nothing left to get wrong about *which* USDC.
+    fn token_cmd(&self, command: TokenCommand) -> Result<CommandOutput> {
+        use crate::token;
+        match command {
+            TokenCommand::List { filter, tags, here } => {
+                if tags {
+                    return Ok(render_tag_list(
+                        &token::tags(),
+                        "token list",
+                        token::ALL.len(),
+                        "tokens",
+                    ));
+                }
+                let query = filter.join(" ");
+                let mut rows = token::search(&query);
+                if here {
+                    rows.retain(|t| t.network == self.network.key);
+                }
+
+                let data: Vec<Value> = rows
+                    .iter()
+                    .map(|t| {
+                        json!({
+                            "key": t.key,
+                            "name": t.name,
+                            "symbol": t.symbol,
+                            "chain": t.chain.as_str(),
+                            "network": t.network,
+                            "standard": t.standard.as_str(),
+                            "decimals": t.decimals,
+                            "id": t.id,
+                            "tags": t.tags,
+                            "transferable": t.transferable(),
+                            "current": t.network == self.network.key,
+                        })
+                    })
+                    .collect();
+
+                // Grouped by network in table order, the way `network list`
+                // groups by chain — and with the flat name spelled out beside
+                // the key, since the name is what someone will type.
+                let mut lines = Vec::new();
+                let mut last = "";
+                for t in &rows {
+                    if t.network != last {
+                        lines.push(format!(
+                            "{}{}:",
+                            t.network,
+                            if t.network == self.network.key {
+                                " (current)"
+                            } else {
+                                ""
+                            }
+                        ));
+                        last = t.network;
+                    }
+                    // `read-only` is a tag so it can be searched for, but the
+                    // line already ends with it in words; printing both reads
+                    // like two different facts.
+                    let shown: Vec<&str> = t
+                        .tags
+                        .iter()
+                        .copied()
+                        .filter(|tag| *tag != "read-only")
+                        .collect();
+                    lines.push(format!(
+                        "  {:<22} {:<22} {:>2}dp  {}{}",
+                        t.key,
+                        t.name,
+                        t.decimals,
+                        shown.join(" "),
+                        if t.transferable() {
+                            ""
+                        } else {
+                            "  (read-only)"
+                        },
+                    ));
+                }
+                if lines.is_empty() {
+                    lines.push(format!(
+                        "no token matches `{}` — `token list --tags` shows what there \
+                         is to search by",
+                        query.trim()
+                    ));
+                } else if !query.trim().is_empty() || here {
+                    lines.push(String::new());
+                    lines.push(format!(
+                        "{} of {} tokens match",
+                        rows.len(),
+                        token::ALL.len()
+                    ));
+                }
+                Ok(CommandOutput::new(json!(data), lines.join("\n")))
+            }
+
+            TokenCommand::Info { token: name } => {
+                let t = self.find_token(&name)?;
+                let network = t.network();
+                let mut rows = vec![
+                    ("Token", t.name.to_string()),
+                    ("Key", t.key.to_string()),
+                    ("Symbol", t.symbol.to_string()),
+                    ("Network", format!("{} ({})", network.name, t.network)),
+                    ("Chain", t.chain.as_str().to_string()),
+                    ("Standard", t.standard.as_str().to_string()),
+                    (t.standard.id_label(), t.id.to_string()),
+                    ("Decimals", t.decimals.to_string()),
+                    ("Tags", t.tags.join(" ")),
+                ];
+                // Said plainly rather than left to be discovered by a send
+                // that fails: what a wallet cannot do is part of what it is.
+                rows.push((
+                    "Transfers",
+                    if t.transferable() {
+                        "yes".into()
+                    } else {
+                        "no — this wallet reads this asset but does not move it".into()
+                    },
+                ));
+                Ok(CommandOutput::new(
+                    json!({
+                        "key": t.key,
+                        "name": t.name,
+                        "symbol": t.symbol,
+                        "chain": t.chain.as_str(),
+                        "network": t.network,
+                        "network_name": network.name,
+                        "standard": t.standard.as_str(),
+                        "decimals": t.decimals,
+                        "id": t.id,
+                        "tags": t.tags,
+                        "transferable": t.transferable(),
+                        "explorer": network.address_url(t.id),
+                    }),
+                    output::table(&rows),
+                ))
+            }
+
+            TokenCommand::Balance {
+                token: name,
+                address,
+            } => {
+                let t = self.find_token(&name)?;
+                let network = t.network();
+                let owner = match address {
+                    Some(given) => {
+                        chain::chain(t.chain).check_address(&network, given.trim())?;
+                        given.trim().to_string()
+                    }
+                    // The active account *on that token's chain*, not whichever
+                    // account happens to be active: asking for a Solana USDC
+                    // balance with an EVM account selected should answer, not
+                    // complain.
+                    None => self.store.active_account_on(t.chain)?.address.clone(),
+                };
+                let client = self.client_for(t.chain, network)?;
+                let raw = runtime::block_on(client.token_balance(&t, &owner))??;
+                let units = t.units();
+                Ok(CommandOutput::new(
+                    json!({
+                        "token": t.key,
+                        "name": t.name,
+                        "symbol": t.symbol,
+                        "network": t.network,
+                        "chain": t.chain.as_str(),
+                        "address": owner,
+                        "balance": units.format(raw),
+                        "balance_raw": raw.to_string(),
+                        "decimals": t.decimals,
+                        "id": t.id,
+                    }),
+                    format!(
+                        "{} — {} on {}",
+                        units.format_with_symbol(raw),
+                        owner,
+                        t.network
+                    ),
+                ))
+            }
+
+            TokenCommand::Send {
+                token: name,
+                to,
+                amount,
+                max_fee,
+                wait,
+                dry_run,
+                account,
+            } => {
+                let t = self.find_token(&name)?;
+                if !t.transferable() {
+                    return Err(t.refuse_transfer());
+                }
+                let plan = self.plan_token_send(&t, &to, &amount, max_fee.as_deref(), account)?;
+                if dry_run {
+                    return Ok(self.render_dry_run(&plan));
+                }
+                self.confirm(&plan.prompt())?;
+                self.execute_send(plan, wait)
+            }
+        }
+    }
+
+    /// Resolve a token name, preferring the network in view.
+    ///
+    /// `-n cronos-mainnet token balance usdc` has already said which USDC it
+    /// means, so a bare symbol resolves there rather than being refused as
+    /// ambiguous. Only when the network in view holds no such token does the
+    /// whole table get searched — and then an ambiguous symbol is still
+    /// refused, by name, rather than guessed at.
+    fn find_token(&self, name: &str) -> Result<crate::token::Token> {
+        crate::token::find_on(self.network.key, name).or_else(|_| crate::token::find(name))
+    }
+
+    /// Plan a token transfer: the token path's counterpart to [`Self::plan_send`].
+    ///
+    /// Everything here is bound to the *token's* network rather than the
+    /// wallet's, without reopening the wallet on it. That distinction is not
+    /// tidiness: a second `App` means a second store, a second client stack
+    /// and a great deal of stack, and doing it inside a host thread with a
+    /// modest stack — the LÖVE GUI's worker is one — crashed the process
+    /// outright. Reading a balance on another network must cost a client, not
+    /// a wallet.
+    pub fn plan_token_send(
+        &self,
+        token: &crate::token::Token,
+        to: &str,
+        amount: &str,
+        max_fee: Option<&str>,
+        account: Option<String>,
+    ) -> Result<SendPlan> {
+        let network = token.network();
+        // The account on the *token's* chain. A named one from anywhere else
+        // is refused, because signing with it would produce an address in the
+        // wrong format for the chain the transfer is on.
+        let account = match account.as_deref() {
+            Some(selector) => {
+                let found = self.store.find_account(selector)?;
+                if found.chain != token.chain {
+                    return Err(error::usage(format!(
+                        "'{}' is on {}, and {} is on {}",
+                        found.label, found.chain, token.name, token.chain
+                    )));
+                }
+                found
+            }
+            None => self.store.active_account_on(token.chain)?,
+        };
+        chain::chain(token.chain).check_address(&network, to)?;
+
+        // Parsed with the *token's* decimals, which is the whole reason the
+        // registry states them: `25` of a 6-place token is 25_000_000, and
+        // the network's own 18 places would make it 25 × 10^18.
+        let mut request = TransferRequest::new(to.trim(), token.units().parse(amount)?);
+        request.max_fee = self.fee_ceiling_on(network, max_fee)?;
+
+        let client = self.client_for(token.chain, network)?;
+        let prepared = runtime::block_on(client.prepare_token_transfer(
+            token,
+            &account.private_key,
+            &request,
+        ))??;
+        Ok(SendPlan {
+            prepared,
+            account,
+            network,
+            client,
+        })
+    }
 
     fn erc20(&self, command: Erc20Command) -> Result<CommandOutput> {
         // ERC-20 is an EVM contract standard; the other chains have their own
@@ -2488,6 +2825,15 @@ impl App {
                 "chains": by_chain,
                 "network": self.network.key,
                 "chain_id": self.network.chain_id,
+                // The network's own token, and how many places it is quoted
+                // with. Distinct from `max_fee_symbol`, which is the token the
+                // *fee* is paid in — the same thing on three chains and not on
+                // Midnight, where a NIGHT transfer pays in DUST. A front end
+                // that used the fee's symbol to label a balance would be right
+                // three times out of four, which is the worst kind of wrong.
+                "symbol": self.network.symbol,
+                "decimals": self.network.decimals,
+                "tags": self.network.tags,
                 "max_fee": fee_units.format(ceiling),
                 "max_fee_raw": ceiling.to_string(),
                 "max_fee_symbol": fee_units.symbol,
@@ -2590,6 +2936,20 @@ fn parse_fee_amount(text: &str, units: chain::Amount, network: &Network) -> Resu
 /// Chains report whatever detail they have rather than a fixed set of fields,
 /// so the human rendering is derived from the keys instead of a match arm per
 /// chain that would go stale the moment one of them reported something new.
+/// Render a tag list: what a search box can be filled in with.
+///
+/// Offered because a tag nobody can discover is a tag nobody uses, and the
+/// alternative — reading the whole table to learn what words it contains — is
+/// the work the search was meant to remove.
+fn render_tag_list(tags: &[&str], command: &str, total: usize, what: &str) -> CommandOutput {
+    let human = format!(
+        "{}\n\n{} tags across {total} {what}; `{command} <tag>` narrows to one",
+        tags.join("  "),
+        tags.len(),
+    );
+    CommandOutput::new(json!({ "tags": tags, "total": total }), human)
+}
+
 fn label_for(key: &str) -> String {
     let mut label = key.replace('_', " ");
     if let Some(first) = label.get_mut(0..1) {

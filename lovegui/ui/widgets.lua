@@ -176,6 +176,21 @@ function widgets.field(springs, key, box, value, label, focused, options)
 
   local ink = value == "" and theme.colour.faint or theme.colour.text
   local text = value == "" and (options.placeholder or "") or shown
+
+  -- A placeholder is trimmed from its *tail*, not its head.
+  --
+  -- The loop above scrolls a value to show where the cursor is, which is right
+  -- while somebody is typing and wrong for a hint nobody is editing: taking
+  -- characters off the front of "type a tag - usdc, stablecoin" leaves a
+  -- sentence that starts mid-word. And left untrimmed it simply ran out of the
+  -- field and off the frame — on the narrow layout the last letter was drawn
+  -- outside the border, over the town behind it.
+  if value == "" and theme.width(text, font) > room then
+    while #text > 1 and theme.width(text .. "…", font) > room do
+      text = text:sub(1, -2)
+    end
+    text = text .. "…"
+  end
   theme.text(text, box.x + 4, box.y + (box.h - 15) / 2, ink, font)
 
   -- A blinking block cursor, because this is 8-bit and a caret would not be.

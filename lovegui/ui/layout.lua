@@ -180,32 +180,59 @@ end
 --- `footer_lines` is how many lines that sentence takes at this width — one
 --- when the frame is wide, two when it is a phone's width — because the caller
 --- is the only one that can measure text.
+--- How the NETWORK screen divides its frame between a search box and rows.
+---
+--- The screen used to fit every network on it at once, on the principle that a
+--- network you have to scroll to find is a network the wallet has hidden from
+--- you. That principle survives; the arithmetic behind it did not. Ten
+--- networks fitted. Ten networks and every stablecoin on each does not, and
+--- the old sums answered by shrinking the rows — which at enough rows means
+--- one-pixel rows nobody can read or hit, a worse kind of hidden than
+--- scrolling.
+---
+--- So the rows now have a floor, and what does not fit scrolls; the search box
+--- above is what makes that acceptable. Nothing is hidden that a word does not
+--- bring back, and the whole list is still what you find on arriving — the box
+--- narrows, it never gates.
 function layout.net_grid(w, h, count, footer_lines)
   local gap = 4          -- between rows
   local column_gap = 6   -- between columns
   local line_h = 10
   local footer_h = 8 + line_h * math.max(1, footer_lines or 1)
+  -- The search box and the air under it. Kept lean: every pixel it takes is a
+  -- row it costs, and a one-line field is all a tag needs.
+  local search_h = 16
+  local search_gap = 4
 
   -- Two columns where two names fit side by side; portrait is not that wide,
   -- and is tall enough not to need them.
   local columns = w >= 400 and 2 or 1
-  local rows = math.max(1, math.ceil(math.max(count, 1) / columns))
 
-  -- Each row is given a whole slice of what is left, gap included, and then
-  -- gives the gap back: `rows * slice` cannot exceed the room by arithmetic,
-  -- whatever the count, so a network can never be added that pushes the last
-  -- row through the footer. A floor on the height would have been the other
-  -- way round — legible rows, and an overflow once there were enough of them.
-  local room = h - footer_h
-  local row_h = math.max(1, math.min(46, math.floor(room / rows) - gap))
+  -- Small enough to be dense, large enough to read and to hit with a thumb.
+  -- Below this the row stops being a control and becomes a stripe.
+  local min_row_h = 20
+  local room = h - footer_h - search_h - search_gap
+  local slots = math.max(1, math.floor((room + gap) / (min_row_h + gap)))
+  local rows = math.max(1, math.ceil(math.max(count, 1) / columns))
+  -- Only shrink towards the floor while that still shows everything; past
+  -- that, keep the rows readable and let the extra ones scroll.
+  local visible_rows = math.min(rows, slots)
+  local row_h = math.max(min_row_h, math.min(46, math.floor(room / visible_rows) - gap))
 
   return {
     columns = columns,
     rows = rows,
+    -- How many rows of the grid actually fit; the rest are scrolled to.
+    visible_rows = visible_rows,
+    -- And how many entries that is, across every column.
+    visible = visible_rows * columns,
     row_h = row_h,
     gap = gap,
     column_gap = column_gap,
     column_w = math.floor((w - column_gap * (columns - 1)) / columns),
+    search = { h = search_h, gap = search_gap },
+    -- Where the rows start, under the search box.
+    rows_y = search_h + search_gap,
     -- Relative to the top of the frame's inside, like every other number here,
     -- and the top of the *first* line: a two-line footer starts higher.
     footer_y = h - 6 - line_h * math.max(1, footer_lines or 1),

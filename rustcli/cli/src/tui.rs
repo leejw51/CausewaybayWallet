@@ -62,6 +62,12 @@ enum Action {
     /// Switch to the network with this key. Only the current chain's networks
     /// are offered, so the list stays short as chains are added.
     SelectNetwork(&'static str),
+    /// Read the balance of one registry token — `usdc-cronos-mainnet`.
+    ///
+    /// A row of its own rather than a prompt asking which token, because the
+    /// token registry is flat for exactly this reason: the row *is* the
+    /// question already answered, and the search box above finds it.
+    TokenBalance(&'static str),
     /// Change the fee this network's sends will be refused over.
     SetMaxFee,
     Remove,
@@ -79,6 +85,13 @@ struct Command {
     key: Option<char>,
     /// One line of explanation, shown in the help overlay.
     help: String,
+    /// Extra words this row can be found by, beyond its label and its help.
+    ///
+    /// The tags of the network or token a row stands for. Without them the
+    /// search box could only match what is already printed, and the whole
+    /// point of a tag is that it says what the name does not — `evm` finds
+    /// the Cronos rows, `stablecoin` finds every USDC.
+    tags: Vec<String>,
     /// Runs from its key, but takes no row in the pane.
     ///
     /// For the variants of a command that already has a row — the three other
@@ -94,8 +107,29 @@ impl Command {
             label: label.to_string(),
             key,
             help: help.to_string(),
+            tags: Vec::new(),
             hidden: false,
         }
+    }
+
+    /// The same row, findable by these words too.
+    fn tagged(self, tags: &[&str]) -> Self {
+        Command {
+            tags: tags.iter().map(|t| t.to_string()).collect(),
+            ..self
+        }
+    }
+
+    /// Does this row survive the search box?
+    ///
+    /// Matched against everything the row is: the label, the explanation and
+    /// the tags. The explanation is in there because it is the only place a
+    /// row says what it is *for* — "faucet" finds Airdrop through its help
+    /// line and nothing else.
+    fn matches(&self, terms: &[String]) -> bool {
+        let mut haystacks = vec![self.label.as_str(), self.help.as_str()];
+        haystacks.extend(self.tags.iter().map(String::as_str));
+        causewaybay_core::search::haystack_matches(&haystacks, terms)
     }
 
     /// The same command, dispatchable by key but off the pane.
@@ -105,6 +139,31 @@ impl Command {
             ..self
         }
     }
+}
+
+/// A token's row label, short enough for the pane whatever the token is called.
+///
+/// `usdc cronos mainnet` is nineteen characters and the column is seventeen,
+/// so the network's suffix gives first: `cronos main` has exactly one reading
+/// and a row still has to say *where* it is, or the flat table has been
+/// undone. A symbol long enough to overflow even then is clipped with an `…`
+/// rather than allowed to break the column — this table is going to keep
+/// growing, and a coin added years from now must not be able to derange the
+/// pane. The full name is still what `token list` prints and what the search
+/// box matches, so nothing is lost but width.
+fn pane_label(token: &causewaybay_core::token::Token) -> String {
+    let network = token
+        .network
+        .replace("mainnet", "main")
+        .replace("testnet", "test")
+        .replace("devnet", "dev")
+        .replace('-', " ");
+    let label = format!("{} {network}", token.symbol.to_lowercase());
+    if label.chars().count() <= LABEL_WIDTH {
+        return label;
+    }
+    let kept: String = label.chars().take(LABEL_WIDTH - 1).collect();
+    format!("{kept}…")
 }
 
 /// Build the command pane.
@@ -233,14 +292,54 @@ fn build_commands() -> Vec<Command> {
     // One row per network, in registry order — which groups them by chain
     // without a heading, since the networks of a chain are named after it.
     for network in network::ALL.iter() {
-        commands.push(Command::new(
-            Action::SelectNetwork(network.key),
-            // `cronos-testnet` reads as `cronos testnet`: the row says both
-            // halves of where the wallet will be, and nothing else has to.
-            &network.key.replace('-', " "),
-            None,
-            &format!("Work on {} ({})", network.name, network.symbol),
-        ));
+        let mut tags: Vec<&str> = network.tags.to_vec();
+        tags.push(network.chain.as_str());
+        commands.push(
+            Command::new(
+                Action::SelectNetwork(network.key),
+                // `cronos-testnet` reads as `cronos testnet`: the row says both
+                // halves of where the wallet will be, and nothing else has to.
+                &network.key.replace('-', " "),
+                None,
+                &format!("Work on {} ({})", network.name, network.symbol),
+            )
+            .tagged(&tags),
+        );
+    }
+
+    // And one row per token per network, on the same flat principle: `usdc
+    // cronos mainnet` is a row, not a token you first pick and then place.
+    // Ten rows is more than a menu wants — which is what the search box above
+    // is for, and why these are the rows that most repay having one.
+    for token in causewaybay_core::token::ALL.iter() {
+        let mut tags: Vec<&str> = token.tags.to_vec();
+        tags.push(token.chain.as_str());
+        tags.push(token.symbol);
+        tags.push(token.network);
+        tags.push("token");
+        commands.push(
+            Command::new(
+                Action::TokenBalance(token.key),
+                // `usdc cronos mainnet` is nineteen characters and the pane is
+                // seventeen. The network's suffix is what gives, because it is
+                // the half a reader can complete: `cronos main` has exactly one
+                // reading. The full name is still what `token list` prints and
+                // what the search box matches, so nothing is lost but width.
+                &pane_label(token),
+                None,
+                &format!(
+                    "{} balance on {}{}",
+                    token.symbol,
+                    token.network().name,
+                    if token.transferable() {
+                        ""
+                    } else {
+                        " (read-only here)"
+                    }
+                ),
+            )
+            .tagged(&tags),
+        );
     }
 
     commands.extend([
@@ -314,6 +413,13 @@ enum Mode {
     /// confirmed, and a balance is only ever a read.
     Busy,
     Help,
+    /// Narrowing the command pane by typing.
+    ///
+    /// A mode of its own rather than an [`InputKind`], because nothing is
+    /// being collected: the pane filters on every keystroke and the answer is
+    /// the list itself. Esc restores the full pane; Enter keeps the filter and
+    /// hands the arrows back, so a narrowed pane can be driven like any other.
+    Search,
 }
 
 /// What a background thread has to say.
@@ -446,6 +552,9 @@ struct State {
     /// The planned transfer, held between the confirmation and the broadcast.
     staged: Option<SendPlan>,
     show_secrets: bool,
+    /// What the search box holds. Empty means the whole pane, which is what
+    /// it opens as: filtering is opted into, never the state you find it in.
+    filter: String,
     /// Set when the network changed, so the loop can rebuild `App` around it.
     network_changed: bool,
     quit: bool,
@@ -498,6 +607,7 @@ impl State {
             pending_amount: String::new(),
             staged: None,
             show_secrets: false,
+            filter: String::new(),
             network_changed: false,
             quit: false,
         };
@@ -625,7 +735,23 @@ impl State {
     /// hidden row between them shifts every row below it, and the pane then
     /// runs a command three lines above the highlighted one.
     fn visible_commands(&self) -> Vec<&Command> {
-        self.command_list.iter().filter(|c| !c.hidden).collect()
+        let terms = causewaybay_core::search::terms(&self.filter);
+        self.command_list
+            .iter()
+            .filter(|c| !c.hidden && c.matches(&terms))
+            .collect()
+    }
+
+    /// Change the search and put the cursor back at the top of what survived.
+    ///
+    /// Clamping is not enough: a cursor left at row 9 of a pane that just
+    /// became three rows long would be silently moved somewhere the user did
+    /// not choose, and the next Enter would run it. The top of a new list is
+    /// the only position nobody can be surprised by.
+    fn set_filter(&mut self, filter: String) {
+        self.filter = filter;
+        self.commands
+            .select((!self.visible_commands().is_empty()).then_some(0));
     }
 
     fn current_command(&self) -> Option<Action> {
@@ -827,6 +953,65 @@ fn handle_key(app: &App, state: &mut State, code: KeyCode, modifiers: KeyModifie
             }
         }
         Mode::Browse => browse_key(app, state, code),
+        Mode::Search => search_key(app, state, code),
+    }
+}
+
+/// The search box: every printable key narrows the pane, live.
+///
+/// The arrows and Enter still work, so a search can be finished without ever
+/// leaving it — type `usdc cro`, press ↓ Enter, done. That matters more than
+/// it sounds: a search box you have to escape from before you can use what it
+/// found is a search box with a step in the middle nobody remembers.
+fn search_key(app: &App, state: &mut State, code: KeyCode) {
+    match code {
+        KeyCode::Char(c) => {
+            let mut filter = state.filter.clone();
+            filter.push(c);
+            state.set_filter(filter);
+            announce_filter(state);
+        }
+        KeyCode::Backspace => {
+            let mut filter = state.filter.clone();
+            filter.pop();
+            state.set_filter(filter);
+            announce_filter(state);
+        }
+        KeyCode::Down => state.move_selection(1),
+        KeyCode::Up => state.move_selection(-1),
+        KeyCode::Enter => {
+            // Enter on a row runs it and leaves the search behind; Enter on an
+            // empty result only stops typing, since there is nothing to run.
+            match state.current_command() {
+                Some(action) => {
+                    state.mode = Mode::Browse;
+                    run_action(app, state, action);
+                }
+                None => state.mode = Mode::Browse,
+            }
+        }
+        // Esc restores the whole pane rather than merely stopping the typing.
+        // A filter left behind after the box closed was the one way this
+        // screen could hide a network without saying it had.
+        KeyCode::Esc => {
+            state.set_filter(String::new());
+            state.mode = Mode::Browse;
+            state.info("Search cleared — every command is back");
+        }
+        _ => {}
+    }
+}
+
+/// Say how much of the pane survived, so an empty one is never a mystery.
+fn announce_filter(state: &mut State) {
+    let shown = state.visible_commands().len();
+    let total = state.command_list.iter().filter(|c| !c.hidden).count();
+    if state.filter.is_empty() {
+        state.info("Type to narrow the commands, networks and tokens below");
+    } else if shown == 0 {
+        state.fail(format!("nothing matches `{}`", state.filter));
+    } else {
+        state.info(format!("{shown} of {total} match `{}`", state.filter));
     }
 }
 
@@ -872,6 +1057,13 @@ fn browse_key(app: &App, state: &mut State, code: KeyCode) {
             } else {
                 state.quit = true;
             }
+        }
+        // `/` is the search box, in the one place a lifetime of other
+        // programs has taught people to look for it.
+        KeyCode::Char('/') => {
+            state.focus = Focus::Commands;
+            state.mode = Mode::Search;
+            announce_filter(state);
         }
         // `j`/`k` still move, but only where they cannot be a command shortcut.
         KeyCode::Char(key) => {
@@ -953,6 +1145,7 @@ fn run_action(app: &App, state: &mut State, action: Action) {
             });
         }
         Action::SelectNetwork(key) => select_network(app, state, key),
+        Action::TokenBalance(key) => start_token_balance(app, state, key),
         Action::SetMaxFee => start_max_fee(app, state),
         Action::ExportWallets => start_export_wallets(state),
         Action::Save(format) => start_export(state, format),
@@ -1647,6 +1840,52 @@ fn sign(app: &App, state: &State, message: &str) -> Result<String> {
 /// UI thread that froze the screen for as long as it took — including the case
 /// where it never answers at all. It goes the same way a send does now: a
 /// thread, a clock in the status line, and Esc to stop waiting.
+/// Read one registry token's balance, on that token's own network.
+///
+/// Deliberately *not* a network switch first. A token row names its network,
+/// so reading USDC on Solana from a Cronos wallet is a question with an
+/// answer, and moving the whole wallet there to answer it would be a side
+/// effect nobody asked for — the row said "how much", not "go there".
+fn start_token_balance(app: &App, state: &mut State, key: &'static str) {
+    let Ok(token) = causewaybay_core::token::find(key) else {
+        state.fail(format!("no token called `{key}`"));
+        return;
+    };
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    let scoped = match app.reopen_on(token.chain) {
+        Ok(scoped) => scoped.with_host(std::sync::Arc::new(JobHost { events: tx.clone() })),
+        Err(e) => {
+            state.fail(e.message);
+            return;
+        }
+    };
+    std::thread::spawn(move || {
+        let outcome = match scoped.run(WalletCommand::Token {
+            command: causewaybay_core::command::TokenCommand::Balance {
+                token: key.to_string(),
+                address: None,
+            },
+        }) {
+            Ok(output) => {
+                let balance = output.data["balance"].as_str().unwrap_or("?");
+                JobEvent::Done(JobResult::Balance(format!("{balance} {}", token.symbol)))
+            }
+            Err(e) => JobEvent::Failed(e.message),
+        };
+        let _ = tx.send(outcome);
+    });
+
+    state.job = Some(Job {
+        events: rx,
+        started: Instant::now(),
+        last: format!("Querying the {} balance", token.name),
+        abandoned: "Stopped waiting — nothing was changed",
+    });
+    state.mode = Mode::Busy;
+    state.info(format!("Querying the {} balance…", token.name));
+}
+
 fn start_balance(app: &App, state: &mut State, target: Option<String>) {
     let Some(account) = state.current().cloned() else {
         state.fail("No wallet selected — create one first");
@@ -2248,7 +2487,9 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_commands(frame: &mut Frame, state: &mut State, area: Rect) {
-    let focused = state.focus == Focus::Commands;
+    let searching = state.mode == Mode::Search;
+    // The pane is where the typing lands, so it is where the focus ring goes.
+    let focused = state.focus == Focus::Commands || searching;
     let current_network = state.current_network.clone();
     let items: Vec<ListItem> = state
         .visible_commands()
@@ -2273,6 +2514,16 @@ fn draw_commands(frame: &mut Frame, state: &mut State, area: Rect) {
                         Style::default().fg(colour)
                     }
                 }
+                // A token row wears its chain's colour too, dimmed: it is a
+                // thing you read rather than a place you go, and the pane
+                // should not offer the two as the same kind of move.
+                Action::TokenBalance(key) => causewaybay_core::token::find(key)
+                    .map(|t| {
+                        Style::default()
+                            .fg(chain_colour(t.chain))
+                            .add_modifier(Modifier::DIM)
+                    })
+                    .unwrap_or_default(),
                 _ => Style::default().fg(Color::White),
             };
             let marker = if selected_network { "●" } else { " " };
@@ -2292,12 +2543,30 @@ fn draw_commands(frame: &mut Frame, state: &mut State, area: Rect) {
         })
         .collect();
 
+    // The title is the search box. A row of its own would cost a command from
+    // a pane that is already the length of the window, and the filter belongs
+    // to this list — putting it on the list's own frame says so without
+    // spending anything. `/` is advertised there while it is empty, since a
+    // search nobody knows about narrows nothing.
+    let title = if state.filter.is_empty() {
+        if searching {
+            " Commands  /_ ".to_string()
+        } else {
+            " Commands  (/ to search) ".to_string()
+        }
+    } else {
+        format!(
+            " Commands  /{}{} ",
+            state.filter,
+            if searching { "_" } else { "" }
+        )
+    };
     let list = List::new(items)
         .block(
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(pane_style(focused))
-                .title(" Commands "),
+                .title(title),
         )
         .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
         .highlight_symbol("> ");
@@ -2453,6 +2722,17 @@ fn draw_detail(frame: &mut Frame, state: &State, area: Rect) {
 
 fn draw_status(frame: &mut Frame, state: &State, area: Rect) {
     let (text, style, wrap) = match state.mode {
+        // The search text is drawn in the pane's own title, so the status line
+        // only carries what the search *did* — the count, or the miss.
+        Mode::Search => (
+            state.status.clone(),
+            if state.status_is_error {
+                Style::default().fg(Color::Red)
+            } else {
+                Style::default().fg(Color::Cyan)
+            },
+            true,
+        ),
         Mode::Input(kind) => (
             // The end of the line, not the start: the input area is one row,
             // and a pasted address is one unbreakable "word". Word-wrapping it
@@ -2522,6 +2802,7 @@ fn hint_for(state: &State) -> &'static str {
         Mode::Confirm(_) => "y confirm · any other key cancels",
         Mode::Busy => "working on a background thread — Esc stops waiting",
         Mode::Help => "any key closes this reference",
+        Mode::Search => "type to narrow · ↑↓ pick · Enter run · Esc clears the search",
         Mode::Browse if state.accounts.is_empty() => {
             "n makes your first wallet — one phrase, all four chains · ? help · q quit"
         }
@@ -2576,7 +2857,10 @@ fn help_network_lines() -> usize {
 /// off the bottom of a normal terminal, and a clipped reference is worse than
 /// a condensed one.
 fn summarised_in_help(action: Action) -> bool {
-    matches!(action, Action::SelectNetwork(_) | Action::Save(_))
+    matches!(
+        action,
+        Action::SelectNetwork(_) | Action::TokenBalance(_) | Action::Save(_)
+    )
 }
 
 fn help_overlay_height(commands: &[Command]) -> u16 {
@@ -2584,10 +2868,10 @@ fn help_overlay_height(commands: &[Command]) -> u16 {
         .iter()
         .filter(|c| !summarised_in_help(c.action))
         .count();
-    // 5 navigation rows, a blank, a heading, the commands, a blank, a chains
-    // heading, one line per chain, a menu note, a pane note, a save line, two
-    // borders.
-    (5 + 1 + 1 + listed + 1 + 1 + help_network_lines() + 1 + 1 + 1 + 1 + 2) as u16
+    // 5 navigation rows, the search row, a blank, a heading, the commands, a
+    // blank, a chains heading, one line per chain, a rows note, a pane note, a
+    // save line, two borders.
+    (5 + 1 + 1 + 1 + listed + 1 + 1 + help_network_lines() + 1 + 1 + 1 + 2) as u16
 }
 
 /// The full reference, drawn over the top of everything else.
@@ -2607,6 +2891,7 @@ fn draw_help_overlay(frame: &mut Frame, commands: &[Command], area: Rect) {
         Line::from("  ← →        the chain in view — or pick any network below"),
         Line::from("  Enter      run the highlighted command (or check a balance)"),
         Line::from("  Esc        cancel a prompt, leave the recall list, or quit"),
+        Line::from("  /          search the pane below — a name, a symbol, or a tag"),
         Line::from(""),
         Line::from(Span::styled(
             "Commands — each also works as a single key press",
@@ -2657,7 +2942,10 @@ fn draw_help_overlay(frame: &mut Frame, commands: &[Command], area: Rect) {
         ]));
     }
     lines.push(Line::from(Span::styled(
-        "  Every network is a row of its own; ● marks the one in use",
+        format!(
+            "  A row per network, then per token ({}); ● is where you are, / searches",
+            causewaybay_core::token::ALL.len()
+        ),
         Style::default().fg(Color::DarkGray),
     )));
     lines.push(Line::from(Span::styled(
@@ -2829,6 +3117,9 @@ mod tests {
             match action {
                 // Networks are menu-only: the list grows, letters would collide.
                 Action::SelectNetwork(_) => None,
+                // And tokens more so — there are more of them than networks,
+                // and the search box is how they are reached.
+                Action::TokenBalance(_) => None,
                 // Menu-only too. A single key on the fee ceiling would put a
                 // safety setting one mis-keystroke away.
                 Action::SetMaxFee => None,
@@ -2883,6 +3174,12 @@ mod tests {
         .into_iter()
         // Every network, whatever chain is in view.
         .chain(network::ALL.iter().map(|n| Action::SelectNetwork(n.key)))
+        // And every token, wherever it lives.
+        .chain(
+            causewaybay_core::token::ALL
+                .iter()
+                .map(|t| Action::TokenBalance(t.key)),
+        )
         .collect();
         assert_eq!(
             every_action.len(),
@@ -2953,6 +3250,175 @@ mod tests {
             Some(0),
             "it wraps at the last row"
         );
+    }
+
+    /// Every token is a row of its own too, on the same flat principle the
+    /// networks follow — and each says where it lives, because a `usdc` row
+    /// with no network on it is the ambiguity the registry exists to remove.
+    #[test]
+    fn every_token_has_its_own_row_saying_where_it_lives() {
+        let rows: Vec<(&'static str, String)> = build_commands()
+            .iter()
+            .filter_map(|c| match c.action {
+                Action::TokenBalance(key) => Some((key, c.label.clone())),
+                _ => None,
+            })
+            .collect();
+
+        // Stated as a property, not as a transcript of today's table: this
+        // registry is going to keep growing, and a test that has to be edited
+        // for every coin added is a test that will be edited without being
+        // read.
+        assert_eq!(rows.len(), causewaybay_core::token::ALL.len());
+        for (key, label) in &rows {
+            let token = causewaybay_core::token::find(key).unwrap();
+            assert!(
+                label.chars().count() <= LABEL_WIDTH,
+                "{key} draws {label:?}, wider than the pane"
+            );
+            // The symbol and the network's own name both survive the
+            // shortening, because a `usdc` row that does not say where it is
+            // is the ambiguity the registry exists to remove.
+            let where_it_is = token.network.split('-').next().unwrap();
+            assert!(
+                label.contains(&token.symbol.to_lowercase()) && label.contains(where_it_is),
+                "{key} draws {label:?}, which does not say what or where it is"
+            );
+        }
+        // A few spellings pinned, so the shortening itself stays legible.
+        let shown: Vec<&str> = rows.iter().map(|(_, l)| l.as_str()).collect();
+        assert!(shown.contains(&"usdc cronos main"), "{shown:?}");
+        assert!(shown.contains(&"usdc solana dev"), "{shown:?}");
+    }
+
+    /// The pane must survive a token nobody has added yet.
+    #[test]
+    fn a_long_symbol_is_clipped_rather_than_bursting_the_column() {
+        let mut invented = causewaybay_core::token::USDC_CARDANO_MAINNET;
+        invented.symbol = "SUPERLONGSTABLE";
+        let label = pane_label(&invented);
+        assert_eq!(label.chars().count(), LABEL_WIDTH);
+        assert!(label.ends_with('…'), "{label:?}");
+    }
+
+    /// The search box narrows the pane and nothing else. The point of the
+    /// default being "no filter" is that a wallet must never look as though it
+    /// has fewer networks than it has.
+    #[test]
+    fn the_pane_is_whole_until_something_is_typed_into_the_search() {
+        let state = State::new(Vec::new(), None);
+        assert_eq!(state.filter, "");
+        assert_eq!(
+            state.visible_commands().len(),
+            build_commands().iter().filter(|c| !c.hidden).count()
+        );
+    }
+
+    #[test]
+    fn a_tag_typed_into_the_search_narrows_the_pane_to_what_carries_it() {
+        let mut state = State::new(Vec::new(), None);
+
+        // A tag no row spells out: `evm` appears in no label at all, and it
+        // reaches both Cronos networks and everything on them — which is what
+        // someone asking for "the EVM stuff" meant.
+        state.set_filter("evm".into());
+        let labels: Vec<&str> = state
+            .visible_commands()
+            .iter()
+            .map(|c| c.label.as_str())
+            .collect();
+        assert_eq!(
+            labels,
+            vec![
+                "cronos testnet",
+                "cronos mainnet",
+                "usdc cronos main",
+                "usdt cronos main",
+                "dai cronos main",
+            ]
+        );
+        assert!(labels.iter().all(|l| !l.contains("evm")));
+
+        // A token, found by its symbol across every chain that has it.
+        state.set_filter("usdc".into());
+        let actions: Vec<Action> = state.visible_commands().iter().map(|c| c.action).collect();
+        assert_eq!(actions.len(), 4);
+        assert!(actions.iter().all(|a| matches!(a, Action::TokenBalance(_))));
+
+        // And adding a word narrows it to the one row.
+        state.set_filter("usdc cronos".into());
+        assert_eq!(
+            state.current_command(),
+            Some(Action::TokenBalance("usdc-cronos-mainnet"))
+        );
+        assert_eq!(state.visible_commands().len(), 1);
+
+        // `stablecoin` is on no row's label at all; it is what the token
+        // table's tags are for.
+        state.set_filter("stablecoin".into());
+        assert_eq!(
+            state.visible_commands().len(),
+            causewaybay_core::token::ALL.len()
+        );
+    }
+
+    /// The cursor goes to the top of whatever survived, rather than staying at
+    /// a row number that now means something else. Left where it was, the next
+    /// Enter would run a command nobody had pointed at.
+    #[test]
+    fn narrowing_the_pane_puts_the_cursor_at_the_top_of_what_is_left() {
+        let mut state = State::new(Vec::new(), None);
+        state.commands.select(Some(12));
+        state.set_filter("cronos".into());
+        assert_eq!(state.commands.selected(), Some(0));
+        // And a search that matches nothing selects nothing, so Enter has
+        // nothing to run.
+        state.set_filter("no-such-thing".into());
+        assert!(state.visible_commands().is_empty());
+        assert_eq!(state.commands.selected(), None);
+        assert_eq!(state.current_command(), None);
+    }
+
+    #[test]
+    fn slash_opens_the_search_and_escape_puts_the_whole_pane_back() {
+        let (_home, app) = wallet_app();
+        let mut state = State::new(Vec::new(), None);
+        let whole = state.visible_commands().len();
+
+        press(&app, &mut state, KeyCode::Char('/'));
+        assert_eq!(state.mode, Mode::Search);
+        typed(&app, &mut state, "usdc cro");
+        assert_eq!(state.filter, "usdc cro");
+        assert_eq!(state.visible_commands().len(), 1);
+
+        // Backspacing widens it again, live.
+        press(&app, &mut state, KeyCode::Backspace);
+        press(&app, &mut state, KeyCode::Backspace);
+        press(&app, &mut state, KeyCode::Backspace);
+        assert_eq!(state.filter, "usdc ");
+        assert_eq!(state.visible_commands().len(), 4);
+
+        press(&app, &mut state, KeyCode::Esc);
+        assert_eq!(state.mode, Mode::Browse);
+        assert_eq!(state.filter, "");
+        assert_eq!(state.visible_commands().len(), whole);
+    }
+
+    /// While searching, a letter types rather than firing the command it is a
+    /// shortcut for. `s` is Send everywhere else; inside the box it is a
+    /// character, or the search box is unusable for anything with an `s` in it.
+    #[test]
+    fn a_shortcut_letter_types_into_the_search_instead_of_running() {
+        let (_home, app) = wallet_app();
+        let mut state = State::new(Vec::new(), None);
+        press(&app, &mut state, KeyCode::Char('/'));
+        typed(&app, &mut state, "solana");
+        assert_eq!(state.filter, "solana");
+        assert_eq!(state.mode, Mode::Search, "a shortcut fired mid-search");
+        assert!(state
+            .visible_commands()
+            .iter()
+            .all(|c| c.matches(&["solana".to_string()])));
     }
 
     /// A hidden command is still a command: its key runs it and the reference
@@ -4816,7 +5282,7 @@ mod tests {
         // one row each — which is what made it overflow.
         let listed = commands
             .iter()
-            .filter(|c| !matches!(c.action, Action::SelectNetwork(_)))
+            .filter(|c| !summarised_in_help(c.action))
             .count();
         assert!(
             commands.len() > listed,

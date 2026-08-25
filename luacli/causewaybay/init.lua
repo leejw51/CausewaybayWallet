@@ -390,8 +390,33 @@ end
 -- -------------------------------------------------------------------- networks
 
 --- The supported networks.
-function Wallet:networks()
-  return self:call({ "network", "list" })
+--- Every network, or the ones a search keeps.
+---
+--- The filter goes to the library rather than being applied here: the matching
+--- rule (every word must match, against key, name, symbol, chain and tags)
+--- lives in one place, and a front end that reimplemented it would drift from
+--- the others the first time the rule changed.
+function Wallet:networks(filter)
+  local argv = { "network", "list" }
+  if filter and filter ~= "" then argv[#argv + 1] = filter end
+  return self:call(argv)
+end
+
+--- Every token this wallet knows by name, or the ones a search keeps.
+---
+--- One flat row per token per network — `usdc-cronos-mainnet` — so a row names
+--- the chain, the network and the contract at once.
+function Wallet:tokens(filter)
+  local argv = { "token", "list" }
+  if filter and filter ~= "" then argv[#argv + 1] = filter end
+  return self:call(argv)
+end
+
+--- One token's balance, on that token's own network.
+function Wallet:token_balance(token, address)
+  local argv = { "token", "balance", token }
+  if address then argv[#argv + 1] = "--address"; argv[#argv + 1] = address end
+  return self:call(argv)
 end
 
 --- The selected network.
@@ -509,24 +534,64 @@ function Wallet:verify(message, signature, address)
 end
 
 -- ---------------------------------------------------------------------- erc-20
+--
+-- Reached by contract address, for a token the registry has never heard of.
+-- For one it has, the `token_*` methods below take a name instead.
 
 --- A token's name, symbol, decimals and total supply.
-function Wallet:token_info(token, opts)
+function Wallet:erc20_info(token, opts)
   return self:call({ "erc20", "info", "--token", token }, opts)
 end
 
 --- A token balance. `opts.address` checks somewhere other than the active account.
-function Wallet:token_balance(token, opts)
+function Wallet:erc20_balance(token, opts)
   opts = opts or {}
   local argv = with_flags({ "erc20", "balance", "--token", token }, opts, { "address" })
   return self:call(argv, opts)
 end
 
 --- Transfer tokens. Requires `opts.token`, `opts.to`, `opts.amount`; needs `yes`.
-function Wallet:token_send(opts)
+function Wallet:erc20_send(opts)
   opts = opts or {}
   return self:call(with_flags({ "erc20", "send" }, opts,
     { "token", "to", "amount", "wait", "account" }), opts)
+end
+
+-- The names these three had before the registry arrived. `token_*` now means
+-- the named registry below — which is what someone reaching for the name
+-- would expect — but a caller written against the old ones must keep working,
+-- so both names reach the same command.
+Wallet.erc20_token_info = Wallet.erc20_info
+Wallet.erc20_token_balance = Wallet.erc20_balance
+Wallet.erc20_token_send = Wallet.erc20_send
+
+-- ---------------------------------------------------------------- the tokens
+--
+-- One flat row per token per network — `usdc-cronos-mainnet`, said "USDC
+-- Cronos Mainnet". Naming a row settles the chain, the network and the
+-- contract at once, which is the whole reason the table is flat.
+
+--- One registry row: where it lives, how it is counted, what moves it.
+function Wallet:token_info(token, opts)
+  return self:call({ "token", "info", token }, opts)
+end
+
+--- A token balance, on that token's own network.
+---
+--- The network in view is not consulted beyond disambiguating a bare symbol,
+--- and is not moved: asking what USDC is on Solana from a Cronos wallet is a
+--- question with an answer, not a relocation.
+function Wallet:token_balance(token, opts)
+  opts = opts or {}
+  local argv = with_flags({ "token", "balance", token }, opts, { "address" })
+  return self:call(argv, opts)
+end
+
+--- Transfer a token. Requires `opts.to` and `opts.amount`; needs `yes`.
+function Wallet:token_send(token, opts)
+  opts = opts or {}
+  return self:call(with_flags({ "token", "send", token }, opts,
+    { "to", "amount", "max-fee", "wait", "account" }), opts)
 end
 
 -- ------------------------------------------------------------------- utilities
@@ -690,9 +755,14 @@ M.COMMANDS = {
   ["sign"] = "sign",
   ["verify"] = "verify",
 
-  ["erc20 info"] = "token_info",
-  ["erc20 balance"] = "token_balance",
-  ["erc20 send"] = "token_send",
+  ["erc20 info"] = { "erc20_info", "erc20_token_info" },
+  ["erc20 balance"] = { "erc20_balance", "erc20_token_balance" },
+  ["erc20 send"] = { "erc20_send", "erc20_token_send" },
+
+  ["token list"] = "tokens",
+  ["token info"] = "token_info",
+  ["token balance"] = "token_balance",
+  ["token send"] = "token_send",
 
   ["utils keccak"] = "keccak",
   ["utils checksum"] = "checksum",

@@ -254,12 +254,26 @@ pub struct PreparedTransfer {
     /// turns 0.82 DUST into "821830000 NIGHT" — a number alarming enough to
     /// stop a send that was perfectly fine.
     pub fee_unit: Option<Amount>,
+    /// The unit `amount` is counted in, when it is not the native token.
+    ///
+    /// A token transfer is the reason: `token send usdc-cronos-mainnet` moves
+    /// 25 USDC (6 decimals) on a network whose own unit is CRO (18). Reading
+    /// the amount with the network's unit turns 25 USDC into
+    /// "0.000000000025 CRO" in the sentence the user is asked to agree to —
+    /// a number so small it invites a yes to a transfer nobody checked.
+    pub amount_unit: Option<Amount>,
     /// The sequence number consumed, where the chain has one.
     pub nonce: Option<u64>,
     /// The gas limit signed into the transaction, where the chain has one.
     pub gas_limit: Option<u64>,
     /// The network this is a transfer on, which the question names.
     pub network: Network,
+    /// The token being moved, when it is not the network's own.
+    ///
+    /// Carried so the history records *which* token moved rather than only
+    /// how much of something: a row saying "25" with no token beside it is
+    /// indistinguishable from 25 CRO, and the two are not the same event.
+    pub token: Option<crate::token::Token>,
     /// A clause only this chain has to add to the question.
     pub note: Option<String>,
     /// Chain-specific detail worth showing in a dry run.
@@ -273,6 +287,12 @@ impl PreparedTransfer {
         self.fee_unit.unwrap_or_else(|| self.network.units())
     }
 
+    /// How the amount being moved is counted, which is not always how the
+    /// network's own token is.
+    pub fn amount_units(&self) -> Amount {
+        self.amount_unit.unwrap_or_else(|| self.network.units())
+    }
+
     /// The question to put to the user before [`ChainClient::submit`].
     ///
     /// Built here rather than by each chain, because a chain that writes its
@@ -283,7 +303,7 @@ impl PreparedTransfer {
     pub fn prompt(&self) -> String {
         format!(
             "Send {} from {} to {} on {}, paying a fee of {}{}",
-            self.network.units().format_with_symbol(self.amount),
+            self.amount_units().format_with_symbol(self.amount),
             self.from,
             self.to,
             self.network.name,
@@ -524,6 +544,39 @@ pub trait ChainClient: Send + Sync {
     async fn faucet(&self, _address: &str, _amount: u128) -> Result<String> {
         Err(error::usage("this chain has no faucet the wallet can call"))
     }
+
+    /// How much of one token an address holds, in the token's base units.
+    ///
+    /// Defaulted rather than required, because "this chain has no fungible
+    /// tokens this wallet reads" is a real and permanent answer for a chain
+    /// like Midnight — and a default that refuses is better than three
+    /// identical stub implementations that do.
+    async fn token_balance(&self, token: &crate::token::Token, _address: &str) -> Result<u128> {
+        Err(error::usage(format!(
+            "this wallet does not read {} balances on {}",
+            token.symbol, token.chain
+        )))
+    }
+
+    /// Prepare a token transfer, on the same two-step contract as
+    /// [`Self::prepare_transfer`]: everything refusable is refused here, and
+    /// [`Self::submit`] only broadcasts what was already agreed to.
+    ///
+    /// `request.to` is the recipient — the *holder's* address, not a token
+    /// account and not a contract. Where a chain keeps token balances
+    /// somewhere else, finding that somewhere is this method's job, because it
+    /// is the one thing a user cannot be expected to know.
+    async fn prepare_token_transfer(
+        &self,
+        token: &crate::token::Token,
+        _signer_secret: &str,
+        _request: &TransferRequest,
+    ) -> Result<PreparedTransfer> {
+        Err(error::usage(format!(
+            "this wallet does not move {} on {}",
+            token.symbol, token.chain
+        )))
+    }
 }
 
 /// Optional behaviour, so a front end can grey out what a chain cannot do
@@ -574,6 +627,56 @@ pub fn find(name: &str) -> Result<&'static dyn Chain> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn prepared(
+        amount: u128,
+        amount_unit: Option<Amount>,
+        token: Option<crate::token::Token>,
+    ) -> PreparedTransfer {
+        PreparedTransfer {
+            signed: Vec::new(),
+            id: "0xdeadbeef".into(),
+            from: "0x9858EfFD232B4033E47d90003D41EC34EcaEda94".into(),
+            to: "0x6Fac4D18c912343BF86fa7049364Dd4E424Ab9C0".into(),
+            amount,
+            fee: 105_000_000_000_000_000,
+            fee_rate: None,
+            fee_unit: None,
+            amount_unit,
+            token,
+            nonce: None,
+            gas_limit: None,
+            network: crate::network::CRONOS_MAINNET,
+            note: None,
+            detail: Value::Null,
+        }
+    }
+
+    /// The sentence a user says yes to has to name the token being moved, in
+    /// that token's own places.
+    ///
+    /// This is the highest-stakes string in the wallet. A 25 USDC transfer read
+    /// with Cronos's eighteen decimals prints "0.000000000025 CRO" — a number
+    /// so small it invites a yes to a transfer nobody actually checked, and one
+    /// that names the wrong token besides.
+    #[test]
+    fn the_confirmation_counts_a_token_transfer_in_the_token() {
+        let usdc = crate::token::USDC_CRONOS_MAINNET;
+        let question = prepared(25_000_000, Some(usdc.units()), Some(usdc)).prompt();
+        assert!(question.contains("Send 25 USDC"), "{question}");
+        assert!(!question.contains("CRO from"), "{question}");
+        // And the fee is still the network's own token, because that is what
+        // pays it — two units in one sentence, neither standing in for the
+        // other.
+        assert!(question.contains("fee of 0.105 CRO"), "{question}");
+    }
+
+    /// A native transfer is unchanged: no `amount_unit`, so the network's.
+    #[test]
+    fn a_native_transfer_still_counts_in_the_network_token() {
+        let question = prepared(1_500_000_000_000_000_000, None, None).prompt();
+        assert!(question.contains("Send 1.5 CRO"), "{question}");
+    }
 
     #[test]
     fn every_chain_id_is_registered_exactly_once() {

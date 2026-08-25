@@ -104,7 +104,7 @@ t.suite("layout / portrait", function()
   t.case("ten networks fit one column with no scrolling", function()
     local grid = layout.net_grid(L.net.w - 10, L.net.h - 13, 10)
     t.equal(grid.columns, 1, "a 254-wide canvas has no room for two columns")
-    t.ok(grid.row_h >= 24, "a network row needs room for its name and symbol")
+    t.ok(grid.row_h >= 20, "a network row needs room for its name and symbol")
   end)
 end)
 
@@ -117,23 +117,60 @@ t.suite("layout / the network grid", function()
       local L = layout.compute(size[1], size[2])
       -- The inside of the frame, as `widgets.frame` hands it back.
       local w, h = L.net.w - 10, L.net.h - 13
-      -- Well past the ten the wallet has, so adding a chain does not need
-      -- this sum revisited.
-      for count = 1, 20 do
+      -- Far past the ten networks and ten tokens the wallet ships, because the
+      -- registry is going to keep growing and this sum must not need revisiting
+      -- every time a coin is added.
+      for count = 1, 200 do
         local grid = layout.net_grid(w, h, count)
-        local bottom = grid.rows * (grid.row_h + grid.gap) - grid.gap
+        -- It is the *visible* rows that must clear the footer; the rest are
+        -- scrolled to, which is what the search box above makes bearable.
+        local bottom = grid.rows_y + grid.visible_rows * (grid.row_h + grid.gap) - grid.gap
         t.ok(bottom <= grid.footer_y,
-          ("%d networks at %dx%d: the rows reach %d, the footer is at %d")
+          ("%d rows at %dx%d: the rows reach %d, the footer is at %d")
             :format(count, size[1], size[2], bottom, grid.footer_y))
         t.ok(grid.footer_y + 16 <= h, "the footer is drawn through the border")
       end
     end
   end)
 
+  -- The reason the screen scrolls at all now. Ten networks fitted; ten
+  -- networks and every stablecoin on each does not, and the old sums answered
+  -- by shrinking the rows towards nothing.
+  t.case("a row stays big enough to read and to hit, however many there are",
+    function()
+      for _, size in ipairs({ { 480, 270 }, { 270, 480 } }) do
+        local L = layout.compute(size[1], size[2])
+        local w, h = L.net.w - 10, L.net.h - 13
+        for count = 1, 200 do
+          local grid = layout.net_grid(w, h, count)
+          t.ok(grid.row_h >= 20,
+            ("%d rows at %dx%d shrank a row to %d")
+              :format(count, size[1], size[2], grid.row_h))
+          t.ok(grid.visible >= 1, "nothing is drawn at all")
+        end
+      end
+    end)
+
+  t.case("scrolling starts only once the rows genuinely stop fitting", function()
+    -- The screen a user arrives at is the whole list wherever the list is
+    -- short enough; scrolling is what happens past that, not a row before.
+    local L = layout.compute(480, 270)
+    local w, h = L.net.w - 10, L.net.h - 13
+    local grid = layout.net_grid(w, h, 4)
+    t.equal(grid.visible_rows, grid.rows, "four rows should not scroll")
+    -- And past that, what scrolls is genuinely more than the frame holds:
+    -- `visible` never claims room the arithmetic above did not find.
+    local many = layout.net_grid(w, h, 60)
+    t.ok(many.visible < 60, "sixty rows cannot all be on a 143-pixel frame")
+    t.ok(many.rows_y + many.visible_rows * (many.row_h + many.gap) - many.gap
+      <= many.footer_y)
+  end)
+
   t.case("the columns divide the width without overlapping", function()
     local grid = layout.net_grid(454, 143, 10)
     t.equal(grid.columns, 2, "a 454-wide frame holds two names side by side")
     t.equal(grid.rows, 5)
+    t.ok(grid.rows_y > 0, "the rows start under the search box, not over it")
     t.ok(grid.columns * grid.column_w + grid.column_gap <= 454 + 1,
       "the second column runs off the frame")
   end)
