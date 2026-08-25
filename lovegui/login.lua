@@ -137,9 +137,53 @@ function login:submit(model)
   return account
 end
 
+--- Where the gate's parts sit, for either way up.
+---
+--- Pure, so the arithmetic is testable headlessly. Landscape is the screen
+--- exactly as it shipped. Portrait is not landscape squeezed: the doors that
+--- stood side by side stack — at 270 wide they overlapped, and the one drawn
+--- second sat on top of the other — the phrase box takes the width it was
+--- starving for between two 50-pixel margins, and the parts spread down the
+--- column instead of crowding the top half of it.
+function login.places(width, height)
+  if height > width then
+    local inner = { x = 20, w = width - 40 }
+    return {
+      logo_y = 92,
+      logo_size = 54,
+      -- The name on two lines: sixteen big-font characters span the whole of
+      -- a 270-pixel row, and a title that touches both edges reads as a
+      -- rendering accident rather than a name.
+      title = { "CAUSEWAYBAY", "BANK" },
+      title_y = 134,
+      title_line_h = 24,
+      frame = { x = inner.x, y = 208, w = inner.w, h = 64 },
+      enter = { x = inner.x, y = 288, w = inner.w, h = 21 },
+      mint = { x = inner.x, y = 314, w = inner.w, h = 21 },
+      note_y = 348,
+      note = { x = inner.x + 4, w = inner.w - 8 },
+      honesty_y = height - 34,
+    }
+  end
+  return {
+    logo_y = 42,
+    logo_size = 46,
+    title = { "CAUSEWAYBAY BANK" },
+    title_y = 68,
+    title_line_h = 24,
+    frame = { x = 50, y = 104, w = width - 100, h = 64 },
+    enter = { x = 50, y = 178, w = 178, h = 21 },
+    mint = { x = width - 228, y = 178, w = 178, h = 21 },
+    note_y = 210,
+    note = { x = 40, w = width - 80 },
+    honesty_y = 230,
+  }
+end
+
 function login:draw(model, state, springs)
   local t = self.entrance.value
   local width, height = theme.WIDTH, theme.HEIGHT
+  local at = login.places(width, height)
 
   local shake_x = anim.shake_offset(self.time, self.shake)
   love.graphics.push()
@@ -147,17 +191,20 @@ function login:draw(model, state, springs)
 
   -- The vault, breathing, above the whole thing.
   local bob = math.sin(self.time * 1.2) * 2
-  sprite.draw_glowing("logo", width / 2, 42 + bob - (1 - t) * 20, 46 * t, {
+  sprite.draw_glowing("logo", width / 2, at.logo_y + bob - (1 - t) * 20, at.logo_size * t, {
     angle = math.sin(self.time * 0.5) * 0.05,
     glow = 0.45 + 0.3 * math.sin(self.time * 3),
     glow_colour = theme.colour.cyan,
   })
 
-  theme.text_centred("CAUSEWAYBAY BANK", width / 2, 68, theme.colour.cyan,
-    theme.font.big, t)
+  for i, line in ipairs(at.title) do
+    theme.text_centred(line, width / 2, at.title_y + (i - 1) * at.title_line_h,
+      theme.colour.cyan, theme.font.big, t)
+  end
 
   -- ------------------------------------------------------------ the phrase
-  local box = widgets.frame(50, 104, width - 100, 64, "MNEMONIC", { alpha = t })
+  local box = widgets.frame(at.frame.x, at.frame.y, at.frame.w, at.frame.h,
+    "MNEMONIC", { alpha = t })
 
   local count = self:words()
   -- Drawn by hand rather than through widgets.field: the mask, the word count
@@ -173,8 +220,13 @@ function login:draw(model, state, springs)
     shown = shown:sub(2)
   end
   if self.phrase == "" then
-    theme.text("twelve or twenty-four words…", field.x + 5, field.y + 4,
-      theme.colour.faint, font, t)
+    -- Trimmed like the phrase itself: the hint used to be the one string in
+    -- the field allowed to run out of it and off the canvas.
+    local hint = "twelve or twenty-four words…"
+    while theme.width(hint, font) > room and #hint > 1 do
+      hint = hint:sub(1, -2)
+    end
+    theme.text(hint, field.x + 5, field.y + 4, theme.colour.faint, font, t)
   else
     theme.text(shown, field.x + 5, field.y + 4, theme.colour.text, font, t)
   end
@@ -207,13 +259,13 @@ function login:draw(model, state, springs)
   end
 
   -- ------------------------------------------------------------- the doors
-  local enter = { x = 50, y = 178, w = 178, h = 21 }
+  local enter = at.enter
   if widgets.button(springs, "enter", enter, "UNLOCK", state,
       { colour = theme.colour.green, disabled = self.phrase == "" }) then
     self:submit(model)
   end
 
-  local mint = { x = width - 228, y = 178, w = 178, h = 21 }
+  local mint = at.mint
   if widgets.button(springs, "mint", mint, "NEW MNEMONIC", state,
       { colour = theme.colour.gold }) then
     local phrase = model:offer_mnemonic(12)
@@ -228,14 +280,14 @@ function login:draw(model, state, springs)
   -- mnemonic was never read is a wallet nobody can recover.
   if self.minted then
     local colour = self.copied and theme.colour.green or theme.colour.gold
-    theme.rect(theme.colour.void, 40, 208, width - 80, 19, 0.85)
-    theme.outline(colour, 40, 208, width - 80, 19, 0.8)
+    theme.rect(theme.colour.void, at.note.x, at.note_y - 2, at.note.w, 19, 0.85)
+    theme.outline(colour, at.note.x, at.note_y - 2, at.note.w, 19, 0.8)
     theme.text_centred(
       self.copied and "copied - store it safely, then UNLOCK"
         or "a new phrase - COPY it before you unlock",
-      width / 2, 210, colour, theme.font.small, t)
+      width / 2, at.note_y, colour, theme.font.small, t)
   else
-    theme.text_centred("ENTER unlocks · CTRL+V pastes", width / 2, 210,
+    theme.text_centred("ENTER unlocks · CTRL+V pastes", width / 2, at.note_y,
       theme.colour.faint, theme.font.small, t)
   end
 
@@ -244,9 +296,9 @@ function login:draw(model, state, springs)
   -- Two lines, because one was 61 characters and the canvas is 60 wide — it
   -- ran off the right edge, which is a poor look for the sentence whose whole
   -- job is to be read.
-  theme.text_centred("a session gate, not encryption", width / 2, 230,
+  theme.text_centred("a session gate, not encryption", width / 2, at.honesty_y,
     theme.colour.faint, theme.font.small, t * 0.8)
-  theme.text_centred("keys stay unencrypted on disk", width / 2, 244,
+  theme.text_centred("keys stay unencrypted on disk", width / 2, at.honesty_y + 14,
     theme.colour.faint, theme.font.small, t * 0.8)
 
   love.graphics.pop()

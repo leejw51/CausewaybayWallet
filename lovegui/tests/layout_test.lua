@@ -109,4 +109,55 @@ t.suite("layout / portrait", function()
   end)
 end)
 
+t.suite("layout / the login gate", function()
+  local Login = require("login")
+
+  local function boxes_overlap(a, b)
+    return a.x < b.x + b.w and b.x < a.x + a.w
+      and a.y < b.y + (a.h or 21) and b.y < a.y + (b.h or 21)
+  end
+
+  t.case("landscape is the gate as it shipped", function()
+    local at = Login.places(480, 270)
+    t.equal(at.frame.x, 50)
+    t.equal(at.frame.w, 380)
+    t.equal(at.enter.x, 50)
+    t.equal(at.mint.x, 252)
+    t.equal(at.enter.y, 178)
+    t.equal(#at.title, 1)
+  end)
+
+  t.case("the doors never overlap, either way up", function()
+    -- The portrait bug this suite exists for: two 178-wide doors side by
+    -- side on a 270-wide canvas sat on top of each other, and the one drawn
+    -- second hid the other.
+    for _, size in ipairs({ { 480, 270 }, { 270, 480 } }) do
+      local at = Login.places(size[1], size[2])
+      t.ok(not boxes_overlap(at.enter, at.mint),
+        ("UNLOCK and NEW MNEMONIC collide at %dx%d"):format(size[1], size[2]))
+    end
+  end)
+
+  t.case("portrait stacks and spreads instead of crowding the top", function()
+    local at = Login.places(270, 480)
+    t.ok(at.mint.y > at.enter.y + at.enter.h, "the doors stack")
+    t.equal(at.enter.x, at.mint.x)
+    t.equal(at.enter.w, at.mint.w)
+    t.ok(at.frame.w >= 200, "the phrase box takes the width")
+    t.equal(#at.title, 2, "the name breaks into two lines")
+    -- Top to bottom, in reading order, with the honesty line near the foot.
+    t.ok(at.logo_y < at.title_y)
+    t.ok(at.title_y < at.frame.y)
+    t.ok(at.frame.y + at.frame.h < at.enter.y)
+    t.ok(at.note_y > at.mint.y + at.mint.h)
+    t.ok(at.honesty_y > 480 * 0.8, "the honesty line sits near the bottom")
+    -- And everything on the canvas.
+    for _, name in ipairs({ "frame", "enter", "mint" }) do
+      local b = at[name]
+      t.ok(b.x >= 0 and b.x + b.w <= 270, name .. " runs off the canvas")
+      t.ok(b.y >= 0 and b.y + (b.h or 21) <= 480, name .. " runs off the canvas")
+    end
+  end)
+end)
+
 return true
