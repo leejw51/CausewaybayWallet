@@ -706,7 +706,7 @@ dependencies = [
 
 [[package]]
 name = "causewaybay-cli"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "alloy-primitives",
  "assert_cmd",
@@ -724,7 +724,7 @@ dependencies = [
 
 [[package]]
 name = "causewaybay-core"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "alloy-primitives",
  "anyhow",
@@ -766,7 +766,7 @@ dependencies = [
 
 [[package]]
 name = "causewaybay-ffi"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "causewaybay-core",
  "serde_json",
