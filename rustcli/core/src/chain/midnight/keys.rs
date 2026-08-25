@@ -139,7 +139,8 @@ impl MidnightAccount {
             ),
             n => {
                 return Err(error::invalid_private_key(format!(
-                    "a Midnight secret is 32 bytes (a night key) or 64 (a night                      key and its DUST seed), got {n}"
+                    "a Midnight secret is 32 bytes (a night key) or 64 (a night \
+                     key and its DUST seed), got {n}"
                 )))
             }
         };
@@ -169,7 +170,9 @@ impl MidnightAccount {
     pub fn dust_seed(&self) -> Result<[u8; 32]> {
         self.dust_seed.ok_or_else(|| {
             error::usage(
-                "this account was imported as a bare night key, so the wallet does                  not have the DUST key that pays Midnight fees. Re-import it from                  its mnemonic to send; it can still receive and sign as it is",
+                "this account was imported as a bare night key, so the wallet does \
+                 not have the DUST key that pays Midnight fees. Re-import it from \
+                 its mnemonic to send; it can still receive and sign as it is",
             )
         })
     }

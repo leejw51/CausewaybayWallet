@@ -192,7 +192,9 @@ pub fn parse_address(input: &str) -> Result<Address> {
         && body.bytes().any(|b| b.is_ascii_lowercase());
     if mixed_case && Address::parse_checksummed(format!("0x{body}"), None).is_err() {
         return Err(error::invalid_address(format!(
-            "{trimmed} does not pass its EIP-55 checksum. A mixed-case address              carries one, and it only fails when a character is wrong — check              the address against wherever it came from rather than retyping it"
+            "{trimmed} does not pass its EIP-55 checksum. A mixed-case address \
+             carries one, and it only fails when a character is wrong — check \
+             the address against wherever it came from rather than retyping it"
         )));
     }
     Ok(address)

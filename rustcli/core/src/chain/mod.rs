@@ -211,11 +211,12 @@ pub fn check_fee(network: &Network, ceiling: u128, fee: u128, fee_units: Amount)
         return Ok(());
     }
     Err(error::invalid_amount(format!(
-        "{} wants a fee of {}, above the {} this wallet will sign for on {}.          That is the endpoint's number, not yours — check the endpoint before          raising the ceiling with --max-fee",
+        "{} quoted a fee of {}, above the {} this wallet will sign for. \
+         That is the endpoint's number, not yours — check where the wallet is \
+         pointed before overriding the ceiling with --max-fee",
         network.name,
         fee_units.format_with_symbol(fee),
         fee_units.format_with_symbol(ceiling),
-        network.name,
     )))
 }
 
