@@ -123,10 +123,15 @@ pub extern "C" fn cwb_chains() -> *mut c_char {
 /// [`cwb_string_free`] and with nothing else.
 #[no_mangle]
 pub unsafe extern "C" fn cwb_execute(request_json: *const c_char) -> *mut c_char {
-    guarded(|| match borrow_str(request_json) {
-        Ok(text) => api::execute_json(text),
-        Err(envelope) => envelope,
-    })
+    // Copied here, on the caller's thread, before `guarded` moves the work to
+    // one of ours. The pointer belongs to the host and is only promised to be
+    // alive for this call; an owned `String` is the only thing that may
+    // legitimately cross a thread boundary, and the borrow checker says so.
+    let request = match borrow_str(request_json) {
+        Ok(text) => text.to_owned(),
+        Err(envelope) => return into_c_string(envelope),
+    };
+    guarded(move || api::execute_json(&request))
 }
 
 /// Release a string this library returned.
@@ -149,14 +154,67 @@ pub unsafe extern "C" fn cwb_string_free(s: *mut c_char) {
 // ------------------------------------------------------------------ internals
 
 /// Run `f`, turning a panic into an error envelope rather than an unwind.
-fn guarded(f: impl FnOnce() -> String + std::panic::UnwindSafe) -> *mut c_char {
-    let envelope = std::panic::catch_unwind(f).unwrap_or_else(|_| {
-        error_envelope(
-            "internal",
-            "the wallet panicked; this is a bug, and no state was written",
-        )
-    });
-    into_c_string(envelope)
+/// The stack every command is given, whatever the host was standing on.
+///
+/// A library loaded into someone else's process does not get to choose which
+/// thread calls it, and threads differ enormously: a main thread has eight
+/// megabytes on every platform this ships to, while a worker made by SDL —
+/// which is what a LÖVE `love.thread` is — has 512 KB, and a host embedding
+/// Python or LuaJIT may have less again.
+///
+/// Argument parsing alone does not fit in 512 KB. Clap builds its whole
+/// command tree on the stack through generated `augment_subcommands` calls,
+/// one frame per subcommand, and this wallet's tree is deep enough that adding
+/// the `token` commands took it past that guard page — turning *every* call
+/// from the GUI's worker into a SIGBUS with no Rust panic to catch, because a
+/// stack overflow is not an unwind.
+///
+/// Eight megabytes, to match the main thread rather than to guess at a
+/// sufficient number. Sizing it to what today's tree happens to need would put
+/// the next subcommand one merge away from the same crash, in a place nobody
+/// would think to look.
+const STACK: usize = 8 * 1024 * 1024;
+
+/// Run one command with a stack of our own, catching panics.
+///
+/// The thread is per call and joined before returning, so nothing outlives the
+/// FFI boundary and the caller still sees an ordinary synchronous function.
+/// Spawning costs tens of microseconds against commands that reach a node over
+/// the network; for the offline ones it is still far below anything a person
+/// or a frame can notice.
+///
+/// If the thread cannot be spawned or dies, that is reported as an envelope
+/// like any other failure — a null pointer back into C is not an option.
+fn guarded(f: impl FnOnce() -> String + std::panic::UnwindSafe + Send + 'static) -> *mut c_char {
+    let envelope = std::thread::Builder::new()
+        .name("cwb-command".into())
+        .stack_size(STACK)
+        .spawn(move || {
+            std::panic::catch_unwind(f).unwrap_or_else(|_| {
+                error_envelope(
+                    "internal",
+                    "the wallet panicked; this is a bug, and no state was written",
+                )
+            })
+        })
+        .map_err(|e| {
+            error_envelope(
+                "internal",
+                &format!("could not start a thread to run the command: {e}"),
+            )
+        })
+        .and_then(|handle| {
+            handle.join().map_err(|_| {
+                error_envelope(
+                    "internal",
+                    "the wallet died while running the command; no state was written",
+                )
+            })
+        });
+    into_c_string(match envelope {
+        Ok(envelope) => envelope,
+        Err(envelope) => envelope,
+    })
 }
 
 /// Borrow a C string as UTF-8, or produce the envelope explaining why not.
@@ -233,6 +291,51 @@ mod tests {
             "yes": true,
         })
         .to_string()
+    }
+
+    /// The regression this library's own stack exists for.
+    ///
+    /// A host does not get to choose which thread calls a shared library, and
+    /// they are not alike: SDL gives a worker 512 KB, which is where the LÖVE
+    /// GUI runs every command from. Clap builds its command tree on the stack,
+    /// one frame per subcommand, and adding the `token` commands took the tree
+    /// past that guard page — every call from the GUI became a SIGBUS, with no
+    /// panic to catch, because a stack overflow does not unwind.
+    ///
+    /// So this runs a command from a thread with a stack far smaller than any
+    /// real host's. If the entry point stopped moving the work onto a stack of
+    /// its own, this would not fail — it would kill the test process outright,
+    /// which is exactly how the bug announced itself the first time.
+    #[test]
+    fn a_command_survives_a_host_thread_with_almost_no_stack() {
+        let dir = home();
+        let payload = request(&dir, &["network", "list"]);
+        // 128 KB: a quarter of what SDL hands a worker, and nowhere near
+        // enough to build the command tree in.
+        let handle = std::thread::Builder::new()
+            .stack_size(128 * 1024)
+            .spawn(move || execute(&payload))
+            .expect("the test thread should start");
+        let reply = handle.join().expect("the wallet took the host thread down");
+        assert_eq!(reply["ok"], true, "{reply}");
+        assert!(reply["data"]
+            .as_array()
+            .is_some_and(|rows| !rows.is_empty()));
+    }
+
+    /// And the deepest command tree in particular, since it is the one that
+    /// blew the budget: `token send` sits three levels down with six flags.
+    #[test]
+    fn the_deepest_subcommand_parses_on_a_small_stack_too() {
+        let dir = home();
+        let payload = request(&dir, &["token", "info", "usdc-cronos-mainnet"]);
+        let handle = std::thread::Builder::new()
+            .stack_size(128 * 1024)
+            .spawn(move || execute(&payload))
+            .expect("the test thread should start");
+        let reply = handle.join().expect("the wallet took the host thread down");
+        assert_eq!(reply["ok"], true, "{reply}");
+        assert_eq!(reply["data"]["symbol"], "USDC");
     }
 
     #[test]
