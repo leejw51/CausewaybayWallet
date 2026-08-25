@@ -771,6 +771,88 @@ impl App {
         Ok(created)
     }
 
+    /// Give every wallet its account on `chain`, where one is missing.
+    ///
+    /// A wallet is one mnemonic and one index, and each chain derives its own
+    /// account there — so a wallet on Cronos already *has* a Cardano address,
+    /// whether or not the store has ever written it down. Stores written
+    /// before a chain shipped, or by any of the paths that make one chain at a
+    /// time, hold nothing on it.
+    ///
+    /// Moving to such a chain then had nowhere to land, and every front end
+    /// papered over it the same wrong way: falling back to the accounts of the
+    /// chain just left. The header said Cardano and the list underneath it was
+    /// a column of `0x…`, which is not a cosmetic problem — it is an address
+    /// offered for a deposit that cannot arrive on the chain named above it.
+    ///
+    /// Deriving here creates no new wallet: same phrase, same index, the
+    /// address that was always there. Accounts imported from a private key
+    /// have no phrase to derive from and are left alone, as are those made
+    /// with a BIP-39 passphrase the store does not keep — the phrase by itself
+    /// would derive a *different* wallet, and quietly writing that one down
+    /// beside the others is worse than showing nothing.
+    ///
+    /// Returns the addresses written, newest wallet last.
+    fn derive_missing_on(&self, chain: ChainId) -> Result<Vec<String>> {
+        let accounts = self.store.accounts()?;
+        let mut made = Vec::new();
+
+        for account in &accounts {
+            let Some(mnemonic) = account.mnemonic.as_deref() else {
+                continue; // imported from a private key
+            };
+            let index = account.index.unwrap_or(0);
+            // Held already, by this same phrase at this same index? Then this
+            // wallet has its face on the chain and nothing is owed.
+            let held = accounts.iter().any(|other| {
+                other.chain == chain
+                    && other.index.unwrap_or(0) == index
+                    && other.mnemonic.as_deref() == Some(mnemonic)
+            });
+            if held
+                || made
+                    .iter()
+                    .any(|(phrase, at, _)| phrase == mnemonic && *at == index)
+            {
+                continue;
+            }
+
+            let Ok(seed) = Seed::new(mnemonic, "") else {
+                continue;
+            };
+            // The passphrase check: if the phrase alone does not reproduce the
+            // account we are deriving *from*, it will not reproduce its
+            // siblings either.
+            match chain::chain(account.chain).derive(&seed, index) {
+                Ok(check) if check.address == account.address => {}
+                _ => continue,
+            }
+            let Ok(derived) = chain::chain(chain).derive(&seed, index) else {
+                continue;
+            };
+            made.push((mnemonic.to_string(), index, derived));
+        }
+
+        let mut written = Vec::new();
+        for (mnemonic, index, derived) in made {
+            // A label collision is not a reason to abandon the switch, so a
+            // wallet that cannot be named is skipped rather than fatal.
+            if let Ok(account) = self.store.create_account(
+                None,
+                &derived.address,
+                chain,
+                Source::Mnemonic,
+                &derived.secret,
+                Some(&mnemonic),
+                derived.derivation_path.as_deref(),
+                Some(index),
+            ) {
+                written.push(account.address.clone());
+            }
+        }
+        Ok(written)
+    }
+
     /// Which chains a command should act on: all of them, or just the one in
     /// view.
     fn chains_for(&self, every_chain: bool) -> Vec<ChainId> {
@@ -1098,6 +1180,9 @@ impl App {
                 let target =
                     network::find_for(self.chain, &network).or_else(|_| network::find(&network))?;
                 self.store.set_network(&target)?;
+                // Every wallet gets its face on the chain being moved to,
+                // before anything asks which account is active there.
+                let derived = self.derive_missing_on(target.chain)?;
                 // Moving to another chain's network moves the wallet with it.
                 //
                 // Without this the switch was announced and then undone: the
@@ -1112,21 +1197,31 @@ impl App {
                     self.store
                         .config_set(store::KEY_ACTIVE_ACCOUNT, &account.id)?;
                 }
+                let mut human = format!(
+                    "Network is now {} ({})",
+                    target.name,
+                    match target.chain_id {
+                        Some(id) => format!("chain {id}"),
+                        None => target.chain.as_str().to_string(),
+                    }
+                );
+                if !derived.is_empty() {
+                    human.push_str(&format!(
+                        "\n\nDerived {} {} account{} for wallets that had none.",
+                        derived.len(),
+                        target.chain,
+                        if derived.len() == 1 { "" } else { "s" }
+                    ));
+                }
                 Ok(CommandOutput::new(
                     json!({
                         "key": target.key,
                         "chain": target.chain.as_str(),
                         "name": target.name,
                         "chain_id": target.chain_id,
+                        "derived": derived,
                     }),
-                    format!(
-                        "Network is now {} ({})",
-                        target.name,
-                        match target.chain_id {
-                            Some(id) => format!("chain {id}"),
-                            None => target.chain.as_str().to_string(),
-                        }
-                    ),
+                    human,
                 ))
             }
 

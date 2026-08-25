@@ -40,6 +40,14 @@ Model.SCREENS = { "wallets", "send", "network" }
 --- The fields the send screen tabs between.
 Model.FIELDS = { "to", "amount" }
 
+--- What the per-row send button pays, in the chain's own token.
+---
+--- One number, written down once. A quick send exists to save typing an
+--- address that is already on the screen, not to be a second, quieter way of
+--- spending an arbitrary amount — so the amount is fixed, small, and the same
+--- for every row.
+Model.QUICK_AMOUNT = "0.01"
+
 --- Create a model over an open wallet.
 ---
 --- `jobs` needs `submit(request)` and `poll()`. Passing nil makes every call
@@ -735,15 +743,26 @@ function Model:refresh()
   -- the list holds the chain in view and switching chain moves what every row
   -- points at rather than making the list four times longer. The other chains'
   -- accounts are a chain switch away, not a scroll away.
+  --
+  -- The chain in view decides the list outright, even when it empties it.
+  -- This used to keep the previous chain's accounts whenever the new one had
+  -- none, which is how the network screen came to lie: pick Cardano, and the
+  -- header said Cardano over a column of `0x…` EVM addresses. An address shown
+  -- under the wrong chain's name is not a cosmetic fault — it is an address
+  -- offered for a deposit that cannot arrive there.
+  --
+  -- Almost nothing reaches the empty case any more: moving to a chain derives
+  -- each wallet's account on it from the same phrase and index. What is left
+  -- is the wallet that genuinely has no face there — one imported from a bare
+  -- private key, or from a phrase used with a BIP-39 passphrase the store does
+  -- not keep — and for those, empty is the honest answer.
   local chain = info and info.chain
   if chain then
     local here = {}
     for _, account in ipairs(self.wallets) do
       if account.chain == chain then here[#here + 1] = account end
     end
-    -- Only when the chain has something. A wallet whose accounts predate the
-    -- chain field would otherwise show an empty list and no way back.
-    if #here > 0 then self.wallets = here end
+    self.wallets = here
   end
   local active = info and info.active_address
   -- `json.null` decodes to a table, so an absent active account is flattened
@@ -1039,6 +1058,25 @@ function Model:begin_send(to, amount)
     self:emit("confirm")
   end)
   return true
+end
+
+--- Pay one wallet in the list `QUICK_AMOUNT`, from whichever wallet is active.
+---
+--- The row is the *recipient*, and pressing its button must not quietly make
+--- it the sender as well. Paying a wallet and switching to it are two different
+--- intentions, and a button that did both would move the money out of an
+--- account nobody had selected — so this deliberately does not go anywhere near
+--- `select`, and the sender stays whatever `active` already was.
+---
+--- Goes through `begin_send` like every other transfer: the wallet prices it,
+--- checks the balance covers it, and the same dialog asks before anything is
+--- signed. A quick send is quicker to *start*, not quicker to approve.
+function Model:quick_send(index)
+  local account = self.wallets[index]
+  if not account then
+    return self:fail({ code = "usage", message = "no such wallet" })
+  end
+  return self:begin_send(account.address, Model.QUICK_AMOUNT)
 end
 
 function Model:confirm_send()

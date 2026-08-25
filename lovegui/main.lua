@@ -57,6 +57,19 @@ local L = layout.compute(theme.WIDTH, theme.HEIGHT)
 --- its side should come back that way.
 local LAYOUT_FILE = "layout"
 
+--- What the per-row quick-send button says.
+---
+--- Four characters, and not for brevity's sake: the wallet list is a 196-pixel
+--- column that already holds a name and an address, and the word "QUICKSEND"
+--- is 73 pixels of it. Spelling it out would have cost the address half its
+--- characters, and an address is the one thing on that row nobody can afford
+--- to have shortened — it is how you tell two wallets apart.
+---
+--- The amount is not on the button because it is on the confirmation, which is
+--- where it matters: nothing is signed until that dialog is answered, and it
+--- names the amount, the recipient and the wallet being spent from.
+local QUICK_LABEL = "SEND"
+
 --- Turn the whole game on its side, or back.
 ---
 --- `remember` is false for a turn nobody asked for — the screenshot harness
@@ -1109,6 +1122,27 @@ local function draw_card(model, entry, face, place)
   })
 end
 
+--- Trim text to a pixel width, saying so with a trailing "…".
+---
+--- `theme.ellipsis` counts characters from both ends, which is right for an
+--- address — the two ends are what identify it — and wrong for a name, whose
+--- end carries nothing. A name loses its tail instead.
+---
+--- Not a bare scissor: clipped text stops mid-stroke and reads as a rendering
+--- fault, where "account0-card…" reads as a name that goes on. `keep_end` of
+--- zero cannot be passed to `theme.ellipsis` for this — `("abc"):sub(-0)` is
+--- the whole string in Lua, so it would return the text it was asked to trim.
+local function fit_text(text, width, font)
+  if theme.width(text, font) <= width then return text end
+  local kept = #text
+  while kept > 1 do
+    kept = kept - 1
+    local candidate = text:sub(1, kept) .. "…"
+    if theme.width(candidate, font) <= width then return candidate end
+  end
+  return "…"
+end
+
 local function draw_wallets(model, state, x)
   local height = L.list.h
 
@@ -1144,15 +1178,40 @@ local function draw_wallets(model, state, x)
       L.list.y + height / 2 - 2, theme.colour.faint, theme.font.small)
   end
 
+  -- The per-row pay button, measured rather than assumed at some number that
+  -- happens to be right for this label. It is the same width on every row, so
+  -- the buttons line up into a column instead of a ragged edge.
+  local pay_w = theme.width(QUICK_LABEL, theme.font.small) + 6
+
   for slot = 1, rows do
     local i = slot + model.scroll
     local account = model.wallets[i]
     if not account then break end
     local box = { x = list.x, y = list.y + (slot - 1) * row_h, w = list.w, h = row_h - 2 }
     local selected = account.address == model.active
+
+    -- One press pays this wallet `QUICK_AMOUNT` from whichever wallet is
+    -- active. Never on the active row: a wallet paying itself moves nothing
+    -- and still costs the fee, and the wallet refuses it anyway.
+    --
+    -- Anchored to the frame rather than to `row_x`, so it does not slide with
+    -- the selection underneath it. A button that spends money should be where
+    -- it was a moment ago, and not two pixels along because the pointer
+    -- arrived.
+    local pay = nil
+    if not selected then
+      pay = { x = box.x + box.w - pay_w, y = box.y + 4, w = pay_w, h = 17 }
+    end
+
     local clicked, hovered, row_x, slide = widgets.row(game.springs, "row" .. i, box, state,
       selected or model.selected == i)
-    if clicked then model:select(i) end
+    -- The button sits inside the row, and the row is one big click target, so
+    -- a press on the button would otherwise also select the row. Paying a
+    -- wallet and moving into it are different intentions and this is the one
+    -- that must not do both.
+    if clicked and not (pay and widgets.hit(state.mouse_x, state.mouse_y, pay)) then
+      model:select(i)
+    end
 
     local ink = selected and theme.colour.cyan
       or (hovered and theme.colour.text or theme.colour.dim)
@@ -1161,10 +1220,54 @@ local function draw_wallets(model, state, x)
       glow = selected and 0.55 or 0,
       glow_colour = theme.colour.gold,
     })
-    theme.text(account.label, row_x + 26, box.y + 1, ink, theme.font.small)
-    theme.text(theme.ellipsis(account.address, 8, 6), row_x + 26, box.y + 14,
-      selected and theme.colour.cyan_dark or theme.colour.faint, theme.font.small)
 
+    -- What the name and the address have left once the button has taken its
+    -- end of the row.
+    --
+    -- The width is reserved on every row, including the active one that draws
+    -- no button: measuring each row against its own leftover space made the
+    -- active wallet's address two characters longer than all the others, and a
+    -- column of addresses that are not the same length is harder to read down,
+    -- which is the only thing it is for.
+    --
+    -- Measured from the row's resting position plus the five pixels it slides
+    -- when selected, so the address keeps its length through the animation
+    -- rather than dropping a character as the row moves.
+    local text_x = row_x + 26
+    local edge = box.x + box.w - pay_w - 3
+    local budget = edge - (box.x + 26 + 5)
+    local short
+    for _, pair in ipairs({ { 8, 6 }, { 8, 5 }, { 7, 5 }, { 6, 4 }, { 5, 4 }, { 4, 4 } }) do
+      short = theme.ellipsis(account.address, pair[1], pair[2])
+      if theme.width(short, theme.font.small) <= budget then break end
+    end
+    -- A label is whatever its owner called it, so it loses its tail rather
+    -- than being shortened from both ends the way the address is.
+    --
+    -- The clip is a second line of defence behind that, and its box is
+    -- deliberately taller than the row: it is here to hold text back from the
+    -- button, which is a question about width only, and a box the row's own
+    -- height cut the bottom two pixels off every address — the second line
+    -- starts fourteen pixels down and the glyphs are taller than the eleven
+    -- that leaves.
+    local room = { x = text_x, y = box.y - 2, w = math.max(0, edge - text_x), h = row_h + 4 }
+    theme.clip(room, function()
+      theme.text(fit_text(account.label, budget, theme.font.small),
+        text_x, box.y + 1, ink, theme.font.small)
+      theme.text(short, text_x, box.y + 14,
+        selected and theme.colour.cyan_dark or theme.colour.faint, theme.font.small)
+    end)
+
+    if pay then
+      local pressed = widgets.button(game.springs, "pay" .. i, pay, QUICK_LABEL, state, {
+        colour = theme.colour.gold,
+        font = theme.font.small,
+        -- While the wallet is pricing one transfer, a second press would
+        -- queue a second — and the two would come back as two dialogs.
+        disabled = model:busy(),
+      })
+      if pressed then model:quick_send(i) end
+    end
   end
 
   -- A scrollbar, so a list longer than the frame says so and shows where in

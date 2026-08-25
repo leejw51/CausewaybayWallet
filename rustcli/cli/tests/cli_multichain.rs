@@ -770,14 +770,85 @@ fn switching_to_another_chains_network_moves_the_wallet_with_it() {
     assert_eq!(wallet.json(&["account", "show"])["chain"], "evm");
 }
 
-/// A wallet with nothing on the chain it moves to still moves.
+/// A wallet with nothing on the chain it moves to still moves — and arrives
+/// holding the account it always had there.
+///
+/// A wallet is one phrase and one index, and every chain derives its own
+/// account at that index; a store that has only ever written the EVM one is
+/// missing a record, not an account. Before this the move landed nowhere, and
+/// every front end covered for it the same wrong way — by going on showing the
+/// chain just left. The screen said Solana over a column of `0x…`, which is an
+/// address offered for a deposit that cannot arrive on the chain named above
+/// it.
 #[test]
-fn switching_to_a_chain_with_no_account_still_switches() {
+fn switching_to_a_chain_with_no_account_derives_one_there() {
     let wallet = Wallet::new();
     // EVM only: nothing to make active on Solana.
     wallet.json(&["account", "new"]);
-    wallet.json(&["network", "use", "solana-devnet"]);
+    let switched = wallet.json(&["network", "use", "solana-devnet"]);
     assert_eq!(wallet.json(&["network", "current"])["key"], "solana-devnet");
+
+    let derived = switched["derived"].as_array().expect("a list of addresses");
+    assert_eq!(derived.len(), 1, "one wallet, one Solana account");
+    let shown = wallet.json(&["account", "show"]);
+    assert_eq!(shown["chain"], "solana");
+    assert_eq!(shown["address"], derived[0]);
+
+    // The same address the wallet would have had if it had been made on every
+    // chain from the start — this derives an account, it does not invent one.
+    let phrase = wallet.json(&["account", "show", "--secret", "--chain", "evm"])["mnemonic"]
+        .as_str()
+        .expect("the phrase is stored")
+        .to_string();
+    let fresh = Wallet::new();
+    let imported = fresh.json(&[
+        "--yes",
+        "account",
+        "import-mnemonic",
+        "-m",
+        &phrase,
+        "--every-chain",
+    ]);
+    let same = imported
+        .as_array()
+        .expect("one account per chain")
+        .iter()
+        .find(|a| a["chain"] == "solana")
+        .expect("a solana account");
+    assert_eq!(same["address"], derived[0]);
+
+    // And moving again does not write a second copy of what is already there.
+    wallet.json(&["network", "use", "cronos-testnet"]);
+    let again = wallet.json(&["network", "use", "solana-devnet"]);
+    assert_eq!(
+        again["derived"].as_array().expect("a list").len(),
+        0,
+        "the account was already held; nothing was owed"
+    );
+}
+
+/// A wallet with no phrase to derive from is left exactly as it is.
+///
+/// An account imported from a bare private key is one key on one chain and
+/// nothing else — there is no seed behind it, so it has no face on Solana to
+/// write down. Inventing one would attach an address to a wallet whose owner
+/// cannot reach it from anything they hold.
+#[test]
+fn a_private_key_wallet_gains_nothing_on_a_chain_switch() {
+    let wallet = Wallet::new();
+    wallet.json(&[
+        "account",
+        "import-key",
+        "--private-key",
+        "0x4c0883a69102937d6231471b5dbb6204fe5129617082792ae468d01a3f362318",
+    ]);
+    let switched = wallet.json(&["network", "use", "solana-devnet"]);
+    assert_eq!(switched["derived"].as_array().expect("a list").len(), 0);
+    assert_eq!(
+        wallet.json(&["account", "list"]).as_array().unwrap().len(),
+        1,
+        "nothing may be added to a wallet that cannot derive it"
+    );
 }
 
 #[test]

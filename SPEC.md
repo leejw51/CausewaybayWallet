@@ -200,6 +200,24 @@ The two exceptions are `testnet` and `mainnet`, which meant Cronos before the
 wallet had other chains and still do. `--chain solana -n testnet` reaches
 `solana-testnet`, because inside a chain a short name is unambiguous.
 
+### 2.2 Moving to another chain's network
+
+`network use` writes both `network` and `network.<chain>`, and moves the wallet
+onto that chain: `active_account` is repointed at the chain's account, so the
+next command does not run on the chain just left.
+
+Where a wallet holds nothing on that chain, the missing accounts are **derived
+first** — same phrase, same index, one per wallet the store already has. This
+creates no new wallet: a wallet is one mnemonic and one index, and each chain's
+address at that index exists whether or not the store has written it down. The
+addresses written come back as `derived` in the command's data.
+
+Two kinds of account are skipped, because for them the phrase alone would not
+reproduce the wallet: one imported from a bare private key, which has no
+mnemonic, and one made with a BIP-39 passphrase, which the store does not keep.
+Such a wallet simply has no account on the new chain, and a front end must say
+so rather than falling back to the chain it came from.
+
 ## 3. Key derivation
 
 * BIP-39 English mnemonics, 12/15/18/21/24 words, empty passphrase by default.
