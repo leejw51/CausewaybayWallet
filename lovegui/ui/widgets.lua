@@ -17,6 +17,15 @@ local sound = require("ui.sound")
 
 local widgets = {}
 
+--- A box slid sideways, for the screens that draw mid-swipe.
+---
+--- Every screen takes an `x` offset so a transition can drag it; layout boxes
+--- are authored at rest, and this is the one place the two meet.
+function widgets.offset(box, x)
+  return { x = box.x + (x or 0), y = box.y, w = box.w, h = box.h }
+end
+
+
 --- A bag of springs, created on demand.
 ---
 --- A screen makes one of these and hands it to every widget it draws. A widget

@@ -126,6 +126,21 @@ function theme.load()
   theme.canvas:setFilter("nearest", "nearest")
 end
 
+--- Turn the canvas: 480×270, or 270×480 on its side.
+---
+--- The size is state everything else reads (`theme.WIDTH`, the transform, the
+--- banner), so changing it is one call here rather than a rebuild scattered
+--- through the screens. The old canvas is dropped and a fresh one made — the
+--- pixels on it were one frame old and about to be redrawn anyway.
+function theme.set_size(width, height)
+  theme.WIDTH = width
+  theme.HEIGHT = height
+  if love and love.graphics and love.graphics.newCanvas then
+    theme.canvas = love.graphics.newCanvas(width, height)
+    theme.canvas:setFilter("nearest", "nearest")
+  end
+end
+
 -- ------------------------------------------------------------------ scaling
 
 --- How the canvas maps onto the window: whole-number scale, centred.

@@ -22,7 +22,8 @@ local t = require("tests.runner")
 local support = require("tests.support")
 
 local SUITES = {
-  "anim", "particles", "sound", "theme", "card", "launch", "export", "login", "boot", "model",
+  "anim", "particles", "sound", "theme", "layout", "card", "launch", "export", "login",
+  "boot", "model",
 }
 
 local wanted = {}

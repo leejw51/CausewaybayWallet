@@ -1,0 +1,112 @@
+--- The layout arithmetic, in both orientations.
+---
+--- Drawing cannot be tested headlessly, but where things go can — and "the
+--- card overlaps the list" is a layout number being wrong, not a drawing
+--- being wrong. Landscape is pinned to the exact values the game shipped
+--- with, because the layout module was extracted to add portrait, not to
+--- move anything. Portrait is held to invariants: everything inside the
+--- canvas, nothing overlapping, in the same top-to-bottom order.
+
+local t = require("tests.runner")
+local layout = require("ui.layout")
+
+local function overlaps(a, b)
+  return a.x < b.x + b.w and b.x < a.x + a.w
+    and a.y < b.y + b.h and b.y < a.y + a.h
+end
+
+local function inside(box, width, height)
+  return box.x >= 0 and box.y >= 0
+    and box.x + box.w <= width and box.y + box.h <= height
+end
+
+t.suite("layout / landscape", function()
+  local L = layout.compute(480, 270)
+
+  t.case("is exactly the layout the game shipped with", function()
+    t.equal(L.portrait, false)
+    t.equal(L.top, 68)
+    t.equal(L.bottom, 224)
+    t.equal(L.bar, 230)
+    t.equal(L.list.x, 8)
+    t.equal(L.list.w, 196)
+    t.equal(L.detail.x, 212)
+    t.equal(L.detail.w, 260)
+    t.equal(L.list.h, 156)
+    -- The action bar, button by button: these were hand-placed offsets, and
+    -- the extraction must reproduce them to the pixel.
+    t.equal(L.actions.new.x, 8)
+    t.equal(L.actions.refresh.x, 212)
+    t.equal(L.actions.copy.x, 278)
+    t.equal(L.actions.use.x, 324)
+    t.equal(L.actions.save.x, 386)
+    t.equal(L.actions.keys.x, 432)
+    t.equal(L.status_edge, 206)
+  end)
+
+  t.case("the send screen shares the wallets screen's columns", function()
+    t.equal(L.pad.x, L.list.x)
+    t.equal(L.pad.w, L.list.w)
+    t.equal(L.form.x, L.detail.x)
+    t.equal(L.form.w, L.detail.w)
+  end)
+end)
+
+t.suite("layout / portrait", function()
+  local L = layout.compute(270, 480)
+
+  t.case("everything fits the canvas", function()
+    t.equal(L.portrait, true)
+    for _, name in ipairs({ "list", "detail", "pad", "form", "net" }) do
+      t.ok(inside(L[name], 270, 480), name .. " runs off the canvas")
+    end
+    for name, box in pairs(L.actions) do
+      t.ok(inside(box, 270, 480), name .. " runs off the canvas")
+    end
+    for name, box in pairs(L.header.buttons) do
+      t.ok(inside(box, 270, 480), "header " .. name .. " runs off the canvas")
+    end
+  end)
+
+  t.case("the bands stack without touching", function()
+    t.ok(not overlaps(L.list, L.detail), "the card is under the list, not on it")
+    t.ok(not overlaps(L.form, L.pad), "the pad is under the form, not on it")
+    t.ok(L.list.y < L.detail.y, "list first, card second")
+    t.ok(L.form.y < L.pad.y, "form first, pad second")
+  end)
+
+  t.case("the chrome keeps its order: tabs, content, actions, banner", function()
+    t.ok(L.header.tabs_y >= L.header.band_h, "tabs below the header band")
+    t.ok(L.top > L.header.tabs_y, "content below the tabs")
+    t.ok(L.bar >= L.bottom, "actions below the content")
+    t.ok(L.bar2 > L.bar, "the verb row below the + NEW row")
+    t.ok(L.bar2 + L.button_h <= 480 - 17, "nothing under the warning banner")
+  end)
+
+  t.case("the action rows fit, at full size", function()
+    for name, box in pairs(L.actions) do
+      t.ok(box.h == L.button_h, name .. " was shrunk to fit")
+    end
+    local verbs = { "refresh", "copy", "use", "save", "keys" }
+    for i = 2, #verbs do
+      local a, b = L.actions[verbs[i - 1]], L.actions[verbs[i]]
+      t.ok(a.x + a.w <= b.x, verbs[i - 1] .. " overlaps " .. verbs[i])
+    end
+  end)
+
+  t.case("a card with a card's proportions fits the detail band", function()
+    local face_h = math.min(L.detail.h, math.floor(L.detail.w / 1.585))
+    local face_w = math.floor(face_h * 1.585)
+    t.ok(face_w <= L.detail.w and face_h <= L.detail.h)
+    t.ok(face_h >= 120, "a card too small to read is not a card")
+  end)
+
+  t.case("ten networks fit one column with no scrolling", function()
+    local rows = 10
+    local row_h = math.min(46, math.floor((L.net.h - 6) / rows) - 4)
+    t.ok(row_h >= 24, "a network row needs room for its name and symbol")
+    t.ok(rows * (row_h + 4) <= L.net.h, "the rows run out of frame")
+  end)
+end)
+
+return true

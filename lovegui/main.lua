@@ -252,6 +252,9 @@ end
 
 function love.load()
   theme.load()
+  -- The way up it was left: a wallet stood on its side comes back that way.
+  local saved = love.filesystem.read(LAYOUT_FILE)
+  if saved == "portrait" and not L.portrait then set_orientation(true) end
   sprite.load()
   sound.load()
   love.keyboard.setKeyRepeat(true)
@@ -764,8 +767,8 @@ end
 
 local function draw_header(model)
   local t = game.entrance.value
-  theme.rect(theme.colour.deep, 0, 0, theme.WIDTH, 34)
-  theme.rule(0, 34, theme.WIDTH, theme.colour.cyan_dark, 0.8 * t)
+  theme.rect(theme.colour.deep, 0, 0, theme.WIDTH, L.header.band_h)
+  theme.rule(0, L.header.band_h, theme.WIDTH, theme.colour.cyan_dark, 0.8 * t)
 
   local bob = math.sin(game.time * 2) * 1.5
   sprite.draw_glowing("logo", 20, 17 + bob, 26, {
@@ -778,11 +781,21 @@ local function draw_header(model)
   theme.text("BANK", 38, 18, theme.colour.dim, theme.font.small, t)
 
   -- The chain, then the network within it. Not the chain *id*: only EVM has
-  -- one, and "chain nil" was what the other three used to render.
+  -- one, and "chain nil" was what the other three used to render. Portrait
+  -- shows the key alone — it carries the chain in its first word, and a
+  -- 254-pixel row has no room to say it twice.
   local network = model and model.info and model.info.network or "…"
   local chain = model and model.info and model.info.chain or ""
-  theme.text_right(("%s · %s"):format(chain, network),
-    theme.WIDTH - 158, 11, theme.colour.dim, theme.font.small, t)
+  local where = L.portrait and network or ("%s · %s"):format(chain, network)
+  local spot = L.header.network
+  while theme.width(where, theme.font.small) > spot.max_w and #where > 1 do
+    where = where:sub(1, -2)
+  end
+  if spot.align == "right" then
+    theme.text_right(where, spot.x, spot.y, theme.colour.dim, theme.font.small, t)
+  else
+    theme.text(where, spot.x, spot.y, theme.colour.dim, theme.font.small, t)
+  end
 
   -- A spinner while the node is thinking, so "busy" is never just a word.
   if model and model:busy() then
@@ -792,7 +805,7 @@ local function draw_header(model)
       local fade = 1 - (i / 6)
       theme.set(theme.colour.cyan, fade * 0.9)
       love.graphics.rectangle("fill",
-        theme.WIDTH - 166 + math.cos(a) * r, 24 + math.sin(a) * r, 2, 2)
+        L.header.spinner.x + math.cos(a) * r, L.header.spinner.y + math.sin(a) * r, 2, 2)
     end
   end
 end
@@ -801,7 +814,7 @@ local function draw_tabs(model, state)
   local labels = { wallets = "WALLETS", send = "SEND", network = "NETWORK" }
   local w = 74
   for i, name in ipairs(Model.SCREENS) do
-    local box = { x = 8 + (i - 1) * (w + 4), y = 38, w = w, h = 19 }
+    local box = { x = 8 + (i - 1) * (w + 4), y = L.header.tabs_y, w = w, h = 19 }
     local active = model.screen == name
     local spring = game.springs:get("tab." .. name, 240, 0.6)
     spring:to(active and 1 or 0)
@@ -863,7 +876,10 @@ local function draw_mode_button(box, state)
 end
 
 --- Where that button goes on a screen that has no header to hang it in.
-local MODE_BOX = { x = theme.WIDTH - 50, y = 4, w = 44, h = 15 }
+--- A function, because the width it hangs from changes with the orientation.
+local function mode_box()
+  return { x = theme.WIDTH - 50, y = 4, w = 44, h = 15 }
+end
 
 --- The header's two buttons: the window mode, and the way out.
 local function draw_header_buttons(model, state)
@@ -871,7 +887,15 @@ local function draw_header_buttons(model, state)
   -- letter is typed into a field somewhere, so `M` has to be ignored on the
   -- screens that take text — and a control that stops working on some screens
   -- is not a control anyone trusts. This one is always here.
-  local sfx = { x = theme.WIDTH - 152, y = 5, w = 36, h = 15 }
+  -- TALL/WIDE turns the whole game on its side. Labelled like FULL/WIN: the
+  -- button names what pressing it gives you, not what you already have.
+  local turn = L.header.buttons.layout
+  if widgets.button(game.springs, "layout", turn, L.portrait and "WIDE" or "TALL",
+      state, { colour = theme.colour.cyan, font = theme.font.small }) then
+    set_orientation(not L.portrait)
+  end
+
+  local sfx = L.header.buttons.sfx
   if widgets.button(game.springs, "sfx", sfx, sound.enabled and "SFX" or "MUTE",
       state, {
         colour = sound.enabled and theme.colour.green or theme.colour.faint,
@@ -885,15 +909,14 @@ local function draw_header_buttons(model, state)
     sound.play("press")
   end
 
-  local mode = { x = theme.WIDTH - 112, y = 5, w = 44, h = 15 }
-  draw_mode_button(mode, state)
+  draw_mode_button(L.header.buttons.mode, state)
 
   -- LOGOUT deletes the store, so it asks. The first press arms it and the
   -- label says what the second one does; it disarms itself after a few
   -- seconds, because walking away should not leave the wallet one stray click
   -- from being wiped.
   local armed = game.armed.logout ~= nil
-  local out = { x = theme.WIDTH - 62, y = 5, w = 54, h = 15 }
+  local out = L.header.buttons.logout
   if widgets.button(game.springs, "logout", out, armed and "WIPE?" or "LOGOUT", state,
       { colour = armed and theme.colour.gold or theme.colour.red,
         font = theme.font.small }) then
@@ -916,22 +939,32 @@ local function draw_header_buttons(model, state)
 end
 
 --- The layout every screen shares, so the columns line up between them.
-local L = {
-  margin = 8,
-  -- 68 leaves room above for a frame's title, which sits *on* its top edge and
-  -- would otherwise collide with the tab row ending at 57.
-  top = 68,
-  -- Frames stop here; below is the action bar (230..248) and then the warning
-  -- banner (253..270). Worked out once so nothing overlaps by a pixel.
-  bottom = 224,
-  bar = 230,
-  button_h = 18,
-  gutter = 8,
-}
-L.left = L.margin
-L.column = 196                                        -- the list column
-L.right = L.left + L.column + L.gutter                 -- the detail column
-L.right_w = theme.WIDTH - L.right - L.margin
+---
+--- Computed, not written down: `ui/layout.lua` holds the arithmetic for both
+--- orientations, and the LAYOUT button swaps which one this is.
+local layout = require("ui.layout")
+local L = layout.compute(theme.WIDTH, theme.HEIGHT)
+
+--- Remembered across launches, like the session: a wallet someone stood on
+--- its side should come back that way.
+local LAYOUT_FILE = "layout"
+
+--- Turn the whole game on its side, or back.
+local function set_orientation(portrait)
+  if portrait == L.portrait then return end
+  theme.set_size(theme.HEIGHT, theme.WIDTH)
+  L = layout.compute(theme.WIDTH, theme.HEIGHT)
+  pcall(love.filesystem.write, LAYOUT_FILE, portrait and "portrait" or "landscape")
+  -- A windowed window turns with the canvas, keeping its scale; fullscreen
+  -- stays as it is and the transform letterboxes, as it always has.
+  if not love.window.getFullscreen() then
+    local _, _, flags = love.window.getMode()
+    local scale = math.max(1, math.floor(math.min(
+      love.graphics.getWidth() / theme.HEIGHT, love.graphics.getHeight() / theme.WIDTH)))
+    flags.minwidth, flags.minheight = theme.WIDTH, theme.HEIGHT
+    love.window.setMode(theme.WIDTH * scale, theme.HEIGHT * scale, flags)
+  end
+end
 
 --- Two lines: a label over a quieter value. The unit of most of this UI.
 local function stat(x, y, label, value, colour, font)
@@ -998,7 +1031,7 @@ local function draw_card(model, entry, face, place)
 end
 
 local function draw_wallets(model, state, x)
-  local height = L.bottom - L.top
+  local height = L.list.h
 
   -- ------------------------------------------------------------ the list
   --
@@ -1022,14 +1055,14 @@ local function draw_wallets(model, state, x)
     range = ("%d-%d OF %d"):format(model.scroll + 1,
       math.min(#model.wallets, model.scroll + rows), #model.wallets)
   end
-  local list = widgets.frame(x + L.left, L.top, L.column, height,
+  local list = widgets.frame(x + L.list.x, L.list.y, L.list.w, height,
     ("WALLETS %d"):format(#model.wallets), { note = range })
 
   if #model.wallets == 0 then
-    theme.text_centred("no wallets yet", x + L.left + L.column / 2, L.top + height / 2 - 16,
-      theme.colour.faint, theme.font.small)
-    theme.text_centred("press + NEW below", x + L.left + L.column / 2,
-      L.top + height / 2 - 2, theme.colour.faint, theme.font.small)
+    theme.text_centred("no wallets yet", x + L.list.x + L.list.w / 2,
+      L.list.y + height / 2 - 16, theme.colour.faint, theme.font.small)
+    theme.text_centred("press + NEW below", x + L.list.x + L.list.w / 2,
+      L.list.y + height / 2 - 2, theme.colour.faint, theme.font.small)
   end
 
   for slot = 1, rows do
@@ -1052,13 +1085,7 @@ local function draw_wallets(model, state, x)
     theme.text(account.label, row_x + 26, box.y + 1, ink, theme.font.small)
     theme.text(theme.ellipsis(account.address, 8, 6), row_x + 26, box.y + 14,
       selected and theme.colour.cyan_dark or theme.colour.faint, theme.font.small)
-    -- Which chain this account is on, in that chain's colour. A list holding
-    -- four address formats is unreadable without it: `addr_test1…` and
-    -- `mn_addr…` are not guesses a reader should have to make.
-    if account.chain then
-      theme.text_right(account.chain, row_x + box.w - 6, box.y + 7,
-        theme.chain_colour(account.chain), theme.font.small)
-    end
+
   end
 
   -- A scrollbar, so a list longer than the frame says so and shows where in
@@ -1089,13 +1116,15 @@ local function draw_wallets(model, state, x)
   -- `ui/card.lua` for how it is dealt from the address.
   local selected = model.wallets[model.selected]
 
-  -- A real card's proportions, centred in the column. The ratio is the reason
-  -- it reads as a card at a glance and not as a panel with a picture on it.
-  local face_h = L.bottom - L.top
+  -- A real card's proportions, centred in its region. The ratio is the reason
+  -- it reads as a card at a glance and not as a panel with a picture on it —
+  -- so when the region is the wrong shape (portrait's band is wide and short),
+  -- the card keeps its ratio and centres, rather than stretching to fill.
+  local face_h = math.min(L.detail.h, math.floor(L.detail.w / 1.585))
   local face_w = math.floor(face_h * 1.585)
   local face = {
-    x = x + L.right + math.floor((L.right_w - face_w) / 2),
-    y = L.top,
+    x = x + L.detail.x + math.floor((L.detail.w - face_w) / 2),
+    y = L.detail.y + math.floor((L.detail.h - face_h) / 2),
     w = face_w,
     h = face_h,
   }
@@ -1118,7 +1147,7 @@ local function draw_wallets(model, state, x)
     --
     -- Clipped to the column, because a card number sliding across the wallet
     -- list is not a transition, it is a bug with an easing curve on it.
-    local window = { x = x + L.right, y = L.top - 2, w = L.right_w, h = face.h + 4 }
+    local window = { x = x + L.detail.x, y = face.y - 2, w = L.detail.w, h = face.h + 4 }
     theme.clip(window, function()
       if game.face.next then
         local leaving, arriving = card.swipe(game.face.turn, face.w + 16, game.face.dir)
@@ -1142,13 +1171,13 @@ local function draw_wallets(model, state, x)
   -- 60 + 40 + 56 + 40 + 40 across five buttons and 6 between them is exactly
   -- the 260 the column has, so the row is flush at both ends.
   local small = theme.font.small
-  local refresh = { x = x + L.right, y = L.bar, w = 60, h = L.button_h }
+  local refresh = widgets.offset(L.actions.refresh, x)
   if widgets.button(game.springs, "refresh", refresh, "REFRESH", state,
       { font = small, disabled = model:busy() or #model.wallets == 0 }) then
     model:fetch_balance()
   end
 
-  local new = { x = x + L.left, y = L.bar, w = 84, h = L.button_h }
+  local new = widgets.offset(L.actions.new, x)
   if widgets.button(game.springs, "new", new, "+ NEW", state,
       { colour = theme.colour.green }) then
     model:create("")
@@ -1157,14 +1186,14 @@ local function draw_wallets(model, state, x)
   -- The card's own verbs. COPY takes the address the card is showing — the one
   -- on screen, not the one the wallet happens to be spending from, because the
   -- card is what a person is looking at.
-  local copy = { x = x + L.right + 66, y = L.bar, w = 40, h = L.button_h }
+  local copy = widgets.offset(L.actions.copy, x)
   if widgets.button(game.springs, "copy", copy, "COPY", state,
       { font = small, colour = theme.colour.cyan, disabled = selected == nil }) then
     copy_to_clipboard(model, selected.address, "address")
   end
 
   local usable = selected ~= nil and selected.address ~= model.active
-  local use = { x = x + L.right + 112, y = L.bar, w = 56, h = L.button_h }
+  local use = widgets.offset(L.actions.use, x)
   if widgets.button(game.springs, "use", use, usable and "USE" or "IN USE",
       state, { font = small, colour = theme.colour.gold, disabled = not usable }) then
     model:select(model.selected)
@@ -1176,7 +1205,7 @@ local function draw_wallets(model, state, x)
   -- It still asks, because the question is not *whether* — it is *where*. The
   -- directory these land in is one nobody chose and most people have never
   -- opened, and a file you cannot find is a file you cannot delete.
-  local save = { x = x + L.right + 174, y = L.bar, w = 40, h = L.button_h }
+  local save = widgets.offset(L.actions.save, x)
   if widgets.button(game.springs, "save", save, "SAVE", state,
       { font = small, colour = theme.colour.green, disabled = #model.wallets == 0 }) then
     model:ask_save()
@@ -1185,7 +1214,7 @@ local function draw_wallets(model, state, x)
   -- And the keys: every mnemonic and every private key, in one file, in the
   -- clear. The dialog spells out the path and what the file is worth to
   -- whoever reads it, and nothing is written until it is answered.
-  local keys = { x = x + L.right + 220, y = L.bar, w = 40, h = L.button_h }
+  local keys = widgets.offset(L.actions.keys, x)
   if widgets.button(game.springs, "keys", keys, "KEYS", state,
       { font = small, colour = theme.colour.red,
         disabled = #model.wallets == 0 }) then
@@ -1194,7 +1223,6 @@ local function draw_wallets(model, state, x)
 end
 
 local function draw_send(model, state, x)
-  local height = L.bottom - L.top
 
   -- The rocket gets its own column, so the exhaust has somewhere to go.
   --
@@ -1202,7 +1230,7 @@ local function draw_send(model, state, x)
   -- used to be. The columns are supposed to line up between screens, and a
   -- narrow pad left a hundred pixels of nothing between it and the form —
   -- which read as the form having drifted right rather than as space.
-  local pad = widgets.frame(x + L.left, L.top, L.column, height, "LAUNCH")
+  local pad = widgets.frame(x + L.pad.x, L.pad.y, L.pad.w, L.pad.h, "LAUNCH")
   rocket.x, rocket.y = pad.x + pad.w / 2, pad.y + 42
   local risen, t = flight()
   local thrust = model:busy() and 1 or 0
@@ -1224,7 +1252,7 @@ local function draw_send(model, state, x)
       (1 - t / 0.35) * 0.8)
   end
 
-  local form = widgets.frame(x + L.right, L.top, L.right_w, height, "TRANSFER")
+  local form = widgets.frame(x + L.form.x, L.form.y, L.form.w, L.form.h, "TRANSFER")
 
   -- Which wallet the money leaves, at the top, before anything about where it
   -- is going. A transfer reads from-then-to, and the wallet being spent from
@@ -1258,9 +1286,14 @@ local function draw_send(model, state, x)
 
   -- The recipient field gives up room to its own buttons: pasting is how an
   -- address realistically gets in here, and typing 42 hex characters is not.
+  -- The placeholder shows the shape of an address *here*: `0x…` on a chain
+  -- whose addresses are bech32 would teach exactly the wrong thing.
+  local shapes = {
+    evm = "0x…", solana = "base58…", cardano = "addr…", midnight = "mn_addr…",
+  }
   local to = { x = form.x, y = form.y + 42, w = form.w - 108, h = field_h }
   widgets.field(game.springs, "to", to, model.form.to, "RECIPIENT",
-    model.focus == "to", { placeholder = "0x…", ellipsis = 8 })
+    model.focus == "to", { placeholder = shapes[model:chain()] or "address…", ellipsis = 8 })
 
   local paste = { x = form.x + form.w - 104, y = to.y, w = 56, h = field_h }
   if widgets.button(game.springs, "paste", paste, "PASTE", state,
@@ -1322,19 +1355,20 @@ local function draw_send(model, state, x)
 end
 
 local function draw_network(model, state, x)
-  local height = L.bottom - L.top
-  local frame = widgets.frame(x + L.margin, L.top, theme.WIDTH - L.margin * 2, height,
-    "NETWORK")
+  local height = L.net.h
+  local frame = widgets.frame(x + L.net.x, L.net.y, L.net.w, height, "NETWORK")
 
-  -- Every network on screen at once, in two columns: ten of them will not fit
-  -- in one, and a network you have to scroll to find is a network the wallet
-  -- has hidden from you.
+  -- Every network on screen at once, with no scrolling: a network you have to
+  -- scroll to find is a network the wallet has hidden from you. Two columns
+  -- where the frame is wide enough for two names side by side; portrait is
+  -- not, and is tall enough not to need them.
   local networks = model:networks()
-  local rows = math.ceil(#networks / 2)
+  local columns = frame.w >= 400 and 2 or 1
+  local rows = math.ceil(#networks / columns)
   local row_h = math.min(46, math.floor((height - 6) / math.max(rows, 1)) - 4)
-  local column_w = math.floor((frame.w - 6) / 2)
+  local column_w = math.floor((frame.w - 6 * (columns - 1)) / columns)
   for i, network in ipairs(networks) do
-    local column = (i - 1) >= rows and 1 or 0
+    local column = math.floor((i - 1) / rows)
     local row = (i - 1) % rows
     local box = {
       x = frame.x + column * (column_w + 6),
@@ -1398,7 +1432,7 @@ local function draw_status(model)
   -- others put nothing there at all. Measuring to the wallet screen's buttons
   -- everywhere cut a message that had the width of the window to spread out
   -- in — "the recipient is this…" is not a refusal anybody can act on.
-  local edge = model.screen == "wallets" and (L.right - 6) or (theme.WIDTH - L.margin)
+  local edge = model.screen == "wallets" and L.status_edge or (theme.WIDTH - L.margin)
   local room = edge - x
   local text = status.text
   while theme.width(text, theme.font.small) > room and #text > 1 do
