@@ -355,9 +355,9 @@ pub const CONFIRMATION_TIMEOUT: Duration = Duration::from_secs(180);
 /// `Iterator::sum` panics on overflow in a debug build and wraps in release,
 /// and every value here is a number the indexer chose. A total that cannot be
 /// represented is a broken endpoint, and saying so beats either.
-fn sum_values(values: impl Iterator<Item = u128>) -> Result<u128> {
-    values.fold(Ok(0u128), |total, value| {
-        total?.checked_add(value).ok_or_else(overflowing_utxos)
+fn sum_values(mut values: impl Iterator<Item = u128>) -> Result<u128> {
+    values.try_fold(0u128, |total, value| {
+        total.checked_add(value).ok_or_else(overflowing_utxos)
     })
 }
 

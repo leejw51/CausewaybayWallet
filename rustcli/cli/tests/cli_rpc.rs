@@ -339,8 +339,7 @@ fn a_stored_ceiling_carries_its_denomination() {
     let value = |key: &str| -> String {
         config
             .iter()
-            .filter(|line| line["key"] == key)
-            .next_back()
+            .rfind(|line| line["key"] == key)
             .unwrap_or_else(|| panic!("no record for {key}"))["value"]
             .as_str()
             .unwrap()
