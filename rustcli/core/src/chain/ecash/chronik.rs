@@ -67,7 +67,13 @@ impl<'a> Reader<'a> {
             if shift >= 64 {
                 return Err(malformed("a number in the reply is longer than 64 bits"));
             }
-            value |= u64::from(byte & 0x7f) << shift;
+            let bits = u64::from(byte & 0x7f);
+            // The tenth group has one bit of room left; a shift would drop the
+            // rest silently and a wrong number is worse than a refusal.
+            if shift == 63 && bits > 1 {
+                return Err(malformed("a number in the reply is longer than 64 bits"));
+            }
+            value |= bits << shift;
             if byte & 0x80 == 0 {
                 return Ok(value);
             }
@@ -500,6 +506,23 @@ mod tests {
             0x10, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f,
         ];
         assert!(BlockchainInfo::decode(&runaway).is_err());
+    }
+
+    /// Ten bytes fit, but the tenth has one bit of room: a value carrying
+    /// more used to have its high bits shifted away, decoding a hostile
+    /// `sats` field to 0 rather than to an error.
+    #[test]
+    fn a_ten_byte_varint_that_overflows_is_refused_rather_than_truncated() {
+        let overflowing = vec![
+            0x10, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x02,
+        ];
+        assert!(BlockchainInfo::decode(&overflowing).is_err());
+
+        // The largest value that does fit still decodes.
+        let max = vec![
+            0x10, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01,
+        ];
+        assert_eq!(BlockchainInfo::decode(&max).unwrap().tip_height, u64::MAX);
     }
 
     #[test]

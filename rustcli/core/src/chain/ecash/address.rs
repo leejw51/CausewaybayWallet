@@ -204,6 +204,25 @@ impl Address {
         if trimmed.is_empty() {
             return Err(error::invalid_address("an address cannot be empty"));
         }
+        // Legacy base58 addresses were retired with the eCash rebrand, and a
+        // wallet that silently converted one would be guessing at a network.
+        // Named before the case check below — base58 is mixed case by nature,
+        // and "never a mix" would be the wrong complaint about one.
+        if trimmed.starts_with('1') || trimmed.starts_with('3') {
+            return Err(error::invalid_address(
+                "that looks like a legacy base58 address; eCash uses CashAddr, \
+                 which names its network — convert it and pass the `ecash:` form",
+            ));
+        }
+        // One case for the whole string, prefix included — the spec's rule,
+        // and checked before the prefix is split off and lowercased, or
+        // `ECASH:qr…` would slip through a check the body alone passes while
+        // every other eCash tool refuses it.
+        if trimmed != trimmed.to_lowercase() && trimmed != trimmed.to_uppercase() {
+            return Err(error::invalid_address(
+                "an address is all lower case or all upper case, never a mix",
+            ));
+        }
         if let Some((prefix, body)) = trimmed.rsplit_once(':') {
             let prefix = prefix.to_lowercase();
             let network = EcashNetwork::from_prefix(&prefix).ok_or_else(|| {
@@ -213,14 +232,6 @@ impl Address {
                 ))
             })?;
             return decode_body(network, body);
-        }
-        // Legacy base58 addresses were retired with the eCash rebrand, and a
-        // wallet that silently converted one would be guessing at a network.
-        if trimmed.starts_with('1') || trimmed.starts_with('3') {
-            return Err(error::invalid_address(
-                "that looks like a legacy base58 address; eCash uses CashAddr, \
-                 which names its network — convert it and pass the `ecash:` form",
-            ));
         }
         let candidates: Vec<Address> = [EcashNetwork::Mainnet, EcashNetwork::Testnet]
             .into_iter()
@@ -494,6 +505,17 @@ mod tests {
         let mixed = "ecash:QRWZYS2Q6XQ98VWZ0KJN6ULU5M6YLJR5FYc909kalg";
         let err = Address::parse(mixed).unwrap_err();
         assert!(err.message.contains("mix"), "{}", err.message);
+
+        // The rule covers the whole string, prefix included — the checksum
+        // sees only the low five bits of each character, so a case-mixed
+        // string would pass a check it should not.
+        for split_case in [
+            "ECASH:qrwzys2q6xq98vwz0kjn6ulu5m6yljr5fyc909kalg",
+            "ecash:QRWZYS2Q6XQ98VWZ0KJN6ULU5M6YLJR5FYC909KALG",
+        ] {
+            let err = Address::parse(split_case).unwrap_err();
+            assert!(err.message.contains("mix"), "{split_case}: {}", err.message);
+        }
     }
 
     #[test]

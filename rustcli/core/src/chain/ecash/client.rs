@@ -93,15 +93,14 @@ impl EcashClient {
 
     fn reply_error(&self, url: &str, reply: &http::BinaryReply) -> crate::error::Error {
         match chronik::error_message(&reply.body) {
-            Some(message) => {
-                if message.to_lowercase().contains("insufficient") {
-                    return error::insufficient_funds(message);
-                }
-                error::rpc_error(format!(
-                    "{} refused the request: {message}",
-                    self.network.name
-                ))
-            }
+            // Deliberately not recoded by substring: "insufficient" in a
+            // Chronik message means a relay policy ("insufficient priority",
+            // "insufficient fee"), never a balance — the wallet counts its own
+            // funds before it builds a transaction, in `tx` and above.
+            Some(message) => error::rpc_error(format!(
+                "{} refused the request: {message}",
+                self.network.name
+            )),
             None => error::rpc_error(format!("{url} returned HTTP {}", reply.status)),
         }
     }
