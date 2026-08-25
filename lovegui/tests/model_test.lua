@@ -1079,6 +1079,69 @@ t.suite("model / sending", function()
   end)
 end)
 
+t.suite("model / quick send", function()
+  --- `begin_send` replaced by a recorder, so these assert what the button asks
+  --- for rather than what a node three seconds away thinks of it.
+  local function watched(model)
+    local seen = {}
+    model.begin_send = function(_, to, amount)
+      seen.to, seen.amount = to, amount
+      return true
+    end
+    return seen
+  end
+
+  t.case("pays the row's own wallet, at the fixed amount", function()
+    local model = model_over()
+    model:create("alpha")
+    model:create("beta")
+    local seen = watched(model)
+
+    t.ok(model:quick_send(2))
+    t.equal(seen.to, model.wallets[2].address)
+    t.equal(seen.amount, Model.QUICK_AMOUNT)
+  end)
+
+  t.case("does not make the row it pays the wallet it pays from", function()
+    -- The whole point of the button: the row is the recipient. A press that
+    -- also selected the row would move the money out of an account nobody
+    -- chose — and the next send after it, too.
+    local model = model_over()
+    model:create("alpha")
+    model:create("beta")
+    local was_active, was_selected = model.active, model.selected
+    watched(model)
+
+    local other
+    for index, account in ipairs(model.wallets) do
+      if account.address ~= model.active then other = index end
+    end
+    t.ok(model:quick_send(other))
+    t.equal(model.active, was_active, "the wallet being spent from must not move")
+    t.equal(model.selected, was_selected, "and neither must the highlight")
+  end)
+
+  t.case("a wallet cannot pay itself", function()
+    -- The view hides the button on the active row; this is the same refusal
+    -- without depending on the view getting that right.
+    local model = model_over()
+    model:create("only")
+    local mine
+    for index, account in ipairs(model.wallets) do
+      if account.address == model.active then mine = index end
+    end
+    t.equal(model:quick_send(mine), false)
+    t.equal(model.status.code, "usage")
+    t.equal(model.confirm, nil, "nothing may be priced, let alone signed")
+  end)
+
+  t.case("a row that is not there is refused, not indexed into", function()
+    local model = model_over()
+    t.equal(model:quick_send(1), false)
+    t.equal(model.status.code, "usage")
+  end)
+end)
+
 t.suite("model / the form", function()
   t.case("types, deletes and moves between fields", function()
     local model = model_over()
