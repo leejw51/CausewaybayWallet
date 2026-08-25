@@ -516,15 +516,22 @@ impl State {
     ///
     /// The pane lists wallets, not accounts, so the chain is the other half of
     /// the answer — picking a chain re-points balance, send and the rest
-    /// without the list moving. A wallet that has nothing on the chain in view
-    /// falls back to whatever it does have, so the pane is never inert.
+    /// without the list moving.
+    ///
+    /// The chain in view is the whole answer, with no falling back to whatever
+    /// else the wallet happens to hold. It used to fall back, so that a wallet
+    /// with nothing on the chain in view was never inert — but "never inert"
+    /// meant the header said Cardano while `c` copied an EVM address and `b`
+    /// read an EVM balance. The detail pane already says `— not derived yet`
+    /// for such a chain, and that is the true answer; moving to a chain now
+    /// derives each wallet's account on it anyway, so this is the rare case of
+    /// a wallet imported from a bare private key, where there is nothing to
+    /// name and saying so beats naming the wrong one.
     fn current(&self) -> Option<&Account> {
         let index = self.selected_index()?;
-        let here = self.accounts_at(index);
-        here.iter()
+        self.accounts_at(index)
+            .into_iter()
             .find(|a| a.chain == self.current_chain)
-            .or_else(|| here.first())
-            .copied()
     }
 
     /// Every wallet index the store holds an account for, in order.
@@ -3113,11 +3120,14 @@ mod tests {
         }
     }
 
-    /// A wallet the chain in view has nothing on still resolves — to what it
-    /// does have — so the pane is never inert and the commands always have a
-    /// target.
+    /// A wallet the chain in view has nothing on resolves to nothing, rather
+    /// than to another chain's account.
+    ///
+    /// Falling back was how the header came to name one chain while `c`
+    /// copied an address on a different one — an address that cannot receive
+    /// a deposit sent on the chain the screen was naming.
     #[test]
-    fn a_chain_with_nothing_on_it_still_leaves_a_wallet_selected() {
+    fn a_chain_with_nothing_on_it_names_no_account() {
         let accounts = vec![
             account_at("a", "evm-one", ChainId::Evm, 0),
             account_at("b", "sol-one", ChainId::Solana, 0),
@@ -3127,9 +3137,10 @@ mod tests {
         state.set_chain(ChainId::Solana);
         assert_eq!(state.current().unwrap().label, "sol-one");
 
-        // Index 1 has no Solana account, so it falls back to what it has.
+        // Index 1 has no Solana account, and says so rather than offering the
+        // EVM one under a Solana heading.
         state.selected.select(Some(1));
-        assert_eq!(state.current().unwrap().label, "evm-two");
+        assert!(state.current().is_none());
         assert_eq!(state.indices(), vec![0, 1], "the list never hides a wallet");
     }
 
@@ -3293,16 +3304,19 @@ mod tests {
         assert_eq!(state.selected_index(), Some(1));
     }
 
-    /// A wallet row resolves to an account even when the chain in view has
-    /// nothing at that index, so balance, send and the rest still have a
-    /// wallet to act on rather than refusing.
+    /// A wallet row resolves on the chain in view and nowhere else: a row is
+    /// still listed when that chain has nothing at its index, but balance,
+    /// send and copy refuse rather than acting on another chain's account.
     #[test]
-    fn a_wallet_row_resolves_to_an_account() {
+    fn a_wallet_row_resolves_on_the_chain_in_view() {
         let accounts = vec![account_at("b", "sol-1", ChainId::Solana, 1)];
         let mut state = State::new(accounts, None);
         state.selected.select(Some(0));
-        assert_eq!(state.selected_index(), Some(1));
+        assert_eq!(state.selected_index(), Some(1), "the row is still listed");
         assert_eq!(state.current_chain, ChainId::Evm, "nothing here on evm");
+        assert!(state.current().is_none());
+
+        state.set_chain(ChainId::Solana);
         assert_eq!(state.current().unwrap().label, "sol-1");
     }
 
@@ -3322,10 +3336,11 @@ mod tests {
         assert_eq!(state.current().unwrap().label, "sol-0");
         assert_eq!(state.selected.selected(), Some(0), "the row did not move");
 
-        // A chain this wallet has nothing on falls back rather than going
-        // blank, so there is always something to act on.
+        // A chain this wallet has nothing on goes blank. Naming the EVM
+        // account under a Midnight heading is the one answer that is worse
+        // than none.
         state.set_chain(ChainId::Midnight);
-        assert_eq!(state.current().unwrap().label, "evm-0");
+        assert!(state.current().is_none());
     }
 
     /// The names the wallet gave itself before it was multi-chain said neither
@@ -4423,6 +4438,7 @@ mod tests {
         // exactly what it wants: the user copies an address, sees an address,
         // and presses Enter twice having checked nothing.
         let mut state = State::new(vec![account_on("a", "sol", ChainId::Solana)], Some("a"));
+        state.set_chain(ChainId::Solana);
         if crate::clipboard::copy(SOLANA_ADDRESS).is_err() {
             return; // no clipboard helper on this machine
         }
@@ -4436,6 +4452,7 @@ mod tests {
 
         // Junk is not mentioned, and the prompt says nothing about a clipboard.
         let mut state = State::new(vec![account_on("a", "sol", ChainId::Solana)], Some("a"));
+        state.set_chain(ChainId::Solana);
         crate::clipboard::copy("not an address at all").unwrap();
         open_prompt(&mut state);
         note_clipboard_address(&app, &mut state);
@@ -4444,6 +4461,7 @@ mod tests {
 
         // A copied mnemonic is a secret; the hint must not advertise it either.
         let mut state = State::new(vec![account_on("a", "sol", ChainId::Solana)], Some("a"));
+        state.set_chain(ChainId::Solana);
         crate::clipboard::copy(PHRASE).unwrap();
         open_prompt(&mut state);
         note_clipboard_address(&app, &mut state);
@@ -4456,6 +4474,7 @@ mod tests {
         // The account's own address is pointless for balance and refused for
         // send, so it is not offered either.
         let mut state = State::new(vec![account_on("a", "sol", ChainId::Solana)], Some("a"));
+        state.set_chain(ChainId::Solana);
         let own = state.accounts[0].address.clone();
         // account_on uses an EVM-shaped address; give the test a solana one.
         state.accounts[0].address = SOLANA_ADDRESS.into();

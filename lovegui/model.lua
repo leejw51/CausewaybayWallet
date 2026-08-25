@@ -735,15 +735,26 @@ function Model:refresh()
   -- the list holds the chain in view and switching chain moves what every row
   -- points at rather than making the list four times longer. The other chains'
   -- accounts are a chain switch away, not a scroll away.
+  --
+  -- The chain in view decides the list outright, even when it empties it.
+  -- This used to keep the previous chain's accounts whenever the new one had
+  -- none, which is how the network screen came to lie: pick Cardano, and the
+  -- header said Cardano over a column of `0x…` EVM addresses. An address shown
+  -- under the wrong chain's name is not a cosmetic fault — it is an address
+  -- offered for a deposit that cannot arrive there.
+  --
+  -- Almost nothing reaches the empty case any more: moving to a chain derives
+  -- each wallet's account on it from the same phrase and index. What is left
+  -- is the wallet that genuinely has no face there — one imported from a bare
+  -- private key, or from a phrase used with a BIP-39 passphrase the store does
+  -- not keep — and for those, empty is the honest answer.
   local chain = info and info.chain
   if chain then
     local here = {}
     for _, account in ipairs(self.wallets) do
       if account.chain == chain then here[#here + 1] = account end
     end
-    -- Only when the chain has something. A wallet whose accounts predate the
-    -- chain field would otherwise show an empty list and no way back.
-    if #here > 0 then self.wallets = here end
+    self.wallets = here
   end
   local active = info and info.active_address
   -- `json.null` decodes to a table, so an absent active account is flattened
