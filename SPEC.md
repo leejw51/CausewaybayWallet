@@ -307,8 +307,23 @@ The fee itself is the endpoint's number — `eth_gasPrice` on EVM, `min_fee_a`
 and `min_fee_b` from Koios on Cardano — and a hostile or broken one can make it
 almost anything. So each network in the table carries a `max_fee` the wallet
 will not sign past, in the base units of whatever token pays the fee, checked
-before any key touches the transaction. `--max-fee`, read in that same unit,
-raises the line for one send.
+before any key touches the transaction.
+
+Three things can name that ceiling, tried in order of how deliberate they are:
+
+1. `--max-fee` on the one command.
+2. `max_fee.<network>` in `config.jsonl`, written by `network set-max-fee`. The
+   value carries its denomination — `3 TCRO`, `2 DUST` — because a bare number
+   means nothing on its own, and a reader that guesses wrong on Midnight is
+   wrong by a factor of 10⁹. A value whose denomination is not the network's
+   fee token is refused on the way in and treated as unset on the way out.
+   `0` means the built-in ceiling, which is what every network starts at.
+3. Nothing, which leaves `Network::max_fee` in force.
+
+The unit is the **fee's**, not the transfer's. They are the same token on three
+chains out of four; a Midnight transfer moves NIGHT (6 decimals) and pays its
+fee in DUST (15), so every place that shows or asks for a ceiling names the
+token it means.
 
 ## 7. Message signing
 

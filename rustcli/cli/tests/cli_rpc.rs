@@ -249,6 +249,136 @@ fn send_refuses_a_fee_above_the_networks_ceiling() {
     );
 }
 
+/// A ceiling stored for the network is used when no flag names one, and `0`
+/// is how the setting says "back to automatic".
+#[test]
+fn a_stored_fee_ceiling_is_what_a_send_is_held_to() {
+    let node = sending_node();
+    node.on("eth_gasPrice", json!("0x2386f26fc10000")) // 0.01 CRO per gas
+        .on("eth_getBalance", json!("0x152d02c7e14af6800000"));
+    let wallet = funded(&node);
+
+    // 300 TCRO is above the fee this endpoint implies, so the send goes out
+    // where the built-in 25 would have refused it.
+    wallet.json(&["network", "set-max-fee", "cronos-testnet", "300"]);
+    let current = wallet.json(&["network", "current"]);
+    assert_eq!(current["max_fee"], "300");
+    assert_eq!(current["max_fee_is_default"], false);
+    wallet.json(&["--yes", "send", "--to", TEST_ADDRESS_1, "--amount", "1"]);
+    assert_eq!(node.requests_for("eth_sendRawTransaction").len(), 1);
+
+    // And 0 gives the built-in ceiling back, which refuses the same send.
+    let back = wallet.json(&["network", "set-max-fee", "cronos-testnet", "0"]);
+    assert_eq!(back["automatic"], true);
+    assert_eq!(back["max_fee"], "25");
+    assert_eq!(
+        wallet.json(&["network", "current"])["max_fee_is_default"],
+        true
+    );
+    assert_eq!(
+        wallet.json_error(&["--yes", "send", "--to", TEST_ADDRESS_1, "--amount", "1"]),
+        "invalid_amount"
+    );
+    assert_eq!(node.requests_for("eth_sendRawTransaction").len(), 1);
+}
+
+/// The one place the fee's unit is not the unit everything else is in.
+///
+/// A Midnight transfer moves NIGHT and pays its fee in DUST, and the two are
+/// nine orders of magnitude apart — so a bare number typed by someone reading
+/// their NIGHT balance is the mistake worth catching.
+#[test]
+fn a_fee_ceiling_written_in_the_wrong_token_is_refused() {
+    let wallet = Wallet::new();
+
+    // The fee's own unit is taken bare, or written out.
+    for written in ["2", "2 DUST", "2dust"] {
+        let set = wallet.json(&[
+            "--chain",
+            "midnight",
+            "network",
+            "set-max-fee",
+            "midnight-preview",
+            written,
+        ]);
+        assert_eq!(set["symbol"], "DUST", "{written}");
+        assert_eq!(set["max_fee"], "2", "{written}");
+    }
+
+    // The transfer's unit is not, and the error says why rather than
+    // silently storing nine orders of magnitude less than was meant.
+    let error = wallet.json_failure(&[
+        "--chain",
+        "midnight",
+        "network",
+        "set-max-fee",
+        "midnight-preview",
+        "2 NIGHT",
+    ]);
+    assert_eq!(error["code"], "invalid_amount");
+    let message = error["message"].as_str().unwrap();
+    assert!(message.contains("paid in DUST"), "{message}");
+    assert!(message.contains("a transfer moves"), "{message}");
+}
+
+/// The stored record says which token it means, so nothing downstream guesses.
+#[test]
+fn a_stored_ceiling_carries_its_denomination() {
+    let wallet = Wallet::new();
+    wallet.json(&["network", "set-max-fee", "cronos-testnet", "3"]);
+    wallet.json(&[
+        "--chain",
+        "midnight",
+        "network",
+        "set-max-fee",
+        "midnight-preview",
+        "2",
+    ]);
+
+    let config = wallet.read_log("config.jsonl");
+    let value = |key: &str| -> String {
+        config
+            .iter()
+            .filter(|line| line["key"] == key)
+            .next_back()
+            .unwrap_or_else(|| panic!("no record for {key}"))["value"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    // A bare number would mean nothing on its own: fees are paid in a
+    // different token on every chain, and on Midnight in a different token
+    // from the one that wallet's balances are counted in.
+    assert_eq!(value("max_fee.cronos-testnet"), "3 TCRO");
+    assert_eq!(value("max_fee.midnight-preview"), "2 DUST");
+
+    // And it reads back as what it says, rather than as an unparsable string
+    // that quietly leaves the built-in ceiling in force.
+    let current = wallet.json(&["--chain", "midnight", "network", "current"]);
+    assert_eq!(current["max_fee"], "2");
+    assert_eq!(current["max_fee_symbol"], "DUST");
+    assert_eq!(current["max_fee_is_default"], false);
+}
+
+/// A ceiling lower than the built-in one is the useful direction, and the one
+/// the setting exists for: this endpoint is honest, and the user still does
+/// not want to spend that much.
+#[test]
+fn a_stored_ceiling_can_tighten_as_well_as_loosen() {
+    let node = sending_node();
+    let wallet = funded(&node);
+    // The default 5 gwei over 21000 gas is 0.000105 TCRO.
+    wallet.json(&["network", "set-max-fee", "cronos-testnet", "0.00001"]);
+
+    let error = wallet.json_failure(&["--yes", "send", "--to", TEST_ADDRESS_1, "--amount", "1"]);
+    assert_eq!(error["code"], "invalid_amount");
+    assert!(
+        error["message"].as_str().unwrap().contains("0.00001 TCRO"),
+        "{error}"
+    );
+    assert!(node.requests_for("eth_sendRawTransaction").is_empty());
+}
+
 /// The ceiling is the wallet's default, not a wall: a caller who means it
 /// says so, in the fee's own unit.
 #[test]

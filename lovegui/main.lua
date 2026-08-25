@@ -1459,7 +1459,24 @@ local function draw_network(model, state, x)
   -- rows know how many lines they have to leave room for. On a phone's width
   -- it is two, and it used to be one line 370 pixels wide printed across a
   -- 244-pixel frame — off both edges and over the town behind it.
-  local footer = wrap("the store is shared - a wallet works on either", frame.w - 8)
+  -- The fee ceiling belongs on this screen and nowhere else: it is a property
+  -- of the network, not of a transfer, and it must never sit beside an amount
+  -- field where it would read as the price being chosen rather than the
+  -- refusal being set. Shown, not editable — the number's whole value is that
+  -- it works untouched, and the only edit anyone reaches for is raising it,
+  -- which is what the endpoint quoting an absurd fee was hoping for. Someone
+  -- who genuinely means it can say so on the command line.
+  --
+  -- Always with its denomination. Fees are paid in a different token on every
+  -- chain, and on Midnight in a different token from the balance drawn two
+  -- frames away: "2" read as NIGHT rather than DUST is out by a billion.
+  local ceiling = model.info and model.info.max_fee
+  local sentence = "the store is shared - a wallet works on either"
+  if ceiling then
+    sentence = ("refuses a fee over %s %s - %s"):format(
+      ceiling, model.info.max_fee_symbol or "", sentence)
+  end
+  local footer = wrap(sentence, frame.w - 8)
   local grid = layout.net_grid(frame.w, frame.h, #networks, #footer)
   for i, network in ipairs(networks) do
     local column = math.floor((i - 1) / grid.rows)

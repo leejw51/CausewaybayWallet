@@ -208,6 +208,7 @@ CLI prints exactly what `cwbwallet` would.
 | `network current` | `wallet:current_network()` |
 | `network use` | `wallet:use_network(key)` |
 | `network set-rpc` | `wallet:set_rpc(network, url)` |
+| `network set-max-fee` | `wallet:set_max_fee(network, amount)` |
 | `balance` | `wallet:balance{address=, account=}` |
 | `nonce` | `wallet:nonce{address=, account=}` |
 | `gas-price` | `wallet:gas_price()` |

@@ -330,6 +330,15 @@ impl Network {
         format!("rpc.{}", self.key)
     }
 
+    /// The `config.jsonl` key holding a fee ceiling of the user's own.
+    ///
+    /// Per network rather than one number for the wallet, because the fee
+    /// unit is per network: 5 means five ADA on Cardano, five DUST on
+    /// Midnight and five CRO on Cronos, and those are not comparable amounts.
+    pub fn max_fee_config_key(&self) -> String {
+        format!("max_fee.{}", self.key)
+    }
+
     /// Environment beats stored config, which beats the built-in default.
     pub fn resolve_endpoint(&self, configured: Option<&str>) -> String {
         if let Ok(url) = std::env::var(self.endpoint_env_var()) {

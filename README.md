@@ -345,6 +345,31 @@ Override an endpoint with `cwbwallet network set-rpc testnet <url>` or the
 and submits to a different service, its node RPC; that half is overridden with
 `CAUSEWAYBAY_SUBMIT_MIDNIGHT_PREVIEW` or the `submit.<network>` config key.
 
+### The fee ceiling
+
+Every network refuses a fee above a number the wallet keeps itself, checked
+before anything is signed. The fee is the endpoint's number — an inflated
+`eth_gasPrice`, a Koios instance answering `min_fee_a = 10⁹` — and nothing else
+in a transfer questions it: the transaction balances, the signature is valid,
+and the confirmation used to name only the amount.
+
+    cwbwallet network current                       # shows the one in force
+    cwbwallet network set-max-fee testnet 3         # refuse anything over 3 TCRO
+    cwbwallet network set-max-fee testnet 0         # back to the built-in one
+
+It is a **refusal threshold, not a price** — setting it low does not make sends
+cheaper, it makes them fail. Nearly everyone should leave it alone; it is there
+to catch an endpoint that lies, not to bid for block space.
+
+The number is counted in the token that *pays* the fee, which is the native
+token everywhere except Midnight — a Midnight transfer moves NIGHT and pays in
+DUST, nine decimal places apart. So write the unit if you want it checked:
+`set-max-fee midnight-preview "2 DUST"` is accepted and `"2 NIGHT"` is refused
+rather than quietly read as DUST. Stored with its denomination either way.
+
+The TUI sets it from the **Fee ceiling** row; the LÖVE GUI shows the one in
+force on its network screen and leaves the changing to the command line.
+
 ## Where state lives
 
 `~/.causewaybaywallet/` — override with `--home PATH` or `CAUSEWAYBAY_HOME`.

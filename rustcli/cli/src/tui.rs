@@ -27,7 +27,9 @@ use ratatui::{Frame, Terminal};
 use serde_json::json;
 
 use causewaybay_core::app::{App, SendPlan};
-use causewaybay_core::command::{AccountCommand, SendArgs, TargetArgs};
+use causewaybay_core::command::{
+    AccountCommand, Command as WalletCommand, NetworkCommand, SendArgs, TargetArgs,
+};
 use causewaybay_core::error::{self, Result};
 use causewaybay_core::export::{self, Format};
 use causewaybay_core::host::Headless;
@@ -60,6 +62,8 @@ enum Action {
     /// Switch to the network with this key. Only the current chain's networks
     /// are offered, so the list stays short as chains are added.
     SelectNetwork(&'static str),
+    /// Change the fee this network's sends will be refused over.
+    SetMaxFee,
     Remove,
     Reload,
     Help,
@@ -241,6 +245,12 @@ fn build_commands() -> Vec<Command> {
 
     commands.extend([
         Command::new(
+            Action::SetMaxFee,
+            "Fee ceiling",
+            None,
+            "Refuse a fee over this here (0 = the built-in one)",
+        ),
+        Command::new(
             Action::Remove,
             "Remove wallet",
             Some('x'),
@@ -380,6 +390,8 @@ enum InputKind {
     DeriveIndex,
     SendTo,
     SendAmount,
+    /// A fee ceiling for the network in view, in that network's fee token.
+    MaxFee,
     SignMessage,
     ExportPath(Format),
 }
@@ -934,6 +946,7 @@ fn run_action(app: &App, state: &mut State, action: Action) {
             });
         }
         Action::SelectNetwork(key) => select_network(app, state, key),
+        Action::SetMaxFee => start_max_fee(app, state),
         Action::ExportWallets => start_export_wallets(state),
         Action::Save(format) => start_export(state, format),
         Action::Derive => {
@@ -1272,6 +1285,21 @@ fn submit(app: &App, state: &mut State, kind: InputKind, value: String) {
             }
             state.pending_amount = value;
             stage_send(app, state);
+        }
+        InputKind::MaxFee => {
+            // Straight through the same command the CLI runs, so the parsing,
+            // the denomination check and the wording of the answer are the
+            // core's and not a second copy living here.
+            let network = state.current_network.clone();
+            match app.run(WalletCommand::Network {
+                command: NetworkCommand::SetMaxFee {
+                    network,
+                    amount: value,
+                },
+            }) {
+                Ok(output) => state.info(output.human),
+                Err(e) => state.fail(e.message),
+            }
         }
         InputKind::SignMessage => match sign(app, state, &value) {
             Ok(signature) => {
@@ -1909,6 +1937,39 @@ fn new_wallet(app: &App, state: &mut State) {
         }
         Err(e) => state.fail(e.message),
     }
+}
+
+/// Ask for the fee ceiling on the network in view.
+///
+/// The prompt names the denomination, because the number means nothing
+/// without it: fees are paid in a different token on every chain, and on
+/// Midnight in a different token from the one that wallet's balances are
+/// counted in. A bare "2" read as NIGHT rather than DUST is wrong by a factor
+/// of a billion, and the prompt is the only place to say so before it is typed.
+fn start_max_fee(app: &App, state: &mut State) {
+    let network = match network::find(&state.current_network) {
+        Ok(found) => found,
+        Err(e) => {
+            state.fail(e.message);
+            return;
+        }
+    };
+    let units = causewaybay_core::chain::chain(network.chain).fee_units(&network);
+    let current = app
+        .store
+        .config_get(&network.max_fee_config_key())
+        .ok()
+        .flatten()
+        .filter(|stored| !stored.trim().is_empty())
+        .unwrap_or_else(|| format!("{} (built in)", units.format_with_symbol(network.max_fee)));
+    start_input(
+        state,
+        InputKind::MaxFee,
+        &format!(
+            "Refuse a fee over, in {} on {} — now {current} (0 = built in)",
+            units.symbol, network.key
+        ),
+    );
 }
 
 fn select_network(app: &App, state: &mut State, key: &'static str) {
@@ -2761,6 +2822,9 @@ mod tests {
             match action {
                 // Networks are menu-only: the list grows, letters would collide.
                 Action::SelectNetwork(_) => None,
+                // Menu-only too. A single key on the fee ceiling would put a
+                // safety setting one mis-keystroke away.
+                Action::SetMaxFee => None,
                 Action::Balance => Some('b'),
                 Action::Send => Some('s'),
                 Action::NewWallet => Some('n'),
@@ -2803,6 +2867,7 @@ mod tests {
             Action::Save(Format::Markdown),
             Action::ToggleSecrets,
             Action::ExportWallets,
+            Action::SetMaxFee,
             Action::Remove,
             Action::Reload,
             Action::Help,
@@ -4022,6 +4087,68 @@ mod tests {
                  the two front ends drift apart"
             );
         }
+    }
+
+    /// The fee ceiling is settable from the keyboard, and the prompt names the
+    /// unit it wants — which is the whole difficulty on Midnight, where the
+    /// fee is paid in DUST while every balance on the same screen is NIGHT.
+    #[test]
+    fn the_fee_ceiling_is_set_from_the_pane_and_the_prompt_names_its_unit() {
+        let (dir, app) = wallet_app();
+        let mut state = State::with_network(Vec::new(), None, network::DEFAULT_NETWORK);
+
+        start_max_fee(&app, &mut state);
+        assert!(matches!(state.mode, Mode::Input(InputKind::MaxFee)));
+        // Cronos pays its fees in its own token, and the prompt says so along
+        // with the ceiling in force and how to get back to it.
+        assert!(state.status.contains("TCRO"), "{}", state.status);
+        assert!(state.status.contains("cronos-testnet"), "{}", state.status);
+        assert!(
+            state.status.contains("25 TCRO (built in)"),
+            "{}",
+            state.status
+        );
+        assert!(state.status.contains("0 = built in"), "{}", state.status);
+
+        typed(&app, &mut state, "3");
+        press(&app, &mut state, KeyCode::Enter);
+        assert!(state.status.contains("3 TCRO"), "{}", state.status);
+
+        // Stored with its denomination, so the record says what it means.
+        let config = std::fs::read_to_string(dir.path().join("config.jsonl")).unwrap();
+        assert!(config.contains(r#""max_fee.cronos-testnet""#), "{config}");
+        assert!(config.contains(r#""3 TCRO""#), "{config}");
+
+        // Asking again offers the value that is now in force, not the default.
+        start_max_fee(&app, &mut state);
+        assert!(state.status.contains("now 3 TCRO"), "{}", state.status);
+
+        // And 0 hands it back to the built-in ceiling.
+        typed(&app, &mut state, "0");
+        press(&app, &mut state, KeyCode::Enter);
+        assert!(state.status.contains("built-in"), "{}", state.status);
+    }
+
+    /// The prompt follows the network, and on Midnight the fee's token is not
+    /// the token the transfer moves.
+    #[test]
+    fn the_fee_prompt_asks_for_dust_on_midnight() {
+        let (_dir, app) = wallet_app();
+        let mut state = State::with_network(Vec::new(), None, "midnight-preview");
+
+        start_max_fee(&app, &mut state);
+        assert!(state.status.contains("DUST"), "{}", state.status);
+        assert!(
+            !state.status.contains("NIGHT"),
+            "the fee is not counted in what the transfer moves: {}",
+            state.status
+        );
+
+        // A number written in the transfer's token is refused rather than
+        // taken as the fee's — a factor of a billion apart.
+        typed(&app, &mut state, "2 NIGHT");
+        press(&app, &mut state, KeyCode::Enter);
+        assert!(state.status.contains("paid in DUST"), "{}", state.status);
     }
 
     #[test]

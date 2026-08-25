@@ -342,6 +342,22 @@ pub enum NetworkCommand {
         /// The RPC endpoint.
         url: String,
     },
+    /// Refuse any fee above this, on one network.
+    ///
+    /// Counted in the token that pays the fee, which is the native token
+    /// everywhere except Midnight — a Midnight transfer moves NIGHT and pays
+    /// in DUST. Write the unit if you want it checked: `2 DUST` is accepted,
+    /// `2 NIGHT` is refused rather than read as DUST.
+    ///
+    /// `0` restores the built-in ceiling, which is what every network starts
+    /// with and what nearly every user should leave it at: the ceiling is
+    /// there to refuse a fee an endpoint invented, not to price transactions.
+    SetMaxFee {
+        /// Network key or alias.
+        network: String,
+        /// The ceiling, with an optional unit, or `0` for the built-in one.
+        amount: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]
