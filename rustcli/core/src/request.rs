@@ -30,6 +30,13 @@ pub struct Request {
     /// Network key or alias for this call only.
     #[serde(default)]
     pub network: Option<String>,
+    /// Chain name for this call only: `evm`, `solana`, `cardano`, `midnight`.
+    ///
+    /// A default like the others: `--chain` inside `argv` wins. Naming a
+    /// network settles the chain too, so a caller that already picks networks
+    /// never has to set this.
+    #[serde(default)]
+    pub chain: Option<String>,
     /// Answer every confirmation with yes. A GUI sets this once its own
     /// dialog has been accepted.
     #[serde(default)]
@@ -73,6 +80,11 @@ impl Request {
         self
     }
 
+    pub fn chain(mut self, chain: Option<String>) -> Self {
+        self.chain = chain;
+        self
+    }
+
     pub fn yes(mut self, yes: bool) -> Self {
         self.yes = yes;
         self
@@ -93,6 +105,7 @@ impl Request {
             Ok(mut cli) => {
                 cli.home = cli.home.take().or_else(|| self.home.clone());
                 cli.network = cli.network.take().or_else(|| self.network.clone());
+                cli.chain = cli.chain.take().or_else(|| self.chain.clone());
                 cli.yes = cli.yes || self.yes;
                 Ok(Parsed::Command(Box::new(cli)))
             }

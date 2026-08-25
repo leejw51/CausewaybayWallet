@@ -3,9 +3,11 @@
 //! One renderer feeds both front ends: `account list --format` on the CLI and
 //! the "Save wallet list" entries in the TUI menu produce identical bytes.
 
-use serde_json::json;
+use serde_json::{json, Value};
 
+use crate::chain::ChainId;
 use crate::error::{self, Result};
+use crate::network::Network;
 use crate::store::Account;
 
 /// The formats an account list can be written in.
@@ -55,14 +57,24 @@ impl Format {
 
 /// The columns every format shares, in order.
 ///
+/// A row is one account **on one network**, because that is the question an
+/// export answers: "where do I send funds to this wallet?" On Cardano and
+/// Midnight the answer differs per network — the network is inside the address
+/// — so one row per account would have to leave two thirds of it out.
+///
 /// `address_index` is the BIP-44 index *within one mnemonic*, not a position in
 /// this list — every freshly generated wallet has its own seed and so starts
 /// again at 0. `position` is the row number, and `seed` groups the rows that
 /// share a mnemonic, so the repetition is self-explanatory.
-const COLUMNS: [&str; 11] = [
+const COLUMNS: [&str; 14] = [
     "position",
-    "label",
+    // `account0-cronos-testnet`: which wallet, and where.
+    "name",
     "address",
+    "network",
+    "chain",
+    // The name the store knows the account by — what `account use` takes.
+    "label",
     "source",
     "address_index",
     "seed",
@@ -107,32 +119,139 @@ pub fn seed_id(account: &Account) -> String {
         .unwrap_or_default()
 }
 
-/// One account flattened to strings, in `COLUMNS` order.
-fn row(account: &Account, position: usize, active_id: Option<&str>, secrets: bool) -> Vec<String> {
-    let active = if Some(account.id.as_str()) == active_id {
-        "yes"
-    } else {
-        "no"
-    };
-    let (compressed, uncompressed) = public_keys(account);
-    let mut values = vec![
-        position.to_string(),
-        account.label.clone(),
-        account.address.clone(),
-        account.source.as_str().to_string(),
-        account.index.map(|i| i.to_string()).unwrap_or_default(),
-        seed_id(account),
-        account.derivation_path.clone().unwrap_or_default(),
-        account.created_at.clone(),
-        active.to_string(),
-        compressed,
-        uncompressed,
-    ];
-    if secrets {
-        values.push(account.private_key.clone());
-        values.push(account.mnemonic.clone().unwrap_or_default());
+/// The networks a wallet's addresses are written out for.
+///
+/// One key serves both Cronos networks and both are in use, so both are worth
+/// writing down. The other three chains are testnet-only in this wallet for
+/// now; when their mainnets are supported, this is the one place that changes.
+fn exported_networks(chain: ChainId) -> Vec<Network> {
+    match chain {
+        ChainId::Evm => crate::network::for_chain(chain),
+        _ => vec![crate::network::default_for(chain)],
     }
-    values
+}
+
+/// What one row calls itself: `account0-cronos-testnet`.
+///
+/// The chain suffix the account's own name carries is replaced by the network,
+/// because the network is the more precise answer and repeating both would
+/// read as `account0-evm-cronos-testnet`. A chain with a single exported
+/// network keeps the plain name — `account0-solana` — since there is nothing
+/// to tell apart until its mainnet arrives.
+fn row_name(account: &Account, network: &Network, several: bool) -> String {
+    let label = crate::store::display_label(account);
+    if !several {
+        return label;
+    }
+    let base = label
+        .strip_suffix(&format!("-{}", account.chain))
+        .unwrap_or(&label);
+    format!("{base}-{}", network.key)
+}
+
+/// One line of an export: one account, on one network.
+struct Row<'a> {
+    position: usize,
+    name: String,
+    address: String,
+    network: &'static str,
+    account: &'a Account,
+    active: bool,
+    public_key_compressed: String,
+    public_key: String,
+}
+
+impl Row<'_> {
+    /// The row in `COLUMNS` order, as strings.
+    fn cells(&self, secrets: bool) -> Vec<String> {
+        let account = self.account;
+        let mut values = vec![
+            self.position.to_string(),
+            self.name.clone(),
+            self.address.clone(),
+            self.network.to_string(),
+            account.chain.as_str().to_string(),
+            account.label.clone(),
+            account.source.as_str().to_string(),
+            account.index.map(|i| i.to_string()).unwrap_or_default(),
+            seed_id(account),
+            account.derivation_path.clone().unwrap_or_default(),
+            account.created_at.clone(),
+            if self.active { "yes" } else { "no" }.to_string(),
+            self.public_key_compressed.clone(),
+            self.public_key.clone(),
+        ];
+        if secrets {
+            values.push(account.private_key.clone());
+            values.push(account.mnemonic.clone().unwrap_or_default());
+        }
+        values
+    }
+
+    /// The same row as JSON. Built explicitly rather than from `public_view`,
+    /// so all four formats carry the same columns under the same names.
+    fn value(&self, secrets: bool) -> Value {
+        let account = self.account;
+        let mut value = json!({
+            "position": self.position,
+            "name": self.name,
+            "address": self.address,
+            "network": self.network,
+            "chain": account.chain.as_str(),
+            "label": account.label,
+            "source": account.source.as_str(),
+            "address_index": account.index,
+            "seed": seed_id(account),
+            "derivation_path": account.derivation_path,
+            "created_at": account.created_at,
+            "active": self.active,
+            "public_key_compressed": self.public_key_compressed,
+            "public_key": self.public_key,
+        });
+        if secrets {
+            let map = value.as_object_mut().expect("json! builds an object");
+            map.insert("private_key".into(), json!(account.private_key));
+            map.insert("mnemonic".into(), json!(account.mnemonic));
+        }
+        value
+    }
+}
+
+/// Every row of an export, flattened and in order.
+///
+/// Wallet by wallet, chain by chain, network by network — `account0-cronos-
+/// testnet`, `account0-cronos-mainnet`, `account0-solana`, … then index 1's —
+/// so the file reads as a list of wallets rather than as whatever order the
+/// accounts happened to be created in.
+fn rows<'a>(accounts: &'a [Account], active_id: Option<&str>) -> Vec<Row<'a>> {
+    let mut out = Vec::new();
+    for account in ordered(accounts) {
+        let chain = crate::chain::chain(account.chain);
+        let networks = exported_networks(account.chain);
+        let several = networks.len() > 1;
+        let (public_key_compressed, public_key) = public_keys(account);
+        for network in networks {
+            // Only the chains whose addresses carry the network re-render one;
+            // everywhere else — and for a record whose key will not parse —
+            // the address the store already holds is the answer.
+            let address = chain
+                .address_on(&network, &account.private_key)
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| account.address.clone());
+            out.push(Row {
+                position: out.len() + 1,
+                name: row_name(account, &network, several),
+                address,
+                network: network.key,
+                account,
+                active: Some(account.id.as_str()) == active_id,
+                public_key_compressed: public_key_compressed.clone(),
+                public_key: public_key.clone(),
+            });
+        }
+    }
+    out
 }
 
 fn headers(secrets: bool) -> Vec<&'static str> {
@@ -143,6 +262,32 @@ fn headers(secrets: bool) -> Vec<&'static str> {
     names
 }
 
+/// The order every export is written in: wallet by wallet, chain by chain.
+///
+/// `account0-evm`, `account0-solana`, `account0-cardano`, `account0-midnight`,
+/// then index 1's four — so the file reads as a list of wallets rather than as
+/// whatever order the accounts happened to be created in. An imported private
+/// key has no wallet index, so those sit at the end rather than being folded
+/// into index 0. `created_at` breaks the remaining ties, which is what keeps
+/// two mnemonics at the same index in a stable order.
+pub fn ordered(accounts: &[Account]) -> Vec<&Account> {
+    let mut sorted: Vec<&Account> = accounts.iter().collect();
+    sorted.sort_by(|a, b| {
+        let key = |account: &Account| {
+            (
+                account.index.unwrap_or(u32::MAX),
+                crate::chain::ChainId::ALL
+                    .iter()
+                    .position(|id| *id == account.chain)
+                    .unwrap_or(usize::MAX),
+                account.created_at.clone(),
+            )
+        };
+        key(a).cmp(&key(b))
+    });
+    sorted
+}
+
 /// Render the account list. `active_id` marks which account is the default.
 pub fn render(
     accounts: &[Account],
@@ -150,40 +295,21 @@ pub fn render(
     active_id: Option<&str>,
     secrets: bool,
 ) -> String {
+    // Flattened and ordered once, for every format and both front ends: a
+    // saved file looks the same whichever way it was asked for.
+    let rows = rows(accounts, active_id);
     match format {
-        Format::Jsonl => render_jsonl(accounts, active_id, secrets),
-        Format::Csv => render_csv(accounts, active_id, secrets),
-        Format::Txt => render_txt(accounts, active_id, secrets),
-        Format::Markdown => render_markdown(accounts, active_id, secrets),
+        Format::Jsonl => render_jsonl(&rows, secrets),
+        Format::Csv => render_csv(&rows, secrets),
+        Format::Txt => render_txt(&rows, secrets),
+        Format::Markdown => render_markdown(&rows, secrets),
     }
 }
 
-fn render_jsonl(accounts: &[Account], active_id: Option<&str>, secrets: bool) -> String {
+fn render_jsonl(rows: &[Row], secrets: bool) -> String {
     let mut out = String::new();
-    for (offset, account) in accounts.iter().enumerate() {
-        let (compressed, uncompressed) = public_keys(account);
-        // Built explicitly rather than from `public_view`, so all four formats
-        // carry the same columns under the same names. The on-disk record in
-        // accounts.jsonl keeps its own `index` field; this is the export view.
-        let mut value = json!({
-            "position": offset + 1,
-            "label": account.label,
-            "address": account.address,
-            "source": account.source.as_str(),
-            "address_index": account.index,
-            "seed": seed_id(account),
-            "derivation_path": account.derivation_path,
-            "created_at": account.created_at,
-            "active": Some(account.id.as_str()) == active_id,
-            "public_key_compressed": compressed,
-            "public_key": uncompressed,
-        });
-        if secrets {
-            let map = value.as_object_mut().expect("json! builds an object");
-            map.insert("private_key".into(), json!(account.private_key));
-            map.insert("mnemonic".into(), json!(account.mnemonic));
-        }
-        out.push_str(&serde_json::to_string(&value).unwrap_or_default());
+    for row in rows {
+        out.push_str(&serde_json::to_string(&row.value(secrets)).unwrap_or_default());
         out.push('\n');
     }
     out
@@ -200,12 +326,13 @@ fn csv_escape(value: &str) -> String {
     }
 }
 
-fn render_csv(accounts: &[Account], active_id: Option<&str>, secrets: bool) -> String {
+fn render_csv(rows: &[Row], secrets: bool) -> String {
     let mut out = String::new();
     out.push_str(&headers(secrets).join(","));
     out.push('\n');
-    for (offset, account) in accounts.iter().enumerate() {
-        let cells: Vec<String> = row(account, offset + 1, active_id, secrets)
+    for row in rows {
+        let cells: Vec<String> = row
+            .cells(secrets)
             .iter()
             .map(|value| csv_escape(value))
             .collect();
@@ -215,13 +342,9 @@ fn render_csv(accounts: &[Account], active_id: Option<&str>, secrets: bool) -> S
     out
 }
 
-fn render_txt(accounts: &[Account], active_id: Option<&str>, secrets: bool) -> String {
+fn render_txt(rows: &[Row], secrets: bool) -> String {
     let names = headers(secrets);
-    let rows: Vec<Vec<String>> = accounts
-        .iter()
-        .enumerate()
-        .map(|(offset, account)| row(account, offset + 1, active_id, secrets))
-        .collect();
+    let rows: Vec<Vec<String>> = rows.iter().map(|row| row.cells(secrets)).collect();
 
     // Width of the widest cell in each column, header included.
     let widths: Vec<usize> = names
@@ -266,7 +389,7 @@ fn markdown_escape(value: &str) -> String {
     value.replace('|', "\\|").replace(['\n', '\r'], " ")
 }
 
-fn render_markdown(accounts: &[Account], active_id: Option<&str>, secrets: bool) -> String {
+fn render_markdown(rows: &[Row], secrets: bool) -> String {
     let names = headers(secrets);
     let mut out = String::new();
     out.push_str(&format!("| {} |\n", names.join(" | ")));
@@ -274,8 +397,9 @@ fn render_markdown(accounts: &[Account], active_id: Option<&str>, secrets: bool)
         "| {} |\n",
         names.iter().map(|_| "---").collect::<Vec<_>>().join(" | ")
     ));
-    for (offset, account) in accounts.iter().enumerate() {
-        let cells: Vec<String> = row(account, offset + 1, active_id, secrets)
+    for row in rows {
+        let cells: Vec<String> = row
+            .cells(secrets)
             .iter()
             .map(|value| markdown_escape(value))
             .collect();
@@ -291,6 +415,7 @@ mod tests {
 
     fn account(label: &str, address: &str) -> Account {
         Account {
+            chain: crate::chain::ChainId::Evm,
             id: format!("acc_{label}"),
             label: label.to_string(),
             address: address.to_string(),
@@ -307,6 +432,23 @@ mod tests {
 
     fn sample() -> Vec<Account> {
         vec![account("main", "0xaaa"), account("second", "0xbbb")]
+    }
+
+    /// The rows of a JSONL export, parsed.
+    fn parsed(rendered: &str) -> Vec<serde_json::Value> {
+        rendered
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    }
+
+    /// One row per account: an EVM account is written out on both Cronos
+    /// networks, and the two rows differ only in the network and the name.
+    fn per_account(rendered: &str) -> Vec<serde_json::Value> {
+        parsed(rendered)
+            .into_iter()
+            .filter(|row| row["network"] == "cronos-testnet")
+            .collect()
     }
 
     #[test]
@@ -334,11 +476,12 @@ mod tests {
         }
     }
 
+    /// Two EVM accounts, and one row each per Cronos network.
     #[test]
-    fn jsonl_writes_one_object_per_account() {
+    fn jsonl_writes_one_object_per_account_and_network() {
         let rendered = render(&sample(), Format::Jsonl, Some("acc_main"), false);
         let lines: Vec<&str> = rendered.lines().collect();
-        assert_eq!(lines.len(), 2);
+        assert_eq!(lines.len(), 4);
         for line in &lines {
             let value: serde_json::Value = serde_json::from_str(line).unwrap();
             assert!(value.get("address").is_some());
@@ -347,10 +490,30 @@ mod tests {
                 "secrets stay out by default"
             );
         }
+        let names: Vec<String> = lines
+            .iter()
+            .map(|line| {
+                serde_json::from_str::<serde_json::Value>(line).unwrap()["name"]
+                    .as_str()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "main-cronos-testnet",
+                "main-cronos-mainnet",
+                "second-cronos-testnet",
+                "second-cronos-mainnet",
+            ]
+        );
         let first: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
         assert_eq!(first["active"], true);
-        let second: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
-        assert_eq!(second["active"], false);
+        assert_eq!(first["network"], "cronos-testnet");
+        assert_eq!(first["chain"], "evm");
+        let third: serde_json::Value = serde_json::from_str(lines[2]).unwrap();
+        assert_eq!(third["active"], false);
     }
 
     #[test]
@@ -366,24 +529,74 @@ mod tests {
     }
 
     #[test]
-    fn csv_has_a_header_and_one_row_per_account() {
+    fn csv_has_a_header_and_one_row_per_account_and_network() {
         let rendered = render(&sample(), Format::Csv, Some("acc_main"), false);
         let lines: Vec<&str> = rendered.lines().collect();
-        assert_eq!(lines.len(), 3, "header plus two accounts");
+        assert_eq!(lines.len(), 5, "header plus two accounts on two networks");
         assert_eq!(
             lines[0],
-            "position,label,address,source,address_index,seed,derivation_path,\
-             created_at,active,public_key_compressed,public_key"
+            "position,name,address,network,chain,label,source,address_index,seed,\
+             derivation_path,created_at,active,public_key_compressed,public_key"
                 .replace(char::is_whitespace, "")
         );
-        assert!(lines[1].starts_with("1,main,0xaaa,mnemonic,0,"));
-        // `active` sits before the two public key columns now.
+        assert!(
+            lines[1].starts_with("1,main-cronos-testnet,0xaaa,cronos-testnet,evm,main,mnemonic,0,")
+        );
+        assert!(lines[2].starts_with("2,main-cronos-mainnet,0xaaa,cronos-mainnet,"));
+        // `active` sits before the two public key columns.
         assert!(
             lines[1].contains(",yes,0x"),
             "row 1 is the active one: {}",
             lines[1]
         );
-        assert!(lines[2].contains(",no,0x"), "row 2 is not: {}", lines[2]);
+        assert!(lines[3].contains(",no,0x"), "row 3 is not: {}", lines[3]);
+    }
+
+    /// The shape the export exists to produce: wallet by wallet, chain by
+    /// chain, network by network, with a name that says which is which.
+    #[test]
+    fn a_multichain_wallet_is_written_out_wallet_by_wallet() {
+        let chains = [
+            ChainId::Evm,
+            ChainId::Solana,
+            ChainId::Cardano,
+            ChainId::Midnight,
+        ];
+        let mut accounts = Vec::new();
+        for index in [0u32, 1] {
+            for chain in chains {
+                // Deliberately out of order on the second wallet, to prove the
+                // export sorts rather than trusting the store's order.
+                let mut one = account(&crate::store::default_label(index, chain), "0xaaa");
+                one.chain = chain;
+                one.index = Some(index);
+                if index == 1 {
+                    accounts.insert(0, one);
+                } else {
+                    accounts.push(one);
+                }
+            }
+        }
+
+        let names: Vec<String> = parsed(&render(&accounts, Format::Jsonl, None, false))
+            .into_iter()
+            .map(|row| row["name"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "account0-cronos-testnet",
+                "account0-cronos-mainnet",
+                "account0-solana",
+                "account0-cardano",
+                "account0-midnight",
+                "account1-cronos-testnet",
+                "account1-cronos-mainnet",
+                "account1-solana",
+                "account1-cardano",
+                "account1-midnight",
+            ]
+        );
     }
 
     #[test]
@@ -402,7 +615,10 @@ mod tests {
         accounts[0].label = "a,b\"c".into();
         let rendered = render(&accounts, Format::Csv, None, false);
         let data_line = rendered.lines().nth(1).unwrap();
-        assert!(data_line.starts_with("1,\"a,b\"\"c\","));
+        assert!(
+            data_line.contains(",\"a,b\"\"c\","),
+            "the label is quoted: {data_line}"
+        );
         // The header column count and the row column count still agree.
         assert_eq!(
             rendered.lines().next().unwrap().split(',').count(),
@@ -414,10 +630,10 @@ mod tests {
     fn txt_aligns_its_columns() {
         let rendered = render(&sample(), Format::Txt, None, false);
         let lines: Vec<&str> = rendered.lines().collect();
-        assert_eq!(lines.len(), 4, "header, rule, two accounts");
+        assert_eq!(lines.len(), 6, "header, rule, two accounts on two networks");
         assert!(lines[0].starts_with("position"));
         assert!(lines[1].starts_with("--------"));
-        // "second" is the longer label, so the address column starts at the same
+        // "second" is the longer name, so the address column starts at the same
         // offset on both rows.
         let offset = |line: &str| line.find("0x").unwrap();
         assert_eq!(offset(lines[2]), offset(lines[3]));
@@ -427,8 +643,8 @@ mod tests {
     fn markdown_is_a_valid_table() {
         let rendered = render(&sample(), Format::Markdown, Some("acc_main"), false);
         let lines: Vec<&str> = rendered.lines().collect();
-        assert_eq!(lines.len(), 4, "header, separator, two accounts");
-        assert!(lines[0].starts_with("| position | label | address |"));
+        assert_eq!(lines.len(), 6, "header, separator, four rows");
+        assert!(lines[0].starts_with("| position | name | address | network |"));
         assert!(lines[1].starts_with("| --- |"));
         assert!(lines[2].contains("| main |"));
         // Every row has the same number of cells.
@@ -601,9 +817,18 @@ mod tests {
         accounts[0].mnemonic = None;
 
         let csv = render(&accounts, Format::Csv, None, false);
-        let data_line = csv.lines().nth(1).unwrap();
+        // An account with no index is not part of any wallet, so it sits after
+        // the ones that are.
+        let data_line = csv
+            .lines()
+            .find(|line| line.contains(",private_key,"))
+            .unwrap();
         // No mnemonic, so address_index, seed and derivation_path are all blank.
-        assert!(data_line.starts_with("1,main,0xaaa,private_key,,,,"));
+        assert!(
+            data_line
+                .contains(",main-cronos-testnet,0xaaa,cronos-testnet,evm,main,private_key,,,,"),
+            "{data_line}"
+        );
         // Still the right number of columns.
         assert_eq!(data_line.split(',').count(), COLUMNS.len());
     }
@@ -616,7 +841,11 @@ mod tests {
             .skip(1)
             .map(|line| line.split(',').next().unwrap())
             .collect();
-        assert_eq!(positions, ["1", "2"], "the list position is 1-based");
+        assert_eq!(
+            positions,
+            ["1", "2", "3", "4"],
+            "the list position is 1-based and counts rows, not accounts"
+        );
 
         let jsonl = render(&sample(), Format::Jsonl, None, false);
         let first: serde_json::Value = serde_json::from_str(jsonl.lines().next().unwrap()).unwrap();
@@ -637,19 +866,24 @@ mod tests {
         accounts.push(other);
 
         let jsonl = render(&accounts, Format::Jsonl, None, false);
-        let rows: Vec<serde_json::Value> = jsonl
-            .lines()
-            .map(|line| serde_json::from_str(line).unwrap())
-            .collect();
+        let rows = per_account(&jsonl);
 
+        // Wallet by wallet: both index 0 wallets, then index 1.
+        assert_eq!(rows[0]["label"], "main");
         assert_eq!(rows[0]["address_index"], 0);
-        assert_eq!(rows[1]["address_index"], 1);
+        assert_eq!(rows[1]["label"], "other");
         assert_eq!(
-            rows[2]["address_index"], 0,
+            rows[1]["address_index"], 0,
             "a new mnemonic starts again at 0"
         );
+        assert_eq!(rows[2]["label"], "second");
+        assert_eq!(rows[2]["address_index"], 1);
         assert_eq!(rows[0]["position"], 1);
-        assert_eq!(rows[2]["position"], 3, "the list position keeps counting");
+        assert_eq!(
+            parsed(&jsonl).last().unwrap()["position"],
+            6,
+            "the list position keeps counting across networks"
+        );
     }
 
     #[test]
@@ -660,10 +894,7 @@ mod tests {
         accounts.push(other);
 
         let jsonl = render(&accounts, Format::Jsonl, None, false);
-        let rows: Vec<serde_json::Value> = jsonl
-            .lines()
-            .map(|line| serde_json::from_str(line).unwrap())
-            .collect();
+        let rows = per_account(&jsonl);
 
         assert_eq!(
             rows[0]["seed"], rows[1]["seed"],
@@ -688,9 +919,12 @@ mod tests {
         assert_eq!(seed_id(&accounts[0]), "");
 
         let jsonl = render(&accounts, Format::Jsonl, None, false);
-        let first: serde_json::Value = serde_json::from_str(jsonl.lines().next().unwrap()).unwrap();
-        assert_eq!(first["seed"], "");
-        assert!(first["address_index"].is_null());
+        let row = parsed(&jsonl)
+            .into_iter()
+            .find(|row| row["label"] == "main")
+            .unwrap();
+        assert_eq!(row["seed"], "");
+        assert!(row["address_index"].is_null());
     }
 
     /// The seed id is the one the recall list already shows, so the two views

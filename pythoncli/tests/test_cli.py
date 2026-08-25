@@ -146,8 +146,8 @@ def test_labels_must_be_unique(jrun):
 
 
 def test_labels_are_auto_assigned(jrun):
-    assert data(jrun, "account", "new")["label"] == "account-1"
-    assert data(jrun, "account", "new")["label"] == "account-2"
+    assert data(jrun, "account", "new")["label"] == "account0-evm"
+    assert data(jrun, "account", "new")["label"] == "account1-evm"
 
 
 def test_the_first_account_becomes_active(jrun):
@@ -226,10 +226,10 @@ def test_human_output_truncates_the_private_key(run, jrun):
 
 
 def test_networks_can_be_listed_and_switched(jrun):
-    assert [n["key"] for n in data(jrun, "network", "list")] == [
-        "cronos-testnet",
-        "cronos-mainnet",
-    ]
+    keys = [n["key"] for n in data(jrun, "network", "list")]
+    # Every chain's networks, EVM first, in registry order.
+    assert keys[:2] == ["cronos-testnet", "cronos-mainnet"]
+    assert "solana-devnet" in keys and "cardano-preprod" in keys
     assert data(jrun, "network", "current")["chain_id"] == 338
     data(jrun, "network", "use", "mainnet")
     current = data(jrun, "network", "current")
@@ -393,15 +393,17 @@ def test_global_flags_work_in_either_position(run):
 def test_exit_codes_distinguish_usage_from_runtime_errors(run, home):
     assert run("info")[0] == 0
     assert run("account", "show", "ghost")[0] == 1
-    with pytest.raises(SystemExit) as excinfo:
-        cli.main(["--home", str(home), "not-a-command"])
-    assert excinfo.value.code == 2
+    # The core parses the arguments now, so a bad command comes back as a
+    # usage envelope rather than as a parser exiting the process.
+    assert run("not-a-command")[0] == 2
 
 
-def test_no_command_prints_help(run):
-    code, out, _ = run()
-    assert code == 0
-    assert "COMMAND" in out
+def test_no_command_asks_for_one(run):
+    # What the Rust CLI does, because it is the Rust CLI doing it: an
+    # invocation with no subcommand is a usage error naming them.
+    code, _, err = run()
+    assert code == 2
+    assert "requires a subcommand" in err
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX permissions")
@@ -526,7 +528,7 @@ def test_the_wallet_list_can_be_written_to_a_file(jrun, home):
     assert result["count"] == 1
     assert result["path"] == str(target)
     assert "content" not in result
-    assert target.read_text().startswith("position,label,address,")
+    assert target.read_text().startswith("position,name,address,network,")
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX permissions")
@@ -537,9 +539,11 @@ def test_a_saved_file_holding_secrets_is_not_world_readable(jrun, home):
     assert stat.S_IMODE(target.stat().st_mode) & 0o077 == 0
 
 
-def test_the_networks_are_named_for_the_evm_chains(jrun):
-    names = [n["name"] for n in data(jrun, "network", "list")]
-    assert names == ["Cronos EVM Testnet", "Cronos EVM Mainnet"]
+def test_every_network_names_itself_and_its_chain(jrun):
+    listed = data(jrun, "network", "list")
+    assert [n["name"] for n in listed][:2] == ["Cronos EVM Testnet", "Cronos EVM Mainnet"]
+    # Every chain the build has contributes at least one network.
+    assert {n["chain"] for n in listed} == {c["chain"] for c in data(jrun, "chains")}
 
 
 # =========================================================== crypto utilities
@@ -585,15 +589,13 @@ def test_utils_derive_from_a_private_key_has_no_path(jrun):
 
 
 def test_utils_derive_needs_exactly_one_source(run):
-    # argparse enforces the group itself and exits rather than returning, which
-    # is the same shape every other bad-arguments case here takes.
+    # clap enforces the group, and a usage failure is exit 2 either way — the
+    # difference is that it no longer exits the process to say so.
     for args in (
         ("utils", "derive"),
         ("utils", "derive", "-m", TEST_MNEMONIC, "-k", TEST_PRIVATE_KEY),
     ):
-        with pytest.raises(SystemExit) as excinfo:
-            run(*args)
-        assert excinfo.value.code == 2
+        assert run(*args)[0] == 2, args
 
 
 def test_utils_derive_rejects_bad_material_with_the_usual_codes(jrun):
@@ -651,3 +653,28 @@ def test_utils_validate_mnemonic_reports_rather_than_refuses(jrun):
         assert bad["valid"] is False, phrase
         assert bad["words"] == words
         assert bad["reason"]
+
+
+# ------------------------------------------------------- the interactive menu
+
+
+def test_a_network_is_named_by_its_key_however_it_was_described():
+    """`chains` names networks by key; the handshake hands back records."""
+    from causewaybay.interactive import network_key
+
+    assert network_key("cardano-preprod") == "cardano-preprod"
+    assert network_key({"key": "cardano-preprod", "name": "Cardano Preprod"}) == "cardano-preprod"
+    assert network_key(None) is None
+
+
+def test_switching_to_a_chain_with_no_accounts_still_lands(wallet, capsys):
+    """A new wallet holds nothing anywhere, so the chain's own first network is
+    the answer rather than one the store remembers."""
+    from causewaybay import interactive
+
+    answers = iter(["7", "3", "q"])
+    code = interactive.run(wallet, out=sys.stdout, err=sys.stderr, read=lambda: next(answers, None))
+    assert code == 0
+    printed = capsys.readouterr().out
+    assert "now on Cardano" in printed, printed
+    assert wallet.current_network()["key"].startswith("cardano-")

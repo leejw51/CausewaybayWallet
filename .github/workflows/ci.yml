@@ -164,10 +164,23 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      # The Makefile builds ./.venv from BASE_PYTHON, which is the interpreter
-      # setup-python just put on PATH.
+      # Python is a binding over the Rust core, so the core has to exist before
+      # its tests can run. Toolchain and cache match the Rust job, so this
+      # builds against the same compiler the library ships from.
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+        with:
+          toolchain: 1.95.0
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: rustcli
+
+      # `make -C pythoncli test` builds the shared library first; it is listed
+      # separately so a Rust build failure does not read as a Python failure.
       - run: make -C pythoncli fmt-check
       - run: make -C pythoncli lint
+      - run: make -C pythoncli build
       - run: make -C pythoncli test
 
   parity:

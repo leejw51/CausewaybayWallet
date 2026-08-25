@@ -17,12 +17,14 @@ on the testnet, and never with funds anyone would miss.
 | Front end | Command |
 | --------- | ------- |
 | Rust | `rustcli/target/debug/cwbwallet` (build with `make -C rustcli build`) |
-| Python | `pythoncli/.venv/bin/python -m causewaybay` (set up with `make -C pythoncli install`) |
+| Python | `pythoncli/.venv/bin/python -m causewaybay` (set up with `make -C pythoncli test`) |
 | Lua | `luacli/bin/cwbwallet-lua` (needs LuaJIT; build with `make -C luacli build`) |
 
-All three accept identical arguments — the argument tree is defined once, in
-Rust, and the Lua front end calls into it rather than re-parsing. The examples
-below use `cwbwallet`. Only the Rust one has `tui`.
+All three accept identical arguments, because there is one wallet: the argument
+tree, the four chains and the store are defined once in Rust, and the Python and
+Lua front ends call into it through its C ABI rather than re-implementing any of
+it. The examples below use `cwbwallet`. Only the Rust one has `tui`; the other
+two have `interactive`, a menu at one prompt.
 
 ## Always pass `--json`
 

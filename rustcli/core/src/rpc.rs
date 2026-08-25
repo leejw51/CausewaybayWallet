@@ -1,35 +1,24 @@
-//! A small blocking JSON-RPC 2.0 client covering the methods the wallet needs.
+//! An async JSON-RPC 2.0 client covering the EVM methods the wallet needs.
+//!
+//! It shares the one HTTP client every chain uses (see [`crate::chain::http`]),
+//! so a four-chain `balance --all` reuses connections instead of standing up a
+//! stack per chain.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use alloy_primitives::{Address, U256};
 use serde_json::{json, Value};
 
+use crate::chain::http;
 use crate::error::{self, Result};
-
-static REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
 pub struct RpcClient {
     url: String,
-    client: reqwest::blocking::Client,
 }
 
 impl RpcClient {
     pub fn new(url: impl Into<String>) -> Result<Self> {
-        Self::with_timeout(url, Duration::from_secs(30))
-    }
-
-    pub fn with_timeout(url: impl Into<String>, timeout: Duration) -> Result<Self> {
-        let client = reqwest::blocking::Client::builder()
-            .timeout(timeout)
-            .user_agent(concat!("causewaybay-wallet/", env!("CARGO_PKG_VERSION")))
-            .build()
-            .map_err(|e| error::rpc_error(format!("cannot build the HTTP client: {e}")))?;
-        Ok(RpcClient {
-            url: url.into(),
-            client,
-        })
+        Ok(RpcClient { url: url.into() })
     }
 
     pub fn url(&self) -> &str {
@@ -37,91 +26,46 @@ impl RpcClient {
     }
 
     /// Issue one JSON-RPC call and unwrap its `result`.
-    pub fn call(&self, method: &str, params: Value) -> Result<Value> {
-        let id = REQUEST_ID.fetch_add(1, Ordering::Relaxed);
-        let body = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
-
-        let response = self
-            .client
-            .post(&self.url)
-            .json(&body)
-            .send()
-            .map_err(|e| {
-                error::rpc_error(format!("{method} request to {} failed: {e}", self.url))
-            })?;
-
-        let status = response.status();
-        let text = response
-            .text()
-            .map_err(|e| error::rpc_error(format!("{method} response could not be read: {e}")))?;
-        if !status.is_success() {
-            return Err(error::rpc_error(format!(
-                "{method} returned HTTP {}: {}",
-                status.as_u16(),
-                text.chars().take(200).collect::<String>()
-            )));
-        }
-
-        let value: Value = serde_json::from_str(&text).map_err(|_| {
-            error::rpc_error(format!(
-                "{method} returned a non-JSON response: {}",
-                text.chars().take(200).collect::<String>()
-            ))
-        })?;
-
-        if let Some(rpc_error) = value.get("error") {
-            let message = rpc_error
-                .get("message")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown RPC error");
-            let code = rpc_error.get("code").and_then(Value::as_i64).unwrap_or(0);
-            // Surface the funding case distinctly; it is by far the most common failure.
-            if message.to_lowercase().contains("insufficient funds") {
-                return Err(error::insufficient_funds(message));
-            }
-            return Err(error::rpc_error(format!(
-                "{method} failed ({code}): {message}"
-            )));
-        }
-
-        value
-            .get("result")
-            .cloned()
-            .ok_or_else(|| error::rpc_error(format!("{method} response has no result field")))
+    pub async fn call(&self, method: &str, params: Value) -> Result<Value> {
+        http::json_rpc(&self.url, method, params).await
     }
 
     // ------------------------------------------------------------- shortcuts
 
-    pub fn chain_id(&self) -> Result<u64> {
-        let value = self.call("eth_chainId", json!([]))?;
+    pub async fn chain_id(&self) -> Result<u64> {
+        let value = self.call("eth_chainId", json!([])).await?;
         parse_quantity_u64(&value, "eth_chainId")
     }
 
-    pub fn block_number(&self) -> Result<u64> {
-        let value = self.call("eth_blockNumber", json!([]))?;
+    pub async fn block_number(&self) -> Result<u64> {
+        let value = self.call("eth_blockNumber", json!([])).await?;
         parse_quantity_u64(&value, "eth_blockNumber")
     }
 
-    pub fn get_balance(&self, address: Address) -> Result<U256> {
-        let value = self.call("eth_getBalance", json!([checksum(address), "latest"]))?;
+    pub async fn get_balance(&self, address: Address) -> Result<U256> {
+        let value = self
+            .call("eth_getBalance", json!([checksum(address), "latest"]))
+            .await?;
         parse_quantity_u256(&value, "eth_getBalance")
     }
 
     /// Uses the pending block so back-to-back sends do not reuse a nonce.
-    pub fn get_transaction_count(&self, address: Address) -> Result<u64> {
-        let value = self.call(
-            "eth_getTransactionCount",
-            json!([checksum(address), "pending"]),
-        )?;
+    pub async fn get_transaction_count(&self, address: Address) -> Result<u64> {
+        let value = self
+            .call(
+                "eth_getTransactionCount",
+                json!([checksum(address), "pending"]),
+            )
+            .await?;
         parse_quantity_u64(&value, "eth_getTransactionCount")
     }
 
-    pub fn gas_price(&self) -> Result<U256> {
-        let value = self.call("eth_gasPrice", json!([]))?;
+    pub async fn gas_price(&self) -> Result<U256> {
+        let value = self.call("eth_gasPrice", json!([])).await?;
         parse_quantity_u256(&value, "eth_gasPrice")
     }
 
-    pub fn estimate_gas(
+    pub async fn estimate_gas(
         &self,
         from: Address,
         to: Address,
@@ -136,14 +80,16 @@ impl RpcClient {
         if !data.is_empty() {
             call["data"] = json!(format!("0x{}", hex::encode(data)));
         }
-        let result = self.call("eth_estimateGas", json!([call, "latest"]))?;
+        let result = self
+            .call("eth_estimateGas", json!([call, "latest"]))
+            .await?;
         parse_quantity_u64(&result, "eth_estimateGas")
     }
 
     /// Read-only contract call; returns the raw ABI-encoded return data.
-    pub fn eth_call(&self, to: Address, data: &[u8]) -> Result<Vec<u8>> {
+    pub async fn eth_call(&self, to: Address, data: &[u8]) -> Result<Vec<u8>> {
         let call = json!({"to": checksum(to), "data": format!("0x{}", hex::encode(data))});
-        let result = self.call("eth_call", json!([call, "latest"]))?;
+        let result = self.call("eth_call", json!([call, "latest"])).await?;
         let text = result
             .as_str()
             .ok_or_else(|| error::rpc_error("eth_call did not return hex data"))?;
@@ -151,22 +97,26 @@ impl RpcClient {
             .map_err(|e| error::rpc_error(format!("eth_call returned malformed hex: {e}")))
     }
 
-    pub fn send_raw_transaction(&self, raw: &[u8]) -> Result<String> {
+    pub async fn send_raw_transaction(&self, raw: &[u8]) -> Result<String> {
         let payload = format!("0x{}", hex::encode(raw));
-        let result = self.call("eth_sendRawTransaction", json!([payload]))?;
+        let result = self
+            .call("eth_sendRawTransaction", json!([payload]))
+            .await?;
         result
             .as_str()
             .map(str::to_string)
             .ok_or_else(|| error::rpc_error("eth_sendRawTransaction did not return a hash"))
     }
 
-    pub fn get_transaction_by_hash(&self, hash: &str) -> Result<Option<Value>> {
-        let result = self.call("eth_getTransactionByHash", json!([hash]))?;
+    pub async fn get_transaction_by_hash(&self, hash: &str) -> Result<Option<Value>> {
+        let result = self.call("eth_getTransactionByHash", json!([hash])).await?;
         Ok(if result.is_null() { None } else { Some(result) })
     }
 
-    pub fn get_transaction_receipt(&self, hash: &str) -> Result<Option<Value>> {
-        let result = self.call("eth_getTransactionReceipt", json!([hash]))?;
+    pub async fn get_transaction_receipt(&self, hash: &str) -> Result<Option<Value>> {
+        let result = self
+            .call("eth_getTransactionReceipt", json!([hash]))
+            .await?;
         Ok(if result.is_null() { None } else { Some(result) })
     }
 
@@ -176,12 +126,12 @@ impl RpcClient {
     /// this is called the transaction has already been broadcast, so reporting
     /// a single 502 as failure invites the user to send it a second time. Only
     /// a failure that persists to the deadline is surfaced.
-    pub fn wait_for_receipt(&self, hash: &str, timeout: Duration) -> Result<Option<Value>> {
+    pub async fn wait_for_receipt(&self, hash: &str, timeout: Duration) -> Result<Option<Value>> {
         let deadline = std::time::Instant::now() + timeout;
         let interval = Duration::from_millis(1500);
         let mut last_error: Option<crate::error::Error>;
         loop {
-            match self.get_transaction_receipt(hash) {
+            match self.get_transaction_receipt(hash).await {
                 Ok(Some(receipt)) => return Ok(Some(receipt)),
                 Ok(None) => last_error = None,
                 Err(e) => last_error = Some(e),
@@ -197,7 +147,7 @@ impl RpcClient {
                     None => Ok(None),
                 };
             }
-            std::thread::sleep(interval);
+            tokio::time::sleep(interval).await;
         }
     }
 }

@@ -328,7 +328,8 @@ t.suite("model / the session", function()
     model:create("stranger")
     model:login(model:offer_mnemonic(12))
     t.equal(#model.wallets, 1, "the session sees one")
-    t.equal(#model.all_wallets, 2, "the store still holds both")
+    -- Two wallets, four chains each: the stranger's and the session's.
+    t.equal(#model.all_wallets, 8, "the store still holds both, whole")
   end)
 
   t.case("a phrase sees every wallet it controls", function()
@@ -354,8 +355,10 @@ t.suite("model / the session", function()
 
     local seen = {}
     for _, entry in ipairs(fresh.wallets) do seen[entry.label] = true end
-    t.ok(seen["second"] and seen["third"], "including the ones made last time")
-    t.ok(not seen["stranger"], "and not the one it does not own")
+    -- A named wallet spans four chains, so each face carries the chain's
+    -- name; the list shows the chain in view's.
+    t.ok(seen["second-evm"] and seen["third-evm"], "including the ones made last time")
+    t.ok(not seen["stranger-evm"], "and not the one it does not own")
   end)
 
   t.case("a wallet with a gap in its indices is still found whole", function()
@@ -930,17 +933,80 @@ t.suite("model / screens", function()
 end)
 
 t.suite("model / networks", function()
-  t.case("lists them and switches", function()
+  t.case("lists every chain's networks and switches between them", function()
     local model = model_over()
-    t.equal(#model:networks(), 2)
+    local networks = model:networks()
+
+    local chains = {}
+    for _, n in ipairs(networks) do chains[n.chain] = true end
+    for _, chain in ipairs({ "evm", "solana", "cardano", "midnight" }) do
+      t.ok(chains[chain], chain .. " has no network to switch to")
+    end
+
     t.ok(model:switch_network("cronos-mainnet"))
     t.equal(model.info.chain_id, 25)
+    t.equal(model:chain(), "evm")
   end)
 
   t.case("an unknown network is an error, not a crash", function()
     local model = model_over()
     t.equal(model:switch_network("ethereum"), false)
     t.equal(model.status.code, "unknown_network")
+  end)
+end)
+
+t.suite("model / chains", function()
+  t.case("lists the chains the library has, not a list kept here", function()
+    local model = model_over()
+    local chains = model:chains()
+    t.equal(#chains, 4)
+
+    local by_name = {}
+    for _, c in ipairs(chains) do by_name[c.chain] = c end
+    t.ok(by_name.solana, "solana is missing")
+    t.ok(by_name.cardano, "cardano is missing")
+    t.ok(by_name.midnight, "midnight is missing")
+    t.equal(by_name.solana.derivation_path, "m/44'/501'/0'/0'")
+  end)
+
+  t.case("switching chain lands on that chain's network", function()
+    local model = model_over()
+    t.equal(model:chain(), "evm")
+
+    t.ok(model:switch_chain("solana"))
+    t.equal(model:chain(), "solana")
+    t.ok(model.info.network:match("^solana%-"), model.info.network)
+
+    -- And back, without having to know which network key belongs to which.
+    t.ok(model:switch_chain("cardano"))
+    t.equal(model:chain(), "cardano")
+    t.ok(model.info.network:match("^cardano%-"), model.info.network)
+  end)
+
+  t.case("a network is named by its key, however it was described", function()
+    -- `chains` lists networks by key; the library's handshake hands back whole
+    -- records. The switcher takes either, because it reads one and is given
+    -- the other.
+    t.equal(Model.network_key("solana-devnet"), "solana-devnet")
+    t.equal(Model.network_key({ key = "solana-devnet", name = "Solana Devnet" }),
+      "solana-devnet")
+  end)
+
+  t.case("switching to a chain the wallet holds nothing on still lands", function()
+    -- The path that runs for a new wallet: no account anywhere, so the chain's
+    -- own first network is the answer rather than one the store remembers.
+    local model = model_over()
+    t.equal(#model.wallets, 0)
+    t.ok(model:switch_chain("cardano"), model.status and model.status.message)
+    t.equal(model:chain(), "cardano")
+    t.ok(model.info.network:match("^cardano%-"), model.info.network)
+  end)
+
+  t.case("a chain this build does not have is an error, not a crash", function()
+    local model = model_over()
+    t.equal(model:switch_chain("bitcoin"), false)
+    t.equal(model.status.code, "unknown_chain")
+    t.equal(model:chain(), "evm", "the chain in view did not move")
   end)
 end)
 

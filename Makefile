@@ -4,7 +4,7 @@
 #
 #   rustcli/    the Rust workspace — core/ (the wallet), ffi/ (a C ABI over
 #               it), cli/ (the cwbwallet binary and TUI)
-#   pythoncli/  an independent Python implementation of the same spec
+#   pythoncli/  a Python binding over that C ABI, its CLI and its menu
 #   luacli/     a Lua CLI and LÖVE module, loading the shared library at run
 #               time — which is what LÖVE needs
 #   lovegui/    the LÖVE game built on that module: an 8-bit window over the
@@ -289,9 +289,13 @@ run: ## Open CAUSEWAYBAY BANK (the LÖVE window)
 .PHONY: gui
 gui: run ## Alias for `run`
 
-.PHONY: tui-python
-tui-python: ## Launch the Python terminal UI
-	@$(MAKE) --no-print-directory -C $(PYTHON_DIR) tui
+.PHONY: interactive-python
+interactive-python: ## The Python menu and REPL at one prompt
+	@$(MAKE) --no-print-directory -C $(PYTHON_DIR) interactive
+
+.PHONY: interactive-lua
+interactive-lua: ## The Lua menu and REPL at one prompt
+	@$(MAKE) --no-print-directory -C $(LUA_DIR) interactive
 
 # ----------------------------------------------------------------------- clean
 

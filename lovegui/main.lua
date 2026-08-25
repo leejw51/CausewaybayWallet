@@ -46,6 +46,40 @@ local causewaybay = require("causewaybay")
 local json = require("causewaybay.json")
 local Model = require("model")
 
+--- The layout every screen shares, so the columns line up between them.
+---
+--- Computed, not written down: `ui/layout.lua` holds the arithmetic for both
+--- orientations, and the LAYOUT button swaps which one this is.
+local layout = require("ui.layout")
+local L = layout.compute(theme.WIDTH, theme.HEIGHT)
+
+--- Remembered across launches, like the session: a wallet someone stood on
+--- its side should come back that way.
+local LAYOUT_FILE = "layout"
+
+--- Turn the whole game on its side, or back.
+---
+--- `remember` is false for a turn nobody asked for — the screenshot harness
+--- photographing the tall layout — so taking a picture cannot decide which way
+--- up the game opens next time.
+local function set_orientation(portrait, remember)
+  if portrait == L.portrait then return end
+  theme.set_size(theme.HEIGHT, theme.WIDTH)
+  L = layout.compute(theme.WIDTH, theme.HEIGHT)
+  if remember ~= false then
+    pcall(love.filesystem.write, LAYOUT_FILE, portrait and "portrait" or "landscape")
+  end
+  -- A windowed window turns with the canvas, keeping its scale; fullscreen
+  -- stays as it is and the transform letterboxes, as it always has.
+  if not love.window.getFullscreen() then
+    local _, _, flags = love.window.getMode()
+    local scale = math.max(1, math.floor(math.min(
+      love.graphics.getWidth() / theme.HEIGHT, love.graphics.getHeight() / theme.WIDTH)))
+    flags.minwidth, flags.minheight = theme.WIDTH, theme.HEIGHT
+    love.window.setMode(theme.WIDTH * scale, theme.HEIGHT * scale, flags)
+  end
+end
+
 local game = {
   time = 0,
   model = nil,
@@ -252,6 +286,22 @@ end
 
 function love.load()
   theme.load()
+  -- Which way up: what the harness asked for, or the way it was left — a
+  -- wallet stood on its side comes back that way.
+  --
+  -- `CWB_SHOT_TALL=1` photographs the tall layout — every screen has two of
+  -- them and only the wide one was ever pictured, so a portrait screen could
+  -- overlap itself for a release without anybody seeing it. A shot states its
+  -- orientation either way, rather than inheriting whichever one somebody last
+  -- left the game in, and never remembers the turn it made for the picture.
+  -- `~= ""` because an empty environment variable is still a string, and a
+  -- string is true: `CWB_SHOT_TALL= love lovegui` turned the game on its side.
+  local saved = love.filesystem.read(LAYOUT_FILE)
+  if os.getenv("CWB_SHOT") then
+    set_orientation((os.getenv("CWB_SHOT_TALL") or "") ~= "", false)
+  elseif saved == "portrait" and not L.portrait then
+    set_orientation(true)
+  end
   sprite.load()
   sound.load()
   love.keyboard.setKeyRepeat(true)
@@ -557,6 +607,32 @@ end
 
 -- --------------------------------------------------------------------- input
 
+--- Clipboard helpers, above the keypress handler *and* the buttons that call
+--- them. A `local function` declared later is not in scope earlier — the call
+--- would read a nil global and crash — which is exactly how Ctrl+V used to
+--- take the whole game down. The globals check in `make lint` now refuses
+--- that shape outright.
+local function copy_to_clipboard(model, text, what)
+  if not text or text == "" then return false end
+  love.system.setClipboardText(text)
+  model:say(("%s copied"):format(what))
+  game.toast = { text = "COPIED", colour = theme.colour.cyan, life = 1.4 }
+  return true
+end
+
+--- Take whatever is on the clipboard, if it is worth taking.
+local function paste_from_clipboard(model, field)
+  local text = love.system.getClipboardText()
+  if not text or text:gsub("%s", "") == "" then
+    model:fail({ code = "usage", message = "the clipboard is empty" })
+    return false
+  end
+  model:set_field(field, text)
+  model:say("pasted from the clipboard")
+  return true
+end
+
+
 local function mouse_state()
   -- `game.pointer` is the screenshot harness pressing a button — see CAPTURING
   -- at the foot of this file. Nothing else ever sets it, and with it unset this
@@ -747,6 +823,44 @@ end
 
 -- ---------------------------------------------------------------------- draw
 
+--- Break text into lines that fit a width.
+---
+--- At word boundaries where it can and mid-word where it cannot, because the
+--- longest single thing this has to lay out is a filesystem path, and a path
+--- has no spaces in it. Falling back to a character break is the difference
+--- between a path that wraps and a path that runs off the panel.
+local function wrap(text, width, font)
+  font = font or theme.font.small
+  local lines, line = {}, ""
+
+  local function flush()
+    if line ~= "" then lines[#lines + 1] = line end
+    line = ""
+  end
+
+  for word in tostring(text):gmatch("%S+") do
+    local candidate = line == "" and word or (line .. " " .. word)
+    if theme.width(candidate, font) <= width then
+      line = candidate
+    else
+      flush()
+      -- A word that does not fit on a line of its own is cut where it stops
+      -- fitting, and the rest carries on below.
+      while theme.width(word, font) > width do
+        local cut = #word
+        while cut > 1 and theme.width(word:sub(1, cut), font) > width do
+          cut = cut - 1
+        end
+        lines[#lines + 1] = word:sub(1, cut)
+        word = word:sub(cut + 1)
+      end
+      line = word
+    end
+  end
+  flush()
+  return lines
+end
+
 --- A big, dim sprite drifting behind the content.
 ---
 --- The screens are top-heavy — a two-wallet list leaves most of the window
@@ -764,8 +878,8 @@ end
 
 local function draw_header(model)
   local t = game.entrance.value
-  theme.rect(theme.colour.deep, 0, 0, theme.WIDTH, 34)
-  theme.rule(0, 34, theme.WIDTH, theme.colour.cyan_dark, 0.8 * t)
+  theme.rect(theme.colour.deep, 0, 0, theme.WIDTH, L.header.band_h)
+  theme.rule(0, L.header.band_h, theme.WIDTH, theme.colour.cyan_dark, 0.8 * t)
 
   local bob = math.sin(game.time * 2) * 1.5
   sprite.draw_glowing("logo", 20, 17 + bob, 26, {
@@ -777,10 +891,22 @@ local function draw_header(model)
   theme.text("CAUSEWAYBAY", 38, 3, theme.colour.cyan, theme.font.body, t)
   theme.text("BANK", 38, 18, theme.colour.dim, theme.font.small, t)
 
+  -- The chain, then the network within it. Not the chain *id*: only EVM has
+  -- one, and "chain nil" was what the other three used to render. Portrait
+  -- shows the key alone — it carries the chain in its first word, and a
+  -- 254-pixel row has no room to say it twice.
   local network = model and model.info and model.info.network or "…"
-  local chain = model and model.info and model.info.chain_id or ""
-  theme.text_right(("%s · chain %s"):format(network, chain),
-    theme.WIDTH - 158, 11, theme.colour.dim, theme.font.small, t)
+  local chain = model and model.info and model.info.chain or ""
+  local where = L.portrait and network or ("%s · %s"):format(chain, network)
+  local spot = L.header.network
+  while theme.width(where, theme.font.small) > spot.max_w and #where > 1 do
+    where = where:sub(1, -2)
+  end
+  if spot.align == "right" then
+    theme.text_right(where, spot.x, spot.y, theme.colour.dim, theme.font.small, t)
+  else
+    theme.text(where, spot.x, spot.y, theme.colour.dim, theme.font.small, t)
+  end
 
   -- A spinner while the node is thinking, so "busy" is never just a word.
   if model and model:busy() then
@@ -790,7 +916,7 @@ local function draw_header(model)
       local fade = 1 - (i / 6)
       theme.set(theme.colour.cyan, fade * 0.9)
       love.graphics.rectangle("fill",
-        theme.WIDTH - 166 + math.cos(a) * r, 24 + math.sin(a) * r, 2, 2)
+        L.header.spinner.x + math.cos(a) * r, L.header.spinner.y + math.sin(a) * r, 2, 2)
     end
   end
 end
@@ -799,7 +925,7 @@ local function draw_tabs(model, state)
   local labels = { wallets = "WALLETS", send = "SEND", network = "NETWORK" }
   local w = 74
   for i, name in ipairs(Model.SCREENS) do
-    local box = { x = 8 + (i - 1) * (w + 4), y = 38, w = w, h = 19 }
+    local box = { x = 8 + (i - 1) * (w + 4), y = L.header.tabs_y, w = w, h = 19 }
     local active = model.screen == name
     local spring = game.springs:get("tab." .. name, 240, 0.6)
     spring:to(active and 1 or 0)
@@ -825,26 +951,6 @@ end
 --- An address is 42 characters of hex that a person cannot retype correctly,
 --- so copying it is not a convenience — it is the only realistic way to use
 --- one. `love.system` provides this on every platform LÖVE runs on.
-local function copy_to_clipboard(model, text, what)
-  if not text or text == "" then return false end
-  love.system.setClipboardText(text)
-  model:say(("%s copied"):format(what))
-  game.toast = { text = "COPIED", colour = theme.colour.cyan, life = 1.4 }
-  return true
-end
-
---- Take whatever is on the clipboard, if it is worth taking.
-local function paste_from_clipboard(model, field)
-  local text = love.system.getClipboardText()
-  if not text or text:gsub("%s", "") == "" then
-    model:fail({ code = "usage", message = "the clipboard is empty" })
-    return false
-  end
-  model:set_field(field, text)
-  model:say("pasted from the clipboard")
-  return true
-end
-
 --- The window-mode button: FULL when windowed, WIN when it is not.
 ---
 --- One function rather than one per screen, because it is on three of them —
@@ -860,8 +966,28 @@ local function draw_mode_button(box, state)
   end
 end
 
---- Where that button goes on a screen that has no header to hang it in.
-local MODE_BOX = { x = theme.WIDTH - 50, y = 4, w = 44, h = 15 }
+--- The orientation button: TALL when wide, WIDE when tall.
+---
+--- Labelled like FULL/WIN — the button names what pressing it gives you, not
+--- what you already have. On the same three screens as the mode button, and
+--- for the same reason: a game that can stand on its side needs the way back
+--- visible from the first frame, not only from behind the mnemonic prompt.
+local function draw_layout_button(box, state)
+  if widgets.button(game.springs, "layout", box, L.portrait and "WIDE" or "TALL",
+      state, { colour = theme.colour.cyan, font = theme.font.small }) then
+    set_orientation(not L.portrait)
+  end
+end
+
+--- Where those buttons go on a screen that has no header to hang them in.
+--- Functions, because the width they hang from changes with the orientation.
+local function mode_box()
+  return { x = theme.WIDTH - 50, y = 4, w = 44, h = 15 }
+end
+
+local function layout_box()
+  return { x = theme.WIDTH - 98, y = 4, w = 44, h = 15 }
+end
 
 --- The header's two buttons: the window mode, and the way out.
 local function draw_header_buttons(model, state)
@@ -869,7 +995,9 @@ local function draw_header_buttons(model, state)
   -- letter is typed into a field somewhere, so `M` has to be ignored on the
   -- screens that take text — and a control that stops working on some screens
   -- is not a control anyone trusts. This one is always here.
-  local sfx = { x = theme.WIDTH - 152, y = 5, w = 36, h = 15 }
+  draw_layout_button(L.header.buttons.layout, state)
+
+  local sfx = L.header.buttons.sfx
   if widgets.button(game.springs, "sfx", sfx, sound.enabled and "SFX" or "MUTE",
       state, {
         colour = sound.enabled and theme.colour.green or theme.colour.faint,
@@ -883,15 +1011,14 @@ local function draw_header_buttons(model, state)
     sound.play("press")
   end
 
-  local mode = { x = theme.WIDTH - 112, y = 5, w = 44, h = 15 }
-  draw_mode_button(mode, state)
+  draw_mode_button(L.header.buttons.mode, state)
 
   -- LOGOUT deletes the store, so it asks. The first press arms it and the
   -- label says what the second one does; it disarms itself after a few
   -- seconds, because walking away should not leave the wallet one stray click
   -- from being wiped.
   local armed = game.armed.logout ~= nil
-  local out = { x = theme.WIDTH - 62, y = 5, w = 54, h = 15 }
+  local out = L.header.buttons.logout
   if widgets.button(game.springs, "logout", out, armed and "WIPE?" or "LOGOUT", state,
       { colour = armed and theme.colour.gold or theme.colour.red,
         font = theme.font.small }) then
@@ -912,24 +1039,6 @@ local function draw_header_buttons(model, state)
     end
   end
 end
-
---- The layout every screen shares, so the columns line up between them.
-local L = {
-  margin = 8,
-  -- 68 leaves room above for a frame's title, which sits *on* its top edge and
-  -- would otherwise collide with the tab row ending at 57.
-  top = 68,
-  -- Frames stop here; below is the action bar (230..248) and then the warning
-  -- banner (253..270). Worked out once so nothing overlaps by a pixel.
-  bottom = 224,
-  bar = 230,
-  button_h = 18,
-  gutter = 8,
-}
-L.left = L.margin
-L.column = 196                                        -- the list column
-L.right = L.left + L.column + L.gutter                 -- the detail column
-L.right_w = theme.WIDTH - L.right - L.margin
 
 --- Two lines: a label over a quieter value. The unit of most of this UI.
 local function stat(x, y, label, value, colour, font)
@@ -987,8 +1096,13 @@ local function draw_card(model, entry, face, place)
         -- Up beside the sigil rather than down by the holder — the bottom
         -- right belongs to the second line of the card number, and a badge
         -- printed over an address is a badge that makes the address wrong.
+        --
+        -- Measured rather than guessed at 56: the chip is its label plus ten,
+        -- which is 58, so the badge hung two pixels out through the card's own
+        -- edge.
         local pulse = anim.pulse(game.time, 1.6, 0.55, 1.0)
-        widgets.chip(box.x + box.w - 56, box.y + 36, "ACTIVE",
+        local chip_w = theme.width("ACTIVE", theme.font.small) + 10
+        widgets.chip(box.x + box.w - 10 - chip_w, box.y + 36, "ACTIVE",
           theme.colour.green, { alpha = alpha * pulse })
       end
     end,
@@ -996,7 +1110,7 @@ local function draw_card(model, entry, face, place)
 end
 
 local function draw_wallets(model, state, x)
-  local height = L.bottom - L.top
+  local height = L.list.h
 
   -- ------------------------------------------------------------ the list
   --
@@ -1020,14 +1134,14 @@ local function draw_wallets(model, state, x)
     range = ("%d-%d OF %d"):format(model.scroll + 1,
       math.min(#model.wallets, model.scroll + rows), #model.wallets)
   end
-  local list = widgets.frame(x + L.left, L.top, L.column, height,
+  local list = widgets.frame(x + L.list.x, L.list.y, L.list.w, height,
     ("WALLETS %d"):format(#model.wallets), { note = range })
 
   if #model.wallets == 0 then
-    theme.text_centred("no wallets yet", x + L.left + L.column / 2, L.top + height / 2 - 16,
-      theme.colour.faint, theme.font.small)
-    theme.text_centred("press + NEW below", x + L.left + L.column / 2,
-      L.top + height / 2 - 2, theme.colour.faint, theme.font.small)
+    theme.text_centred("no wallets yet", x + L.list.x + L.list.w / 2,
+      L.list.y + height / 2 - 16, theme.colour.faint, theme.font.small)
+    theme.text_centred("press + NEW below", x + L.list.x + L.list.w / 2,
+      L.list.y + height / 2 - 2, theme.colour.faint, theme.font.small)
   end
 
   for slot = 1, rows do
@@ -1050,6 +1164,7 @@ local function draw_wallets(model, state, x)
     theme.text(account.label, row_x + 26, box.y + 1, ink, theme.font.small)
     theme.text(theme.ellipsis(account.address, 8, 6), row_x + 26, box.y + 14,
       selected and theme.colour.cyan_dark or theme.colour.faint, theme.font.small)
+
   end
 
   -- A scrollbar, so a list longer than the frame says so and shows where in
@@ -1080,13 +1195,15 @@ local function draw_wallets(model, state, x)
   -- `ui/card.lua` for how it is dealt from the address.
   local selected = model.wallets[model.selected]
 
-  -- A real card's proportions, centred in the column. The ratio is the reason
-  -- it reads as a card at a glance and not as a panel with a picture on it.
-  local face_h = L.bottom - L.top
+  -- A real card's proportions, centred in its region. The ratio is the reason
+  -- it reads as a card at a glance and not as a panel with a picture on it —
+  -- so when the region is the wrong shape (portrait's band is wide and short),
+  -- the card keeps its ratio and centres, rather than stretching to fill.
+  local face_h = math.min(L.detail.h, math.floor(L.detail.w / 1.585))
   local face_w = math.floor(face_h * 1.585)
   local face = {
-    x = x + L.right + math.floor((L.right_w - face_w) / 2),
-    y = L.top,
+    x = x + L.detail.x + math.floor((L.detail.w - face_w) / 2),
+    y = L.detail.y + math.floor((L.detail.h - face_h) / 2),
     w = face_w,
     h = face_h,
   }
@@ -1109,7 +1226,7 @@ local function draw_wallets(model, state, x)
     --
     -- Clipped to the column, because a card number sliding across the wallet
     -- list is not a transition, it is a bug with an easing curve on it.
-    local window = { x = x + L.right, y = L.top - 2, w = L.right_w, h = face.h + 4 }
+    local window = { x = x + L.detail.x, y = face.y - 2, w = L.detail.w, h = face.h + 4 }
     theme.clip(window, function()
       if game.face.next then
         local leaving, arriving = card.swipe(game.face.turn, face.w + 16, game.face.dir)
@@ -1133,13 +1250,13 @@ local function draw_wallets(model, state, x)
   -- 60 + 40 + 56 + 40 + 40 across five buttons and 6 between them is exactly
   -- the 260 the column has, so the row is flush at both ends.
   local small = theme.font.small
-  local refresh = { x = x + L.right, y = L.bar, w = 60, h = L.button_h }
+  local refresh = widgets.offset(L.actions.refresh, x)
   if widgets.button(game.springs, "refresh", refresh, "REFRESH", state,
       { font = small, disabled = model:busy() or #model.wallets == 0 }) then
     model:fetch_balance()
   end
 
-  local new = { x = x + L.left, y = L.bar, w = 84, h = L.button_h }
+  local new = widgets.offset(L.actions.new, x)
   if widgets.button(game.springs, "new", new, "+ NEW", state,
       { colour = theme.colour.green }) then
     model:create("")
@@ -1148,14 +1265,14 @@ local function draw_wallets(model, state, x)
   -- The card's own verbs. COPY takes the address the card is showing — the one
   -- on screen, not the one the wallet happens to be spending from, because the
   -- card is what a person is looking at.
-  local copy = { x = x + L.right + 66, y = L.bar, w = 40, h = L.button_h }
+  local copy = widgets.offset(L.actions.copy, x)
   if widgets.button(game.springs, "copy", copy, "COPY", state,
       { font = small, colour = theme.colour.cyan, disabled = selected == nil }) then
     copy_to_clipboard(model, selected.address, "address")
   end
 
   local usable = selected ~= nil and selected.address ~= model.active
-  local use = { x = x + L.right + 112, y = L.bar, w = 56, h = L.button_h }
+  local use = widgets.offset(L.actions.use, x)
   if widgets.button(game.springs, "use", use, usable and "USE" or "IN USE",
       state, { font = small, colour = theme.colour.gold, disabled = not usable }) then
     model:select(model.selected)
@@ -1167,7 +1284,7 @@ local function draw_wallets(model, state, x)
   -- It still asks, because the question is not *whether* — it is *where*. The
   -- directory these land in is one nobody chose and most people have never
   -- opened, and a file you cannot find is a file you cannot delete.
-  local save = { x = x + L.right + 174, y = L.bar, w = 40, h = L.button_h }
+  local save = widgets.offset(L.actions.save, x)
   if widgets.button(game.springs, "save", save, "SAVE", state,
       { font = small, colour = theme.colour.green, disabled = #model.wallets == 0 }) then
     model:ask_save()
@@ -1176,7 +1293,7 @@ local function draw_wallets(model, state, x)
   -- And the keys: every mnemonic and every private key, in one file, in the
   -- clear. The dialog spells out the path and what the file is worth to
   -- whoever reads it, and nothing is written until it is answered.
-  local keys = { x = x + L.right + 220, y = L.bar, w = 40, h = L.button_h }
+  local keys = widgets.offset(L.actions.keys, x)
   if widgets.button(game.springs, "keys", keys, "KEYS", state,
       { font = small, colour = theme.colour.red,
         disabled = #model.wallets == 0 }) then
@@ -1185,7 +1302,6 @@ local function draw_wallets(model, state, x)
 end
 
 local function draw_send(model, state, x)
-  local height = L.bottom - L.top
 
   -- The rocket gets its own column, so the exhaust has somewhere to go.
   --
@@ -1193,7 +1309,7 @@ local function draw_send(model, state, x)
   -- used to be. The columns are supposed to line up between screens, and a
   -- narrow pad left a hundred pixels of nothing between it and the form —
   -- which read as the form having drifted right rather than as space.
-  local pad = widgets.frame(x + L.left, L.top, L.column, height, "LAUNCH")
+  local pad = widgets.frame(x + L.pad.x, L.pad.y, L.pad.w, L.pad.h, "LAUNCH")
   rocket.x, rocket.y = pad.x + pad.w / 2, pad.y + 42
   local risen, t = flight()
   local thrust = model:busy() and 1 or 0
@@ -1215,7 +1331,7 @@ local function draw_send(model, state, x)
       (1 - t / 0.35) * 0.8)
   end
 
-  local form = widgets.frame(x + L.right, L.top, L.right_w, height, "TRANSFER")
+  local form = widgets.frame(x + L.form.x, L.form.y, L.form.w, L.form.h, "TRANSFER")
 
   -- Which wallet the money leaves, at the top, before anything about where it
   -- is going. A transfer reads from-then-to, and the wallet being spent from
@@ -1229,8 +1345,23 @@ local function draw_send(model, state, x)
 
   theme.text("FROM", form.x, form.y + 2, theme.colour.faint, theme.font.small)
   if from then
-    theme.text(from.label, form.x + 38, form.y + 2, theme.colour.text, theme.font.small)
-    theme.text_right(theme.ellipsis(from.address, 8, 6), form.x + form.w, form.y + 2,
+    -- The label and the address share this row, and they used to share it by
+    -- printing through each other: a twelve-character label and a shortened
+    -- address are 20 pixels wider than the frame, so the address's first
+    -- characters landed on the label's last ones. The address is shortened
+    -- further where the row is narrow, and the label is clipped to what is
+    -- left over — a long label loses its tail rather than the address.
+    local short = theme.ellipsis(from.address, 8, 6)
+    local address_w = theme.width(short, theme.font.small)
+    if 38 + theme.width(from.label, theme.font.small) + 6 + address_w > form.w then
+      short = theme.ellipsis(from.address, 4, 4)
+      address_w = theme.width(short, theme.font.small)
+    end
+    local room = { x = form.x + 38, y = form.y, w = form.w - 44 - address_w, h = 16 }
+    theme.clip(room, function()
+      theme.text(from.label, room.x, form.y + 2, theme.colour.text, theme.font.small)
+    end)
+    theme.text_right(short, form.x + form.w, form.y + 2,
       theme.colour.cyan, theme.font.small)
   else
     -- No active wallet means the send would be refused anyway. Saying so here
@@ -1249,9 +1380,14 @@ local function draw_send(model, state, x)
 
   -- The recipient field gives up room to its own buttons: pasting is how an
   -- address realistically gets in here, and typing 42 hex characters is not.
+  -- The placeholder shows the shape of an address *here*: `0x…` on a chain
+  -- whose addresses are bech32 would teach exactly the wrong thing.
+  local shapes = {
+    evm = "0x…", solana = "base58…", cardano = "addr…", midnight = "mn_addr…",
+  }
   local to = { x = form.x, y = form.y + 42, w = form.w - 108, h = field_h }
   widgets.field(game.springs, "to", to, model.form.to, "RECIPIENT",
-    model.focus == "to", { placeholder = "0x…", ellipsis = 8 })
+    model.focus == "to", { placeholder = shapes[model:chain()] or "address…", ellipsis = 8 })
 
   local paste = { x = form.x + form.w - 104, y = to.y, w = 56, h = field_h }
   if widgets.button(game.springs, "paste", paste, "PASTE", state,
@@ -1313,13 +1449,27 @@ local function draw_send(model, state, x)
 end
 
 local function draw_network(model, state, x)
-  local height = L.bottom - L.top
-  local frame = widgets.frame(x + L.margin, L.top, theme.WIDTH - L.margin * 2, height,
-    "NETWORK")
+  local frame = widgets.frame(x + L.net.x, L.net.y, L.net.w, L.net.h, "NETWORK")
 
-  local row_h = 46
-  for i, network in ipairs(model:networks()) do
-    local box = { x = frame.x, y = frame.y + (i - 1) * (row_h + 6), w = frame.w, h = row_h }
+  -- Every network on screen at once, with no scrolling: a network you have to
+  -- scroll to find is a network the wallet has hidden from you. How they
+  -- divide the frame is `layout.net_grid`, so the sums can be tested.
+  local networks = model:networks()
+  -- The sentence under the grid is wrapped before the grid is measured, so the
+  -- rows know how many lines they have to leave room for. On a phone's width
+  -- it is two, and it used to be one line 370 pixels wide printed across a
+  -- 244-pixel frame — off both edges and over the town behind it.
+  local footer = wrap("the store is shared - a wallet works on either", frame.w - 8)
+  local grid = layout.net_grid(frame.w, frame.h, #networks, #footer)
+  for i, network in ipairs(networks) do
+    local column = math.floor((i - 1) / grid.rows)
+    local row = (i - 1) % grid.rows
+    local box = {
+      x = frame.x + column * (grid.column_w + grid.column_gap),
+      y = frame.y + row * (grid.row_h + grid.gap),
+      w = grid.column_w,
+      h = grid.row_h,
+    }
     local current = model.info and model.info.network == network.key
     local clicked, hovered, row_x, slide = widgets.row(game.springs, "net" .. i, box, state,
       current)
@@ -1329,30 +1479,54 @@ local function draw_network(model, state, x)
     theme.outline(current and theme.colour.green or theme.colour.raised,
       row_x, box.y, box.w, box.h, current and 0.8 or 0.4)
 
-    sprite.draw_glowing("globe", row_x + 28, box.y + box.h / 2, 32, {
+    local tint = theme.chain_colour(network.chain)
+    sprite.draw_glowing("globe", row_x + 18, box.y + box.h / 2, 22, {
       angle = game.time * (current and 0.5 or 0.15),
       glow = current and 0.6 or 0.15,
-      glow_colour = current and theme.colour.green or theme.colour.faint,
+      glow_colour = current and theme.colour.green or tint,
       alpha = 0.5 + slide * 0.5,
     })
 
     local ink = current and theme.colour.green or (hovered and theme.colour.text
       or theme.colour.dim)
-    theme.text(network.name, row_x + 54, box.y + 8, ink, theme.font.body)
-    stat(row_x + 54, box.y + 26, "CHAIN " .. network.chain_id, "", theme.colour.faint)
-    theme.text(network.symbol, row_x + 54 + 90, box.y + 26, theme.colour.faint,
-      theme.font.small)
 
+    -- One thing at the right-hand end, never two. The chip used to be placed
+    -- at a fixed offset from that end — which is where the ticker already is —
+    -- so the single row the chip marks was the single row whose ticker could
+    -- not be read, "NOW" and "TCRO" printed through each other. On the current
+    -- network the badge *is* the right-hand end: which network you are on is
+    -- what that row is being asked, and a 224-pixel row cannot hold a name, a
+    -- ticker and a badge at a size anybody can read.
+    local tail = row_x + box.w - 8
     if current then
-      widgets.chip(row_x + box.w - 62, box.y + 8, "ACTIVE", theme.colour.green)
+      local chip_w = theme.width("NOW", theme.font.small) + 10
+      tail = tail - chip_w
+      widgets.chip(tail, box.y + math.floor((box.h - 14) / 2), "NOW",
+        theme.colour.green)
+    else
+      theme.text_right(network.symbol, tail,
+        box.y + math.floor(box.h / 2) - 4, tint, theme.font.small)
+      tail = tail - theme.width(network.symbol, theme.font.small)
     end
+
+    -- The key, not the name: `solana-devnet` says the chain and the network in
+    -- the width a row of this size has, where "Solana Devnet" says one of them
+    -- and "Cronos EVM Testnet" runs off the end. Clipped to where the tail
+    -- starts, so a key longer than any of today's is cut off rather than
+    -- printed through whatever is over there.
+    local name = { x = row_x + 34, y = box.y, w = tail - 6 - (row_x + 34), h = box.h }
+    theme.clip(name, function()
+      theme.text(network.key, name.x, box.y + math.floor(box.h / 2) - 5, ink,
+        theme.font.body)
+    end)
   end
 
-  -- A line of text is 16 pixels tall, so a footer placed 6 above the inside of
-  -- the frame is a footer drawn through its bottom border. Placed a whole line
-  -- up instead, which is where it looks like it was meant to be.
-  theme.text_centred("the store is shared - a wallet works on either",
-    frame.x + frame.w / 2, frame.y + frame.h - 16, theme.colour.faint, theme.font.small)
+  -- The sentence the grid left room for, on the lines it was wrapped into.
+  for i, line in ipairs(footer) do
+    theme.text_centred(line, frame.x + frame.w / 2,
+      frame.y + grid.footer_y + (i - 1) * grid.line_h, theme.colour.faint,
+      theme.font.small)
+  end
 end
 
 local function draw_status(model)
@@ -1372,7 +1546,7 @@ local function draw_status(model)
   -- others put nothing there at all. Measuring to the wallet screen's buttons
   -- everywhere cut a message that had the width of the window to spread out
   -- in — "the recipient is this…" is not a refusal anybody can act on.
-  local edge = model.screen == "wallets" and (L.right - 6) or (theme.WIDTH - L.margin)
+  local edge = model.screen == "wallets" and L.status_edge or (theme.WIDTH - L.margin)
   local room = edge - x
   local text = status.text
   while theme.width(text, theme.font.small) > room and #text > 1 do
@@ -1380,44 +1554,6 @@ local function draw_status(model)
   end
   if text ~= status.text then text = text:sub(1, -2) .. "…" end
   theme.text(text, x, L.bar + 3, colour, theme.font.small)
-end
-
---- Break text into lines that fit a width.
----
---- At word boundaries where it can and mid-word where it cannot, because the
---- longest single thing this has to lay out is a filesystem path, and a path
---- has no spaces in it. Falling back to a character break is the difference
---- between a path that wraps and a path that runs off the panel.
-local function wrap(text, width, font)
-  font = font or theme.font.small
-  local lines, line = {}, ""
-
-  local function flush()
-    if line ~= "" then lines[#lines + 1] = line end
-    line = ""
-  end
-
-  for word in tostring(text):gmatch("%S+") do
-    local candidate = line == "" and word or (line .. " " .. word)
-    if theme.width(candidate, font) <= width then
-      line = candidate
-    else
-      flush()
-      -- A word that does not fit on a line of its own is cut where it stops
-      -- fitting, and the rest carries on below.
-      while theme.width(word, font) > width do
-        local cut = #word
-        while cut > 1 and theme.width(word:sub(1, cut), font) > width do
-          cut = cut - 1
-        end
-        lines[#lines + 1] = word:sub(1, cut)
-        word = word:sub(cut + 1)
-      end
-      line = word
-    end
-  end
-  flush()
-  return lines
 end
 
 --- The dialog that stands between a click and a file on disk.
@@ -1439,16 +1575,22 @@ local function draw_write(model, state)
   -- and however many the warning does. A fixed height would leave the
   -- four-file save gaping and push a long path through the buttons — and a
   -- home is as long as somebody's home directory is.
-  local inner = theme.WIDTH - 68 - 24
+  -- As wide as the canvas allows, up to the width it has always been. The 68
+  -- taken off either side is a wide canvas's margin: on a phone's it left a
+  -- 202-pixel dialog with 24 pixels of margin to spare, the title crammed
+  -- into the sprite beside it and the warning wrapped to four lines.
+  local w = math.min(theme.WIDTH - 24, 412)
+  local inner = w - 24
   -- `~/.causewaybaywallet` rather than `/Users/somebody/.causewaybaywallet`:
   -- the same directory, said the way a person says it, and short enough to
   -- read in one line. There is only ever this one directory — the wallet's own
   -- home — and every file this window writes goes into it.
   local where = wrap(Model.tilde(pending.dir), inner)
   local note = wrap(pending.note or "", inner)
-  local h = 90 + (#where + #files) * 11 + #note * 10
-  local box = widgets.dialog({ x = 34, y = math.floor((theme.HEIGHT - h) / 2),
-    w = theme.WIDTH - 68, h = h }, game.write_t, pending.title)
+  local h = 90 + (#where + #files + #note) * 11
+  local box = widgets.dialog({ x = math.floor((theme.WIDTH - w) / 2),
+    y = math.floor((theme.HEIGHT - h) / 2), w = w, h = h },
+    game.write_t, pending.title)
 
   local alpha = box.eased
   sprite.draw_glowing(pending.secret and "key" or "wallet",
@@ -1479,16 +1621,24 @@ local function draw_write(model, state)
   y = y + 4
   theme.rule(box.x + 12, y, box.w - 24, theme.colour.raised, 0.6 * alpha)
   y = y + 6
+  -- 11 to the line, like the rows above it. At 10 the descenders of one line
+  -- landed inside the caps of the next — the "y" of "keys." read as a stray
+  -- mark after "owns" — and this is the paragraph that says who owns the money.
   for _, line in ipairs(note) do
     theme.text(line, box.x + 12, y, accent, theme.font.small, alpha)
-    y = y + 10
+    y = y + 11
   end
 
   theme.text_right(("%d wallets"):format(pending.count or 0),
     box.x + box.w - 12, box.y + 26, theme.colour.faint, theme.font.small, alpha)
 
+  -- Wide enough for the verb it is showing: WRITE KEYS is 82 pixels of text in
+  -- a button that was 80 wide, so the one button that writes secrets to disk
+  -- had its label crossing its own border at both ends.
   local no = { x = box.x + 16, y = box.y + box.h - 24, w = 70, h = 16 }
-  local yes = { x = box.x + box.w - 96, y = box.y + box.h - 24, w = 80, h = 16 }
+  local yes_w = math.max(80, theme.width(pending.verb, theme.font.body) + 16)
+  local yes = { x = box.x + box.w - 16 - yes_w, y = box.y + box.h - 24,
+    w = yes_w, h = 16 }
   if widgets.button(game.springs, "write_no", no, "CANCEL", state,
       { colour = theme.colour.red }) then
     model:cancel_write()
@@ -1502,8 +1652,43 @@ end
 local function draw_confirm(model, state)
   if game.confirm_t < 0.01 then return end
   local plan = model.confirm
-  local box = widgets.dialog({ x = 34, y = 44, w = theme.WIDTH - 68, h = 184 },
-    game.confirm_t, "CONFIRM TRANSFER")
+  local network = model.info and model.info.network
+  -- 11 to the line: at 10 an address's descenders sat in the next line's
+  -- digits, and every line in this dialog is somebody's money.
+  local line = 11
+
+  -- Measured before it is drawn, because what it has to say is not the same
+  -- width everywhere. An address is 42 characters: on a wide canvas that is
+  -- one line, which is what the 184-pixel box was hand-sized around, and on a
+  -- phone's it is two — so that box had both addresses running off its edges,
+  -- the summary printed through the buttons, and the network key drawn over
+  -- the amount. Nothing here is a fixed height any more.
+  local w = math.min(theme.WIDTH - 24, 412)
+  local inner = w - 24
+  local amount = tostring(plan and plan.amount or "?")
+  local from = wrap(plan and plan.from or "?", inner)
+  local to = wrap(plan and plan.to or "?", inner)
+  local words = wrap(plan and plan.summary or "", inner)
+  -- The amount and the network share a row where both fit and take one each
+  -- where they do not.
+  local abreast = 76 + theme.width(amount, theme.font.body) + 8
+    + theme.width(network or "", theme.font.small) <= inner
+
+  local h = 20                                  -- the title and its rule
+    + (#from + 1) * line + 8                    -- FROM: the label, the address
+    + 12                                        -- the arrow between the two
+    + (#to + 1) * line + 8                      -- TO
+    + 6 + line + (abreast and 0 or line)        -- the rule, then what and where
+    + 8 + #words * line                         -- the wallet's own words
+    + 34                                        -- the buttons, and air above
+  h = math.min(h, theme.HEIGHT - 32)
+
+  local box = widgets.dialog({
+    x = math.floor((theme.WIDTH - w) / 2),
+    y = math.max(16, math.floor((theme.HEIGHT - h) / 2)),
+    w = w,
+    h = h,
+  }, game.confirm_t, "CONFIRM TRANSFER")
   if not plan then return end
 
   sprite.draw_glowing("key", box.x + box.w - 26, box.y + 14, 22, {
@@ -1529,35 +1714,42 @@ local function draw_confirm(model, state)
     if name then
       theme.text(name, box.x + 58, y, colour, theme.font.small, alpha)
     end
-    theme.text(address or "?", box.x + 12, y + 13, colour, theme.font.small, alpha)
-    y = y + 32
+    y = y + line
+    for _, text in ipairs(address) do
+      theme.text(text, box.x + 12, y, colour, theme.font.small, alpha)
+      y = y + line
+    end
+    y = y + 8
   end
 
-  party("FROM", theme.colour.amber, plan.from_label, plan.from)
+  party("FROM", theme.colour.amber, plan.from_label, from)
   -- The direction as a picture rather than a word, on the left where the two
   -- labels line up, so it reads down the column instead of floating.
-  theme.text("|", box.x + 20, y - 14, theme.colour.faint, theme.font.small, alpha * 0.7)
-  theme.text("v", box.x + 20, y - 8, theme.colour.faint, theme.font.small, alpha * 0.7)
-  party("TO", theme.colour.cyan, nil, plan.to)
+  theme.text("|", box.x + 20, y - 4, theme.colour.faint, theme.font.small, alpha * 0.7)
+  theme.text("v", box.x + 20, y + 2, theme.colour.faint, theme.font.small, alpha * 0.7)
+  y = y + 12
+  party("TO", theme.colour.cyan, nil, to)
 
-  theme.rule(box.x + 12, y - 4, box.w - 24, theme.colour.raised, 0.6 * alpha)
-  theme.text("AMOUNT", box.x + 12, y + 4, theme.colour.faint, theme.font.small, alpha)
-  theme.text(plan.amount or "?", box.x + 76, y + 4, theme.colour.text,
-    theme.font.body, alpha)
-  if model.info then
-    theme.text_right(model.info.network or "?", box.x + box.w - 12, y + 4,
-      theme.colour.dim, theme.font.small, alpha)
+  theme.rule(box.x + 12, y, box.w - 24, theme.colour.raised, 0.6 * alpha)
+  y = y + 6
+  theme.text("AMOUNT", box.x + 12, y, theme.colour.faint, theme.font.small, alpha)
+  theme.text(amount, box.x + 76, y, theme.colour.text, theme.font.body, alpha)
+  if network then
+    -- Beside the amount, or under it. Right-aligning a fourteen-character
+    -- network key into a dialog this narrow printed it through the number.
+    if not abreast then y = y + line end
+    theme.text_right(network, box.x + box.w - 12, y, theme.colour.dim,
+      theme.font.small, alpha)
   end
+  y = y + line + 8
 
   -- The wallet's own words underneath, still. It priced this — the nonce, the
   -- gas, the balance check are all behind that sentence — and the rows above
   -- are a reading of it, not a replacement for it.
-  local words = wrap(plan.summary, box.w - 24)
-  local note = y + 22
   for _, text in ipairs(words) do
-    theme.text_centred(text, box.x + box.w / 2, note, theme.colour.faint,
+    theme.text_centred(text, box.x + box.w / 2, y, theme.colour.faint,
       theme.font.small, alpha * 0.9)
-    note = note + 10
+    y = y + line
   end
 
   local no = { x = box.x + 16, y = box.y + box.h - 24, w = 70, h = 16 }
@@ -1626,7 +1818,10 @@ function love.draw()
       -- The way back out of a fullscreen window, from the very first screen.
       -- Not during the black hold or the power-on flash, which are a machine
       -- coming up and not a screen with controls on it.
-      if game.boot:lit() then draw_mode_button(MODE_BOX, mouse_state()) end
+      if game.boot:lit() then
+        draw_mode_button(mode_box(), mouse_state())
+        draw_layout_button(layout_box(), mouse_state())
+      end
     end)
     game.clicked = false
     return
@@ -1641,7 +1836,8 @@ function love.draw()
       })
       game.stars:draw(game.time)
       game.login:draw(game.model, mouse_state(), game.springs)
-      draw_mode_button(MODE_BOX, mouse_state())
+      draw_mode_button(mode_box(), mouse_state())
+      draw_layout_button(layout_box(), mouse_state())
       game.fx:draw(sprite.images)
       theme.scanlines(0.10)
       theme.vignette(0.4)
@@ -1724,7 +1920,16 @@ function love.draw()
     theme.rect(theme.colour.void, 0, L.bar - 4, theme.WIDTH, theme.HEIGHT - L.bar + 4, 0.5)
     theme.rect(theme.colour.void, 0, theme.HEIGHT - 17, theme.WIDTH, 17, 0.9)
     theme.rule(0, theme.HEIGHT - 17, theme.WIDTH, theme.colour.raised, 0.5)
-    theme.text_centred("EDUCATIONAL · KEYS ARE STORED UNENCRYPTED", theme.WIDTH / 2,
+    -- The banner is one line tall by design — it is the last 17 rows of every
+    -- layout — so the sentence has to be the one that fits rather than the one
+    -- that wraps. On a phone's width the long form ran off both ends of the
+    -- canvas, which is a warning nobody can finish reading; the short form
+    -- still says both things it has to say.
+    local warning = "EDUCATIONAL · KEYS ARE STORED UNENCRYPTED"
+    if theme.width(warning, theme.font.small) > theme.WIDTH - 8 then
+      warning = "EDUCATIONAL · KEYS UNENCRYPTED"
+    end
+    theme.text_centred(warning, theme.WIDTH / 2,
       theme.HEIGHT - 16, theme.colour.faint, theme.font.small)
 
     -- Absent art and absent sound both say so, in one line, once. A missing
@@ -1760,8 +1965,10 @@ end
 --
 -- Runs normally for that many seconds — so the entrance has settled and any
 -- effects have played — writes a PNG, and quits. `CWB_SHOT_SCREEN` picks which
--- screen to grab, and `CWB_SHOT_KEYS` replays keypresses first, so a shot of
--- the confirmation dialog does not need a human at the keyboard.
+-- screen to grab, `CWB_SHOT_KEYS` replays keypresses first, so a shot of the
+-- confirmation dialog does not need a human at the keyboard, and
+-- `CWB_SHOT_TALL=1` turns the canvas on its side for the picture (see
+-- `love.load`) without remembering the turn.
 
 local shot = {
   path = os.getenv("CWB_SHOT"),

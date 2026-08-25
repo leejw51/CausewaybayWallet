@@ -154,19 +154,29 @@ end
 ---
 --- Grouped because a run of forty characters is unreadable and unspeakable,
 --- and because every person alive already knows how to read this shape.
---- Nothing is hidden — both halves are the real address, and together they are
---- all of it.
+---
+--- An EVM address fits whole — five groups up, five down. A bech32 address
+--- can be a hundred characters, and printing all of it ran off the card; the
+--- card shows both ends and says the middle is elided, which is how every
+--- other screen in the wallet shortens an address. An address is recognised
+--- by its ends, and the full text is one COPY away.
 function card.number(address)
-  local hex = (tostring(address or ""):gsub("^0[xX]", ""))
+  local text = (tostring(address or ""):gsub("^0[xX]", ""))
   local groups = {}
-  for i = 1, #hex, 4 do
-    groups[#groups + 1] = hex:sub(i, i + 3)
+  for i = 1, #text, 4 do
+    groups[#groups + 1] = text:sub(i, i + 3)
   end
-  local top, bottom = {}, {}
-  for i, group in ipairs(groups) do
-    if i <= 5 then top[#top + 1] = group else bottom[#bottom + 1] = group end
+  if #groups <= 10 then
+    local top, bottom = {}, {}
+    for i, group in ipairs(groups) do
+      if i <= 5 then top[#top + 1] = group else bottom[#bottom + 1] = group end
+    end
+    return table.concat(top, " "), table.concat(bottom, " ")
   end
-  return table.concat(top, " "), table.concat(bottom, " ")
+  local top = table.concat({ groups[1], groups[2], groups[3], groups[4], groups[5] }, " ")
+  local tail = table.concat({ groups[#groups - 3], groups[#groups - 2],
+    groups[#groups - 1], groups[#groups] }, " ")
+  return top, "… " .. tail
 end
 
 -- ------------------------------------------------------------------ drawing
@@ -338,10 +348,15 @@ function card.draw(design, box, options)
 
   if options.body then options.body(box, ink, alpha) end
 
-  -- The number, in the place a card puts it.
+  -- The number, in the place a card puts it. The `0x` belongs only to the
+  -- addresses that actually start with it — a Cardano or Midnight address is
+  -- bech32 text, and printing it behind a hex prefix made the card lie about
+  -- what the address is.
   local top, bottom = card.number(design.address)
-  theme.text("0x " .. top, box.x + 10, box.y + box.h - 44, ink, theme.font.small, alpha)
-  theme.text("   " .. bottom, box.x + 10, box.y + box.h - 31, ink, theme.font.small, alpha)
+  local prefix = tostring(design.address or ""):match("^0[xX]") and "0x " or ""
+  theme.text(prefix .. top, box.x + 10, box.y + box.h - 44, ink, theme.font.small, alpha)
+  theme.text(("%s"):format(bottom == "" and "" or (prefix:gsub(".", " ") .. bottom)),
+    box.x + 10, box.y + box.h - 31, ink, theme.font.small, alpha)
 
   theme.text((options.holder or "WALLET"):upper(), box.x + 10, box.y + box.h - 15,
     theme.colour.text, theme.font.small, alpha)

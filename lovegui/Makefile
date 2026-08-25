@@ -95,7 +95,13 @@ lint: require-luajit ## Byte-compile every file, which is the syntax check
 		$(LUAJIT) -bl "$$file" /dev/null || { echo "  syntax error in $$file" >&2; status=1; }; \
 	done; \
 	if [ $$status -eq 0 ]; then echo "  every Lua file compiles"; fi; \
-	exit $$status
+	[ $$status -eq 0 ] || exit $$status
+	@# Compiling is not enough: a `local` declared below its first use
+	@# compiles and then reads a nil global at runtime — the Ctrl+V crash.
+	@# The bytecode names every global read, so the latent ones are caught
+	@# here rather than by whoever presses the key.
+	@./tools/check-globals.sh
+	@echo "  no undeclared globals"
 
 .PHONY: format
 format: lint ## Check the source compiles; there is no formatter to run
@@ -486,6 +492,10 @@ shots: require-love build ## Write a PNG of each screen into ./shots
 		CWB_SHOT_KEYS="type:$(SHOT_ADDRESS),tab,type:0.5" $(LOVE) lovegui
 	@cd .. && CWB_SHOT="$(CURDIR)/shots/network.png" CWB_SHOT_AFTER=2.4 \
 		CWB_SHOT_SCREEN=network $(LOVE) lovegui
+	@# The dialog that stands between a keypress and somebody's money.
+	@cd .. && CWB_SHOT="$(CURDIR)/shots/confirm.png" CWB_SHOT_AFTER=2.6 \
+		CWB_SHOT_SCREEN=send \
+		CWB_SHOT_KEYS="type:$(SHOT_ADDRESS),tab,type:0.5,wait:0.4,confirm" $(LOVE) lovegui
 	@# The boot sequence and its title card — reachable now that the harness can
 	@# be told to stay on it rather than dismissing it first.
 	@cd .. && CWB_SHOT="$(CURDIR)/shots/boot.png" CWB_SHOT_AFTER=1.4 \
@@ -510,7 +520,34 @@ shots: require-love build ## Write a PNG of each screen into ./shots
 		CWB_SHOT_SCREEN=send CWB_SHOT_KEYS="type:$(SHOT_ADDRESS),tab,type:0.5,launch" $(LOVE) lovegui
 	@cd .. && CWB_SHOT="$(CURDIR)/shots/launch-away.png" CWB_SHOT_AFTER=1.5 \
 		CWB_SHOT_SCREEN=send CWB_SHOT_KEYS="type:$(SHOT_ADDRESS),tab,type:0.5,launch" $(LOVE) lovegui
+	@$(MAKE) --no-print-directory shots-tall
 	@ls -1 shots | sed 's/^/  /'
+
+# The same screens on their side. Every screen in this game has two layouts and
+# only the wide one was ever photographed, which is how a portrait screen can
+# overlap itself for a release with nobody seeing it.
+.PHONY: shots-tall
+shots-tall: require-love build ## Write a PNG of each screen in the tall layout
+	@mkdir -p shots
+	@cd .. && CWB_SHOT_TALL=1 CWB_SHOT="$(CURDIR)/shots/tall-wallets.png" \
+		CWB_SHOT_AFTER=2.4 $(LOVE) lovegui
+	@cd .. && CWB_SHOT_TALL=1 CWB_SHOT="$(CURDIR)/shots/tall-send.png" \
+		CWB_SHOT_AFTER=2.6 CWB_SHOT_SCREEN=send \
+		CWB_SHOT_KEYS="type:$(SHOT_ADDRESS),tab,type:0.5" $(LOVE) lovegui
+	@cd .. && CWB_SHOT_TALL=1 CWB_SHOT="$(CURDIR)/shots/tall-network.png" \
+		CWB_SHOT_AFTER=2.4 CWB_SHOT_SCREEN=network $(LOVE) lovegui
+	@cd .. && CWB_SHOT_TALL=1 CWB_SHOT="$(CURDIR)/shots/tall-confirm.png" \
+		CWB_SHOT_AFTER=2.6 CWB_SHOT_SCREEN=send \
+		CWB_SHOT_KEYS="type:$(SHOT_ADDRESS),tab,type:0.5,wait:0.4,confirm" $(LOVE) lovegui
+	@cd .. && CWB_SHOT_TALL=1 CWB_SHOT="$(CURDIR)/shots/tall-save.png" \
+		CWB_SHOT_AFTER=1.6 CWB_SHOT_KEYS="wait:0.5,save" $(LOVE) lovegui
+	@cd .. && CWB_SHOT_TALL=1 CWB_SHOT="$(CURDIR)/shots/tall-keys.png" \
+		CWB_SHOT_AFTER=1.6 CWB_SHOT_KEYS="wait:0.5,keys" $(LOVE) lovegui
+	@cd .. && CAUSEWAYBAY_HOME="$(CURDIR)/shots/.home" CWB_SHOT_TALL=1 \
+		CWB_SHOT="$(CURDIR)/shots/tall-login.png" CWB_SHOT_AFTER=1.8 \
+		CWB_SHOT_SCREEN=login CWB_SHOT_KEYS="type:$(SHOT_WORDS)" $(LOVE) lovegui
+	@cd .. && CWB_SHOT_TALL=1 CWB_SHOT="$(CURDIR)/shots/tall-boot.png" \
+		CWB_SHOT_AFTER=1.4 CWB_SHOT_SCREEN=boot $(LOVE) lovegui
 
 # Redrawing the art. Needs an API key; running the game does not, because the
 # results are committed.

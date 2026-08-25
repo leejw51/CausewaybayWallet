@@ -225,13 +225,28 @@ function Model:derived_addresses(phrase, stored)
     known[tostring(account.address):lower()] = true
   end
 
+  -- Every chain at each index, not just the one in view. The session set is
+  -- what the wallet list is filtered against for as long as the login lasts;
+  -- a set derived on one chain made switching chains inside a session show a
+  -- list the phrase supposedly did not own.
+  local chains = {}
+  for _, chain in ipairs(self:chains()) do
+    chains[#chains + 1] = chain.chain
+  end
+  if #chains == 0 then chains = { "evm" } end
+
   local addresses, misses = {}, 0
   for index = 0, Model.SESSION_MAX - 1 do
-    local derived = self.wallet:derive({ mnemonic = phrase, index = index })
-    if not derived then break end
-    local address = tostring(derived.address):lower()
-    addresses[address] = true
-    if known[address] then
+    local hit = false
+    for _, chain in ipairs(chains) do
+      local derived = self.wallet:derive({ mnemonic = phrase, index = index, chain = chain })
+      if derived then
+        local address = tostring(derived.address):lower()
+        addresses[address] = true
+        if known[address] then hit = true end
+      end
+    end
+    if hit then
       misses = 0
     else
       misses = misses + 1
@@ -274,11 +289,14 @@ function Model:login(phrase)
   if account then
     welcome = "Welcome back, " .. account.label
   else
-    -- New to this store: import it, which is the one place a phrase is written.
-    local imported, import_error = self.wallet:import_mnemonic(phrase, {})
+    -- New to this store: import it, which is the one place a phrase is
+    -- written — and import all of it. A wallet is one index across every
+    -- chain, and a login that restored one chain's account left the other
+    -- three to be discovered missing later.
+    local imported, import_error = self.wallet:import_mnemonic(phrase, { every_chain = true })
     if not imported then return self:fail(Model.without_phrase(import_error, phrase)) end
-    account = imported
-    welcome = "Imported " .. imported.label
+    account = imported[1] or imported
+    welcome = "Imported " .. account.label
   end
 
   -- Set before the refresh, so the list comes back already scoped to it.
@@ -709,6 +727,24 @@ function Model:refresh()
 
   local info = self.wallet:info()
   self.info = info
+
+  -- One row per wallet, not per account — the same model the Rust TUI shows.
+  --
+  -- A wallet is one mnemonic and one index; each chain derives its own account
+  -- at that index. Listing all of them flat made two wallets read as eight, so
+  -- the list holds the chain in view and switching chain moves what every row
+  -- points at rather than making the list four times longer. The other chains'
+  -- accounts are a chain switch away, not a scroll away.
+  local chain = info and info.chain
+  if chain then
+    local here = {}
+    for _, account in ipairs(self.wallets) do
+      if account.chain == chain then here[#here + 1] = account end
+    end
+    -- Only when the chain has something. A wallet whose accounts predate the
+    -- chain field would otherwise show an empty list and no way back.
+    if #here > 0 then self.wallets = here end
+  end
   local active = info and info.active_address
   -- `json.null` decodes to a table, so an absent active account is flattened
   -- here rather than compared against in three places.
@@ -741,17 +777,33 @@ function Model:refresh()
 end
 
 function Model:create(label)
-  local account, err = self.wallet:new_account({
+  -- Every chain at once: a wallet is one mnemonic and one index, and each
+  -- chain derives its own account there. Creating only the chain in view made
+  -- "+ NEW" produce a quarter of a wallet — the other three chains showed
+  -- nothing until the CLI filled them in. One press, one whole wallet, and the
+  -- chain in view just decides which of its four faces the list shows.
+  local created, err = self.wallet:new_account({
     label = label ~= "" and label or nil,
+    every_chain = true,
   })
-  if not account then return self:fail(err) end
+  if not created then return self:fail(err) end
+  -- One account still comes back as a single object; every chain, as a list.
+  local accounts = created[1] and created or { created }
 
   -- `account new` continues the active account's mnemonic, so a wallet made
   -- inside a session belongs to that session's phrase and must stay visible.
   -- Recorded rather than assumed: the scan that built the set stops at a gap
   -- and may not have reached this index.
   if self.session then
-    self.session.addresses[tostring(account.address):lower()] = true
+    for _, account in ipairs(accounts) do
+      self.session.addresses[tostring(account.address):lower()] = true
+    end
+  end
+  -- The face to land on and name: the chain in view's, since that is the one
+  -- the filtered list will actually show.
+  local account = accounts[1]
+  for _, made in ipairs(accounts) do
+    if made.chain == self:chain() then account = made end
   end
 
   self:refresh()
@@ -769,7 +821,8 @@ function Model:create(label)
   for index, entry in ipairs(self.wallets) do
     if entry.address == account.address then self.selected = index end
   end
-  self:say("Created " .. account.label)
+  self:say(#accounts > 1 and ("Created " .. account.label .. " — one wallet, " .. #accounts .. " chains")
+    or ("Created " .. account.label))
   self:emit("created")
   return account
 end
@@ -801,6 +854,53 @@ end
 
 function Model:networks()
   return self.wallet:networks() or {}
+end
+
+--- The chains this build supports, each with its own networks.
+---
+--- Read from the library rather than written down here, so a chain added in
+--- Rust appears in the GUI without anyone editing this file.
+function Model:chains()
+  return self.wallet:chains() or {}
+end
+
+--- The key of a network, however the wallet described it.
+---
+--- The two places that list networks describe them differently: `chains` names
+--- them by key, and the library's handshake gives whole records. A switcher
+--- reading one and handed the other would pass a table where a key belongs,
+--- which is not a mistake worth making twice.
+function Model.network_key(entry)
+  if type(entry) == "table" then return entry.key end
+  return entry
+end
+
+--- Move to a chain, on whichever of its networks the wallet last used.
+---
+--- The two axes of the wallet are the chain and the network within it. A GUI
+--- that only switched networks made "go to Solana" a matter of knowing which
+--- network keys begin with `solana-`; this asks the wallet instead.
+function Model:switch_chain(chain)
+  local where = self.info and self.info.chains
+  if where then
+    for _, held in ipairs(where) do
+      if held.chain == chain and held.network then
+        return self:switch_network(held.network)
+      end
+    end
+  end
+  -- Nothing held on that chain yet: its first network is its default.
+  for _, known in ipairs(self:chains()) do
+    if known.chain == chain and known.networks and known.networks[1] then
+      return self:switch_network(Model.network_key(known.networks[1]))
+    end
+  end
+  return self:fail({ code = "unknown_chain", message = chain .. " is not a chain this build has" })
+end
+
+--- The chain in view, as the wallet reports it.
+function Model:chain()
+  return self.info and self.info.chain or "evm"
 end
 
 function Model:go(screen)

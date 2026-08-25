@@ -96,7 +96,9 @@ t.suite("interactive / the REPL", function()
   t.case("runs a typed command and prints what the CLI would", function()
     local wallet = support.wallet()
     local _, out = session(wallet, { "account new -l alpha", "q" })
-    t.contains(out, "Created alpha")
+    -- One command, one wallet, however many chains it landed on.
+    t.contains(out, "Created 1 account")
+    t.contains(out, "alpha")
     t.equal(#wallet:accounts(), 1)
   end)
 
@@ -515,16 +517,55 @@ end)
 t.suite("interactive / networks", function()
   t.case("switches network and remembers it", function()
     local wallet = support.wallet()
-    local _, out = session(wallet, { "8", "2", "q" })
+    local _, out = session(wallet, { "9", "2", "q" })
     t.contains(out, "now on Cronos EVM Mainnet")
     t.equal(wallet:current_network().chain_id, 25)
   end)
 
   t.case("marks the one already in use", function()
-    local _, out = session(support.wallet(), { "8", "q" })
+    local _, out = session(support.wallet(), { "9", "q" })
     t.contains(out, "(current)")
     t.contains(out, "cronos-testnet")
     t.contains(out, "cronos-mainnet")
+    -- Every chain's networks are on offer, not only the current chain's.
+    t.contains(out, "solana-devnet")
+    t.contains(out, "cardano-preprod")
+    t.contains(out, "midnight-preview")
+  end)
+
+  t.case("switches chain, and lands on a network of it", function()
+    local wallet = support.wallet()
+    -- 8 is the chain menu; solana is the second chain the registry reports.
+    local _, out = session(wallet, { "8", "2", "q" })
+    t.contains(out, "now on Solana")
+    t.ok(wallet:current_network().key:match("^solana%-"), "should be on a Solana network")
+  end)
+
+  t.case("a network is named by its key, however it was described", function()
+    local interactive = require("causewaybay.interactive")
+    t.equal(interactive.network_key("cardano-preprod"), "cardano-preprod")
+    t.equal(interactive.network_key({ key = "cardano-preprod", name = "Cardano Preprod" }),
+      "cardano-preprod")
+  end)
+
+  t.case("switching to a chain with no accounts on it still lands", function()
+    -- A new wallet holds nothing anywhere, so the chain's own first network is
+    -- the answer rather than one the store remembers.
+    local wallet = support.wallet()
+    local _, out = session(wallet, { "8", "3", "q" })
+    t.contains(out, "now on Cardano")
+    t.ok(wallet:current_network().key:match("^cardano%-"), "should be on a Cardano network")
+  end)
+
+  t.case("the chain menu says what each chain can do", function()
+    local _, out = session(support.wallet(), { "8", "q" })
+    t.contains(out, "evm")
+    t.contains(out, "m/44'/501'/0'/0'")
+    t.contains(out, "cardano")
+    t.contains(out, "midnight")
+    -- Capabilities are the reason to pick one chain over another.
+    t.contains(out, "faucet")
+    t.contains(out, "(current)")
   end)
 end)
 

@@ -13,6 +13,7 @@ use alloy_primitives::keccak256;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use crate::chain::ChainId;
 use crate::error::{self, Result};
 use crate::network;
 use crate::paths;
@@ -26,6 +27,21 @@ pub const RECENT_FILE: &str = "recent.jsonl";
 
 pub const KEY_NETWORK: &str = "network";
 pub const KEY_ACTIVE_ACCOUNT: &str = "active_account";
+
+/// The config key naming a chain's selected network: `network.solana`.
+pub fn network_key_for(chain: ChainId) -> String {
+    format!("{KEY_NETWORK}.{chain}")
+}
+
+/// The config key naming a chain's active account: `active_account.cardano`.
+///
+/// The unqualified `active_account` remains the wallet's overall current
+/// account. This is the fallback for "which account does `--chain solana`
+/// mean when the current one is an EVM account", so switching chains does not
+/// lose the account you were last using on each.
+pub fn active_account_key_for(chain: ChainId) -> String {
+    format!("{KEY_ACTIVE_ACCOUNT}.{chain}")
+}
 
 /// How an account's key material was obtained.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -50,6 +66,13 @@ pub struct Account {
     pub id: String,
     pub label: String,
     pub address: String,
+    /// Which chain this account's key and address belong to.
+    ///
+    /// Absent from every record written before the wallet was multi-chain, and
+    /// those are all EVM accounts — so the default is what makes an existing
+    /// store replay unchanged rather than needing a migration.
+    #[serde(default)]
+    pub chain: ChainId,
     pub source: Source,
     pub private_key: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -69,6 +92,7 @@ impl std::fmt::Debug for Account {
             .field("id", &self.id)
             .field("label", &self.label)
             .field("address", &self.address)
+            .field("chain", &self.chain)
             .field("source", &self.source)
             .field("index", &self.index)
             .field("private_key", &"<redacted>")
@@ -84,6 +108,7 @@ impl Account {
             "id": self.id,
             "label": self.label,
             "address": self.address,
+            "chain": self.chain.as_str(),
             "source": self.source.as_str(),
             "derivation_path": self.derivation_path,
             "index": self.index,
@@ -109,6 +134,12 @@ pub struct TxRecord {
     pub to: String,
     pub value: String,
     pub value_wei: String,
+    /// Which chain this transfer went out on.
+    ///
+    /// Absent from records written before the wallet was multi-chain, and
+    /// those were all EVM — same reasoning as [`Account::chain`].
+    #[serde(default)]
+    pub chain: ChainId,
     pub network: String,
     pub chain_id: u64,
     pub nonce: u64,
@@ -354,15 +385,26 @@ impl Store {
             .find_map(|account| account.mnemonic))
     }
 
-    /// The lowest address index not yet taken on `mnemonic`.
+    /// Every account belonging to one chain, in creation order.
+    pub fn accounts_on(&self, chain: ChainId) -> Result<Vec<Account>> {
+        Ok(self
+            .accounts()?
+            .into_iter()
+            .filter(|account| account.chain == chain)
+            .collect())
+    }
+
+    /// The lowest address index not yet taken on `mnemonic`, for one chain.
     ///
-    /// Indexes run 0, 1, 2, … across the accounts sharing one phrase, so this
-    /// is what makes a fresh address continue the sequence instead of
-    /// colliding with an existing one.
-    pub fn next_address_index(&self, mnemonic: &str) -> Result<u32> {
+    /// Indexes run 0, 1, 2, … across the accounts sharing one phrase *on one
+    /// chain*. The sequences are per chain because the derivation paths are:
+    /// one mnemonic's Solana index 0 and its Cardano index 0 are different
+    /// keys, and neither should push the other along.
+    pub fn next_address_index(&self, mnemonic: &str, chain: ChainId) -> Result<u32> {
         let taken: Vec<u32> = self
             .accounts()?
             .into_iter()
+            .filter(|account| account.chain == chain)
             .filter(|account| account.mnemonic.as_deref() == Some(mnemonic))
             .filter_map(|account| account.index)
             .collect();
@@ -408,12 +450,47 @@ impl Store {
         }
     }
 
+    /// The account a command on `chain` should act on when none is named.
+    ///
+    /// The overall active account wins when it is already on that chain, so a
+    /// single-chain wallet behaves exactly as it always did. Otherwise the
+    /// chain's own remembered account is used, and failing that the first
+    /// account on it — which is what makes `--chain solana` land somewhere
+    /// sensible without the user having to `account use` first.
+    pub fn active_account_on(&self, chain: ChainId) -> Result<Account> {
+        if let Ok(active) = self.active_account() {
+            if active.chain == chain {
+                return Ok(active);
+            }
+        }
+        let accounts = self.accounts_on(chain)?;
+        if accounts.is_empty() {
+            return Err(error::no_active_account(format!(
+                "no {chain} accounts yet; create one with \
+                 `cwbwallet account new --chain {chain}`"
+            )));
+        }
+        if let Some(id) = self.config_get(&active_account_key_for(chain))? {
+            if let Some(account) = accounts.iter().find(|a| a.id == id) {
+                return Ok(account.clone());
+            }
+        }
+        Ok(accounts[0].clone())
+    }
+
+    /// Remember an account as the current one, overall and for its chain.
+    pub fn set_active_account(&self, account: &Account) -> Result<()> {
+        self.config_set(KEY_ACTIVE_ACCOUNT, &account.id)?;
+        self.config_set(&active_account_key_for(account.chain), &account.id)
+    }
+
     /// Append an `account.create` record. Labels must be unique.
     #[allow(clippy::too_many_arguments)]
     pub fn create_account(
         &self,
         label: Option<&str>,
         address: &str,
+        chain: ChainId,
         source: Source,
         private_key: &str,
         mnemonic: Option<&str>,
@@ -431,7 +508,7 @@ impl Store {
                 }
                 l.to_string()
             }
-            None => next_free_label(&existing),
+            None => next_free_label(&existing, index, chain),
         };
 
         let created_at = now_rfc3339();
@@ -440,6 +517,7 @@ impl Store {
             id,
             label,
             address: address.to_string(),
+            chain,
             source,
             private_key: private_key.to_string(),
             mnemonic: mnemonic.map(str::to_string),
@@ -546,11 +624,46 @@ impl Store {
     }
 
     /// The selected network key, defaulting to the testnet.
+    /// The wallet's overall selected network.
+    ///
+    /// An unreadable or since-removed key falls back to the default rather
+    /// than failing: a config naming a network this build no longer ships
+    /// should not make the whole wallet unusable.
     pub fn network(&self) -> Result<network::Network> {
         match self.config_get(KEY_NETWORK)? {
             Some(key) => network::find(&key).or_else(|_| network::find(network::DEFAULT_NETWORK)),
             None => network::find(network::DEFAULT_NETWORK),
         }
+    }
+
+    /// The selected network for one chain.
+    ///
+    /// Each chain remembers its own, so moving to Solana and back does not
+    /// silently reset Cronos to testnet. The overall `network` key still
+    /// answers for whichever chain it names, which is what keeps a wallet
+    /// written before this change on the network it was left on.
+    pub fn network_on(&self, chain: ChainId) -> Result<network::Network> {
+        if let Some(key) = self.config_get(&network_key_for(chain))? {
+            if let Ok(found) = network::find(&key) {
+                if found.chain == chain {
+                    return Ok(found);
+                }
+            }
+        }
+        if let Some(key) = self.config_get(KEY_NETWORK)? {
+            if let Ok(found) = network::find(&key) {
+                if found.chain == chain {
+                    return Ok(found);
+                }
+            }
+        }
+        Ok(network::default_for(chain))
+    }
+
+    /// Select a network, for its chain and as the wallet's overall one.
+    pub fn set_network(&self, target: &network::Network) -> Result<()> {
+        self.config_set(KEY_NETWORK, target.key)?;
+        self.config_set(&network_key_for(target.chain), target.key)
     }
 
     // ---------------------------------------------------------------- recent
@@ -821,14 +934,51 @@ pub fn validate_label(label: &str) -> Result<()> {
     Ok(())
 }
 
-/// Pick `account-N` for the lowest free N.
-fn next_free_label(existing: &[Account]) -> String {
+/// The name an account gets when the caller does not supply one.
+///
+/// `account0-evm` says both halves of what an account is — the wallet index
+/// and the chain — so the four accounts of one wallet read as one wallet
+/// rather than as `account-1` through `account-4`. An imported key has no
+/// index to name it by, and a name already taken falls back to `account-N`.
+pub fn default_label(index: u32, chain: ChainId) -> String {
+    format!("account{index}-{chain}")
+}
+
+/// What to call an account on screen and in an export.
+///
+/// A name the user chose is theirs and is used as it is. The names the wallet
+/// gave itself before it was multi-chain — `account-1`, `account-2` — say
+/// neither which wallet nor which chain, so an account that has an index is
+/// re-rendered in the scheme new accounts are created with: `account0-evm`.
+pub fn display_label(account: &Account) -> String {
+    let auto = account
+        .label
+        .strip_prefix("account-")
+        .is_some_and(|rest| !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit()));
+    // Only an account that belongs to a wallet can be named after one: an
+    // imported private key has no index, and claiming index 0 for it would put
+    // two different keys under one name.
+    match account.index {
+        Some(index) if auto => default_label(index, account.chain),
+        _ => account.label.clone(),
+    }
+}
+
+fn next_free_label(existing: &[Account], index: Option<u32>, chain: ChainId) -> String {
+    let taken = |candidate: &str| {
+        existing
+            .iter()
+            .any(|a| a.label.eq_ignore_ascii_case(candidate))
+    };
+    if let Some(index) = index {
+        let preferred = default_label(index, chain);
+        if !taken(&preferred) {
+            return preferred;
+        }
+    }
     for n in 1.. {
         let candidate = format!("account-{n}");
-        if !existing
-            .iter()
-            .any(|a| a.label.eq_ignore_ascii_case(&candidate))
-        {
+        if !taken(&candidate) {
             return candidate;
         }
     }
@@ -854,6 +1004,7 @@ mod tests {
             .create_account(
                 label,
                 address,
+                ChainId::Evm,
                 Source::PrivateKey,
                 "0xkey",
                 None,
@@ -925,6 +1076,38 @@ mod tests {
     }
 
     #[test]
+    fn a_derived_account_is_named_for_its_index_and_chain() {
+        let (_dir, store) = store();
+        let evm = store
+            .create_account(
+                None,
+                "0x1",
+                ChainId::Evm,
+                Source::Mnemonic,
+                "0xkey",
+                Some("phrase"),
+                None,
+                Some(0),
+            )
+            .unwrap();
+        let solana = store
+            .create_account(
+                None,
+                "sol1",
+                ChainId::Solana,
+                Source::Mnemonic,
+                "key",
+                Some("phrase"),
+                None,
+                Some(0),
+            )
+            .unwrap();
+        // One wallet, one index, two chains — and the names say so.
+        assert_eq!(evm.label, "account0-evm");
+        assert_eq!(solana.label, "account0-solana");
+    }
+
+    #[test]
     fn duplicate_labels_are_rejected_case_insensitively() {
         let (_dir, store) = store();
         add(&store, Some("main"), "0x1");
@@ -932,6 +1115,7 @@ mod tests {
             .create_account(
                 Some("MAIN"),
                 "0x2",
+                ChainId::Evm,
                 Source::PrivateKey,
                 "0xk",
                 None,
@@ -951,6 +1135,7 @@ mod tests {
                     .create_account(
                         Some(bad),
                         "0x1",
+                        ChainId::Evm,
                         Source::PrivateKey,
                         "0xk",
                         None,
@@ -1092,6 +1277,7 @@ mod tests {
 
     fn sample_tx(hash: &str) -> TxRecord {
         TxRecord {
+            chain: ChainId::Evm,
             hash: hash.to_string(),
             from: "0xfrom".into(),
             to: "0xto".into(),
@@ -1225,6 +1411,7 @@ mod tests {
             .create_account(
                 Some("m"),
                 "0xabc",
+                ChainId::Evm,
                 Source::Mnemonic,
                 "0xdeadbeef",
                 Some("word word"),
@@ -1424,6 +1611,7 @@ mod tests {
             .create_account(
                 Some("m"),
                 "0xabc",
+                ChainId::Evm,
                 Source::Mnemonic,
                 "0xdeadbeefdeadbeef",
                 Some("correct horse battery staple"),

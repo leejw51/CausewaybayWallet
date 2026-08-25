@@ -1,6 +1,6 @@
 //! A C ABI over the Causewaybay wallet: JSON in, JSON out.
 //!
-//! Six functions, one data type (`char *`), and one rule: every string this
+//! Seven functions, one data type (`char *`), and one rule: every string this
 //! library returns is owned by the caller and must be handed back to
 //! [`cwb_string_free`]. That is the entire surface, and it is deliberate —
 //! anything richer would have to describe accounts, networks and transactions
@@ -62,14 +62,55 @@ pub extern "C" fn cwb_commands() -> *mut c_char {
     guarded(api::commands)
 }
 
+/// The chains this build supports, as a JSON list.
+///
+/// A host that offers a chain picker reads it from here rather than keeping
+/// its own list — a list that goes stale the moment a chain is added, and
+/// whose staleness shows up as a chain the user can select and nothing else.
+/// The same data is inside [`cwb_describe`] under `chains`; this is the
+/// direct call for a host that wants only that.
+///
+/// Added in ABI 2. A host written against ABI 1 will not find this symbol,
+/// which is the other reason to check [`cwb_abi_version`] before use.
+/// Free with [`cwb_string_free`].
+#[no_mangle]
+pub extern "C" fn cwb_chains() -> *mut c_char {
+    guarded(|| {
+        let chains: Vec<serde_json::Value> = causewaybay_core::chain::registry()
+            .iter()
+            .map(|c| {
+                serde_json::json!({
+                    "chain": c.id().as_str(),
+                    "name": c.name(),
+                    "derivation_path": c.derivation_path(0),
+                    "networks": c.networks().iter().map(|n| serde_json::json!({
+                        "key": n.key,
+                        "name": n.name,
+                        "symbol": n.symbol,
+                        "decimals": n.decimals,
+                        "testnet": n.testnet,
+                    })).collect::<Vec<_>>(),
+                    "capabilities": c.capabilities(),
+                })
+            })
+            .collect();
+        serde_json::json!({"ok": true, "data": chains}).to_string()
+    })
+}
+
 /// Run one request.
 ///
 /// `request_json` is a NUL-terminated JSON object — see `causewaybay_core::request::Request`:
 ///
 /// ```json
 /// {"argv": ["account","list"], "home": null, "network": null,
-///  "yes": false, "stdin": null}
+///  "chain": null, "yes": false, "stdin": null}
 /// ```
+///
+/// `chain` selects between `evm`, `solana`, `cardano` and `midnight`. Like
+/// `network`, it is a default: a `--chain` inside `argv` wins. Naming a
+/// network settles the chain too, so a host that already picks networks never
+/// has to set it.
 ///
 /// Returns a NUL-terminated JSON envelope, always: `{"ok":true,"data":…,"human":…}`
 /// or `{"ok":false,"error":{"code":…,"message":…}}`. Never null unless the
@@ -235,6 +276,95 @@ mod tests {
         assert_eq!(to["required"], true);
         assert_eq!(to["takes_value"], true);
         assert_eq!(to["long"], "to");
+    }
+
+    #[test]
+    fn the_chain_list_is_readable_without_a_wallet() {
+        let listed: Value = serde_json::from_str(&owned(cwb_chains())).unwrap();
+        assert_eq!(listed["ok"], true);
+        let chains = listed["data"].as_array().unwrap();
+        assert_eq!(chains.len(), 4);
+
+        let names: Vec<&str> = chains
+            .iter()
+            .map(|c| c["chain"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["evm", "solana", "cardano", "midnight"]);
+
+        for chain in chains {
+            assert!(!chain["networks"].as_array().unwrap().is_empty());
+            assert!(!chain["derivation_path"].as_str().unwrap().is_empty());
+            assert!(chain["capabilities"]["faucet"].is_boolean());
+        }
+    }
+
+    #[test]
+    fn describe_carries_the_same_chains_as_the_direct_call() {
+        let described: Value = serde_json::from_str(&owned(cwb_describe())).unwrap();
+        let listed: Value = serde_json::from_str(&owned(cwb_chains())).unwrap();
+        let from_describe: Vec<&str> = described["data"]["chains"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["chain"].as_str().unwrap())
+            .collect();
+        let direct: Vec<&str> = listed["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["chain"].as_str().unwrap())
+            .collect();
+        assert_eq!(from_describe, direct);
+    }
+
+    /// A host on the far side of the ABI must be able to reach every chain,
+    /// which is the whole point of the `chain` request field.
+    #[test]
+    fn a_request_can_select_any_chain() {
+        let dir = home();
+        for chain in ["evm", "solana", "cardano", "midnight"] {
+            let request = serde_json::json!({
+                "argv": ["account", "import-mnemonic",
+                         "-m", "abandon abandon abandon abandon abandon abandon \
+                                abandon abandon abandon abandon abandon about",
+                         "--label", chain],
+                "home": dir.path().to_string_lossy(),
+                "chain": chain,
+                "yes": true,
+            })
+            .to_string();
+            let reply = execute(&request);
+            assert_eq!(reply["ok"], true, "{chain}: {reply}");
+            assert_eq!(reply["data"]["chain"], chain);
+        }
+
+        // All four are in the one store, each on its own chain.
+        let listed = execute(&request(&dir, &["account", "list"]));
+        let rows = listed["data"].as_array().unwrap();
+        assert_eq!(rows.len(), 4);
+    }
+
+    #[test]
+    fn an_unknown_chain_is_an_envelope_not_a_crash() {
+        let dir = home();
+        let request = serde_json::json!({
+            "argv": ["info"],
+            "home": dir.path().to_string_lossy(),
+            "chain": "dogecoin",
+        })
+        .to_string();
+        let reply = execute(&request);
+        assert_eq!(reply["ok"], false);
+        assert_eq!(reply["error"]["code"], "usage");
+    }
+
+    /// The field was added in ABI 2, so the number has to have moved with it.
+    #[test]
+    fn the_abi_version_moved_when_the_request_shape_changed() {
+        assert!(
+            cwb_abi_version() >= 2,
+            "the chain field is an ABI 2 addition"
+        );
     }
 
     #[test]

@@ -27,6 +27,20 @@ pub trait Host: Send + Sync {
     ///
     /// [`Code::ConfirmationRequired`]: crate::error::Code::ConfirmationRequired
     fn confirm(&self, prompt: &str) -> Result<()>;
+
+    /// Report that something slow is still going.
+    ///
+    /// Most commands never call this. The one that must is a Midnight send
+    /// from an address already registered for DUST generation: it replays the
+    /// chain's dust event stream and then generates a zero-knowledge proof,
+    /// which is minutes of work with nothing on the screen. Silence there is
+    /// indistinguishable from a hang, and a user who kills a wallet mid-send
+    /// has every reason to think the funds are gone.
+    ///
+    /// It is a notification, not a question: there is no answer and no way to
+    /// fail. A front end with nowhere to put the text ignores it, which is why
+    /// the default does nothing rather than being required of every host.
+    fn progress(&self, _message: &str) {}
 }
 
 /// A host with no terminal behind it: every answer is decided in advance.
@@ -97,6 +111,33 @@ mod tests {
     #[test]
     fn assume_yes_answers_every_prompt() {
         assert!(Headless::new().assume_yes(true).confirm("really?").is_ok());
+    }
+
+    /// A host that cares about progress gets it; one that does not is unaffected.
+    #[test]
+    fn progress_defaults_to_doing_nothing_and_can_be_overridden() {
+        use std::sync::Mutex;
+
+        // The default: a host that never mentions progress still compiles and
+        // silently swallows it.
+        Headless::new().progress("syncing dust state");
+
+        struct Recording(Mutex<Vec<String>>);
+        impl Host for Recording {
+            fn read_input(&self, _: &str) -> Result<String> {
+                Ok(String::new())
+            }
+            fn confirm(&self, _: &str) -> Result<()> {
+                Ok(())
+            }
+            fn progress(&self, message: &str) {
+                self.0.lock().unwrap().push(message.to_string());
+            }
+        }
+        let host = Recording(Mutex::new(Vec::new()));
+        host.progress("replaying 150000 dust events");
+        host.progress("proving");
+        assert_eq!(host.0.lock().unwrap().len(), 2);
     }
 
     #[test]

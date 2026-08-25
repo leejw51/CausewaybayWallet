@@ -1,7 +1,3 @@
-eth-account>=0.13.0
-eth-utils>=5.0.0
-eth-hash[pycryptodome]>=0.7.0
-mnemonic>=0.21
-rlp>=4.0.0
-requests>=2.32.0
-textual>=1.0.0
+# The wallet itself is the Rust core, loaded through ctypes from the standard
+# library — there is nothing to install for it. Build it with
+# `make -C rustcli build`, or point CAUSEWAYBAY_LIB at a copy.
