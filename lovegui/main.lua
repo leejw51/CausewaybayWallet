@@ -46,6 +46,34 @@ local causewaybay = require("causewaybay")
 local json = require("causewaybay.json")
 local Model = require("model")
 
+--- The layout every screen shares, so the columns line up between them.
+---
+--- Computed, not written down: `ui/layout.lua` holds the arithmetic for both
+--- orientations, and the LAYOUT button swaps which one this is.
+local layout = require("ui.layout")
+local L = layout.compute(theme.WIDTH, theme.HEIGHT)
+
+--- Remembered across launches, like the session: a wallet someone stood on
+--- its side should come back that way.
+local LAYOUT_FILE = "layout"
+
+--- Turn the whole game on its side, or back.
+local function set_orientation(portrait)
+  if portrait == L.portrait then return end
+  theme.set_size(theme.HEIGHT, theme.WIDTH)
+  L = layout.compute(theme.WIDTH, theme.HEIGHT)
+  pcall(love.filesystem.write, LAYOUT_FILE, portrait and "portrait" or "landscape")
+  -- A windowed window turns with the canvas, keeping its scale; fullscreen
+  -- stays as it is and the transform letterboxes, as it always has.
+  if not love.window.getFullscreen() then
+    local _, _, flags = love.window.getMode()
+    local scale = math.max(1, math.floor(math.min(
+      love.graphics.getWidth() / theme.HEIGHT, love.graphics.getHeight() / theme.WIDTH)))
+    flags.minwidth, flags.minheight = theme.WIDTH, theme.HEIGHT
+    love.window.setMode(theme.WIDTH * scale, theme.HEIGHT * scale, flags)
+  end
+end
+
 local game = {
   time = 0,
   model = nil,
@@ -560,6 +588,32 @@ end
 
 -- --------------------------------------------------------------------- input
 
+--- Clipboard helpers, above the keypress handler *and* the buttons that call
+--- them. A `local function` declared later is not in scope earlier — the call
+--- would read a nil global and crash — which is exactly how Ctrl+V used to
+--- take the whole game down. The globals check in `make lint` now refuses
+--- that shape outright.
+local function copy_to_clipboard(model, text, what)
+  if not text or text == "" then return false end
+  love.system.setClipboardText(text)
+  model:say(("%s copied"):format(what))
+  game.toast = { text = "COPIED", colour = theme.colour.cyan, life = 1.4 }
+  return true
+end
+
+--- Take whatever is on the clipboard, if it is worth taking.
+local function paste_from_clipboard(model, field)
+  local text = love.system.getClipboardText()
+  if not text or text:gsub("%s", "") == "" then
+    model:fail({ code = "usage", message = "the clipboard is empty" })
+    return false
+  end
+  model:set_field(field, text)
+  model:say("pasted from the clipboard")
+  return true
+end
+
+
 local function mouse_state()
   -- `game.pointer` is the screenshot harness pressing a button — see CAPTURING
   -- at the foot of this file. Nothing else ever sets it, and with it unset this
@@ -840,26 +894,6 @@ end
 --- An address is 42 characters of hex that a person cannot retype correctly,
 --- so copying it is not a convenience — it is the only realistic way to use
 --- one. `love.system` provides this on every platform LÖVE runs on.
-local function copy_to_clipboard(model, text, what)
-  if not text or text == "" then return false end
-  love.system.setClipboardText(text)
-  model:say(("%s copied"):format(what))
-  game.toast = { text = "COPIED", colour = theme.colour.cyan, life = 1.4 }
-  return true
-end
-
---- Take whatever is on the clipboard, if it is worth taking.
-local function paste_from_clipboard(model, field)
-  local text = love.system.getClipboardText()
-  if not text or text:gsub("%s", "") == "" then
-    model:fail({ code = "usage", message = "the clipboard is empty" })
-    return false
-  end
-  model:set_field(field, text)
-  model:say("pasted from the clipboard")
-  return true
-end
-
 --- The window-mode button: FULL when windowed, WIN when it is not.
 ---
 --- One function rather than one per screen, because it is on three of them —
@@ -935,34 +969,6 @@ local function draw_header_buttons(model, state)
       game.armed.logout = ARM_TIME
       model:say("LOGOUT again to wipe every wallet", "error")
     end
-  end
-end
-
---- The layout every screen shares, so the columns line up between them.
----
---- Computed, not written down: `ui/layout.lua` holds the arithmetic for both
---- orientations, and the LAYOUT button swaps which one this is.
-local layout = require("ui.layout")
-local L = layout.compute(theme.WIDTH, theme.HEIGHT)
-
---- Remembered across launches, like the session: a wallet someone stood on
---- its side should come back that way.
-local LAYOUT_FILE = "layout"
-
---- Turn the whole game on its side, or back.
-local function set_orientation(portrait)
-  if portrait == L.portrait then return end
-  theme.set_size(theme.HEIGHT, theme.WIDTH)
-  L = layout.compute(theme.WIDTH, theme.HEIGHT)
-  pcall(love.filesystem.write, LAYOUT_FILE, portrait and "portrait" or "landscape")
-  -- A windowed window turns with the canvas, keeping its scale; fullscreen
-  -- stays as it is and the transform letterboxes, as it always has.
-  if not love.window.getFullscreen() then
-    local _, _, flags = love.window.getMode()
-    local scale = math.max(1, math.floor(math.min(
-      love.graphics.getWidth() / theme.HEIGHT, love.graphics.getHeight() / theme.WIDTH)))
-    flags.minwidth, flags.minheight = theme.WIDTH, theme.HEIGHT
-    love.window.setMode(theme.WIDTH * scale, theme.HEIGHT * scale, flags)
   end
 end
 
@@ -1686,7 +1692,7 @@ function love.draw()
       -- The way back out of a fullscreen window, from the very first screen.
       -- Not during the black hold or the power-on flash, which are a machine
       -- coming up and not a screen with controls on it.
-      if game.boot:lit() then draw_mode_button(MODE_BOX, mouse_state()) end
+      if game.boot:lit() then draw_mode_button(mode_box(), mouse_state()) end
     end)
     game.clicked = false
     return
@@ -1701,7 +1707,7 @@ function love.draw()
       })
       game.stars:draw(game.time)
       game.login:draw(game.model, mouse_state(), game.springs)
-      draw_mode_button(MODE_BOX, mouse_state())
+      draw_mode_button(mode_box(), mouse_state())
       game.fx:draw(sprite.images)
       theme.scanlines(0.10)
       theme.vignette(0.4)

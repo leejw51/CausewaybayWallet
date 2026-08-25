@@ -95,7 +95,13 @@ lint: require-luajit ## Byte-compile every file, which is the syntax check
 		$(LUAJIT) -bl "$$file" /dev/null || { echo "  syntax error in $$file" >&2; status=1; }; \
 	done; \
 	if [ $$status -eq 0 ]; then echo "  every Lua file compiles"; fi; \
-	exit $$status
+	[ $$status -eq 0 ] || exit $$status
+	@# Compiling is not enough: a `local` declared below its first use
+	@# compiles and then reads a nil global at runtime — the Ctrl+V crash.
+	@# The bytecode names every global read, so the latent ones are caught
+	@# here rather than by whoever presses the key.
+	@./tools/check-globals.sh
+	@echo "  no undeclared globals"
 
 .PHONY: format
 format: lint ## Check the source compiles; there is no formatter to run
