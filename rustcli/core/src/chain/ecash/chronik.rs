@@ -545,13 +545,10 @@ mod tests {
     #[test]
     fn a_transaction_decodes_its_height_and_the_fee_its_values_imply() {
         // Inputs 900 and 100, one output of 950: a fee of 50.
-        let mut input = Vec::new();
-        input.push(0x20); // field 4, varint
-        input.push(0x84);
-        input.push(0x07); // 900
-        let mut second = vec![0x20, 0x64]; // 100
-        let mut output = vec![0x08, 0xb6, 0x07]; // field 1, 950
-        let mut block = vec![0x08, 0xfe, 0xe9, 0x3a]; // height 963838
+        let input = vec![0x20, 0x84, 0x07]; // field 4, varint 900
+        let second = vec![0x20, 0x64]; // 100
+        let output = vec![0x08, 0xb6, 0x07]; // field 1, 950
+        let block = vec![0x08, 0xfe, 0xe9, 0x3a]; // height 963838
 
         let mut tx = Vec::new();
         write_bytes_field(&mut tx, 1, &[7u8; 32]);
@@ -568,9 +565,6 @@ mod tests {
         assert!(decoded.is_final);
         assert_eq!(decoded.fee, Some(50));
         assert_eq!(decoded.txid, hex::encode([7u8; 32]));
-        second.clear();
-        output.clear();
-        block.clear();
     }
 
     /// A coinbase mints more than it spends, and reporting that as a negative

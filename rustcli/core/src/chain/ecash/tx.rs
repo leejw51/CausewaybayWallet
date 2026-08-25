@@ -15,7 +15,7 @@
 //! so a transaction built here can only ever be replayed on the chain it was
 //! meant for.
 
-use super::address::{Address, AddressKind};
+use super::address::Address;
 use super::keys::{sha256d, write_varint, EcashAccount};
 use crate::chain;
 use crate::error::{self, Result};
@@ -373,9 +373,9 @@ impl Default for Builder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chain::ecash::address::EcashNetwork;
+    use crate::chain::ecash::address::{AddressKind, EcashNetwork};
     use crate::chain::Seed;
-    use crate::network::{ECASH_MAINNET, ECASH_TESTNET};
+    use crate::network::ECASH_MAINNET;
 
     const PHRASE: &str =
         "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
