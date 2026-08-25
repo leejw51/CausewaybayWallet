@@ -203,6 +203,8 @@ impl ChainClient for CardanoClient {
             amount: request.amount,
             fee: signed.body.fee as u128,
             fee_unit: None,
+            amount_unit: None,
+            token: None,
             fee_rate: None,
             nonce: None,
             gas_limit: None,
@@ -216,6 +218,51 @@ impl ChainClient for CardanoClient {
                 "change_lovelace": signed.body.outputs.get(1).map(|o| o.lovelace),
             }),
         })
+    }
+
+    /// What an address holds of one native asset.
+    ///
+    /// Read from Koios `address_assets`, which reports every asset at an
+    /// address as a policy id, an asset name and a quantity — the same pair
+    /// the registry's `id` concatenates. The quantity is already in the
+    /// asset's base units; the decimals only decide how it is printed.
+    ///
+    /// Reading is all this wallet does with native assets. Moving one is
+    /// refused before it gets this far — see [`crate::token::Standard`].
+    async fn token_balance(&self, token: &crate::token::Token, address: &str) -> Result<u128> {
+        // 28 bytes of policy id, hex-encoded, then the asset name.
+        let (policy, name) = token.id.split_at(56);
+        let value = http::post_json(
+            &self.url("address_assets"),
+            &json!({"_addresses": [address]}),
+        )
+        .await?;
+        let rows = value
+            .as_array()
+            .ok_or_else(|| error::rpc_error("expected an array of assets"))?;
+
+        // Summed rather than taken from the first match: Koios reports per
+        // address and an address can appear once per asset, but a total that
+        // silently used one row of several would understate a balance.
+        let mut total: u128 = 0;
+        for row in rows {
+            let matches = row.get("policy_id").and_then(Value::as_str) == Some(policy)
+                && row.get("asset_name").and_then(Value::as_str) == Some(name);
+            if !matches {
+                continue;
+            }
+            let quantity = row
+                .get("quantity")
+                .and_then(Value::as_str)
+                .ok_or_else(|| error::rpc_error("an asset row has no quantity"))?;
+            let held: u128 = quantity.parse().map_err(|e| {
+                error::rpc_error(format!("unparsable asset quantity `{quantity}`: {e}"))
+            })?;
+            total = total
+                .checked_add(held)
+                .ok_or_else(|| error::rpc_error("an asset balance overflows"))?;
+        }
+        Ok(total)
     }
 
     async fn submit(&self, prepared: &PreparedTransfer) -> Result<TransferReceipt> {

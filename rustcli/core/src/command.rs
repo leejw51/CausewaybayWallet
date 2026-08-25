@@ -129,7 +129,17 @@ pub enum Command {
         #[arg(long)]
         address: Option<String>,
     },
-    /// Read and transfer ERC-20 tokens.
+    /// Find, read and transfer the tokens this wallet knows by name.
+    ///
+    /// One flat row per token per network — `usdc-cronos-mainnet`, said
+    /// "USDC Cronos Mainnet" — so naming a token settles the chain, the
+    /// network and the contract in one word. `erc20` is still there for a
+    /// contract address the registry has never heard of.
+    Token {
+        #[command(subcommand)]
+        command: TokenCommand,
+    },
+    /// Read and transfer ERC-20 tokens by contract address.
     Erc20 {
         #[command(subcommand)]
         command: Erc20Command,
@@ -326,8 +336,20 @@ pub enum RecentCommand {
 
 #[derive(Subcommand, Debug)]
 pub enum NetworkCommand {
-    /// List the supported networks.
-    List,
+    /// List the supported networks, optionally narrowed by a search.
+    ///
+    /// With no filter every network is listed, which is the point: the search
+    /// narrows a table that is already in front of you. A filter is matched
+    /// against each row's key, name, symbol, chain and tags, and every word
+    /// has to match — so `evm testnet` is one network and `evm` is two.
+    List {
+        /// Words to filter by. Tags, names, symbols, chains — all one box.
+        #[arg(value_name = "FILTER")]
+        filter: Vec<String>,
+        /// List the tags the table uses, rather than the networks.
+        #[arg(long)]
+        tags: bool,
+    },
     /// Show the selected network.
     Current,
     /// Change the default network.
@@ -357,6 +379,65 @@ pub enum NetworkCommand {
         network: String,
         /// The ceiling, with an optional unit, or `0` for the built-in one.
         amount: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum TokenCommand {
+    /// List the tokens this wallet knows, optionally narrowed by a search.
+    ///
+    /// The same search as `network list`, over the same kind of table, because
+    /// the two lists are read the same way and one habit should serve both.
+    List {
+        /// Words to filter by: `usdc`, `stablecoin cronos`, `solana`, …
+        #[arg(value_name = "FILTER")]
+        filter: Vec<String>,
+        /// List the tags the table uses, rather than the tokens.
+        #[arg(long)]
+        tags: bool,
+        /// Only tokens on the network in view.
+        #[arg(long)]
+        here: bool,
+    },
+    /// Show one token: where it lives, how it is counted, what moves it.
+    Info {
+        /// Registry key, symbol, or the on-chain address.
+        token: String,
+    },
+    /// Show a token balance.
+    Balance {
+        /// Registry key, symbol, or the on-chain address.
+        token: String,
+        /// Check this address instead of the active account's.
+        #[arg(long, short)]
+        address: Option<String>,
+    },
+    /// Transfer a token.
+    ///
+    /// The recipient is the holder's ordinary address on that chain. Where the
+    /// chain keeps token balances somewhere else — Solana's associated token
+    /// accounts — the wallet finds that somewhere itself.
+    Send {
+        /// Registry key, symbol, or the on-chain address.
+        token: String,
+        /// The recipient's address.
+        #[arg(long)]
+        to: String,
+        /// Amount in whole tokens, e.g. 25.5.
+        #[arg(long)]
+        amount: String,
+        /// Raise the fee this send will accept, in the fee's own unit.
+        #[arg(long)]
+        max_fee: Option<String>,
+        /// Wait for the receipt before returning.
+        #[arg(long)]
+        wait: bool,
+        /// Build and sign the transfer, show it, and stop without broadcasting.
+        #[arg(long)]
+        dry_run: bool,
+        /// Send from this account instead of the active one.
+        #[arg(long)]
+        account: Option<String>,
     },
 }
 

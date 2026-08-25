@@ -271,6 +271,8 @@ impl ChainClient for MidnightClient {
             amount: request.amount,
             fee: built.fee,
             fee_unit: Some(DUST),
+            amount_unit: None,
+            token: None,
             fee_rate: None,
             nonce: None,
             gas_limit: None,

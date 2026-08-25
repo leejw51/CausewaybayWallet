@@ -35,6 +35,22 @@ pub struct Network {
     pub default_submit_endpoint: Option<&'static str>,
     pub explorer: &'static str,
     pub testnet: bool,
+    /// What this network is, beyond what its name already says.
+    ///
+    /// The table is long enough now that finding a row means searching it, and
+    /// what someone searches for is rarely the row's name — they know they
+    /// want an EVM chain, or a test network with a faucet, or the privacy one,
+    /// and not which of the ten rows that is. So a tag carries what the name
+    /// does *not*: `cronos-mainnet` needs no `cronos` tag and no `mainnet`
+    /// one, because [`crate::search`] already looks in the key, the name and
+    /// the symbol. It needs `evm`, which appears nowhere else on the row.
+    ///
+    /// `testnet` is the one deliberate exception. Three of the test networks
+    /// are called `devnet`, `preprod` and `preview`, and "show me the networks
+    /// I can lose nothing on" is the query this table is asked most. There is
+    /// no matching `mainnet` tag because every mainnet row is already called
+    /// one — the exception exists for the gap, not for the symmetry.
+    pub tags: &'static [&'static str],
     /// The most this wallet will sign for in fees on this network, in the base
     /// units of whatever token pays the fee.
     ///
@@ -65,6 +81,7 @@ pub const CRONOS_TESTNET: Network = Network {
     default_submit_endpoint: None,
     explorer: "https://explorer.cronos.org/testnet",
     testnet: true,
+    tags: &["evm", "testnet", "smart-contracts", "erc20"],
     // A plain transfer at Cronos's 5000 gwei costs about 0.105 CRO; this is
     // room for a 5,000,000-gas contract call at that price.
     max_fee: 25_000_000_000_000_000_000,
@@ -81,6 +98,7 @@ pub const CRONOS_MAINNET: Network = Network {
     default_submit_endpoint: None,
     explorer: "https://explorer.cronos.org",
     testnet: false,
+    tags: &["evm", "smart-contracts", "erc20"],
     max_fee: 25_000_000_000_000_000_000,
 };
 
@@ -95,6 +113,7 @@ pub const SOLANA_DEVNET: Network = Network {
     default_submit_endpoint: None,
     explorer: "https://explorer.solana.com/?cluster=devnet",
     testnet: true,
+    tags: &["svm", "testnet", "faucet", "spl"],
     // Solana charges 5000 lamports per signature, and this wallet signs once.
     max_fee: 10_000_000,
 };
@@ -110,6 +129,7 @@ pub const SOLANA_TESTNET: Network = Network {
     default_submit_endpoint: None,
     explorer: "https://explorer.solana.com/?cluster=testnet",
     testnet: true,
+    tags: &["svm", "testnet", "faucet", "spl"],
     max_fee: 10_000_000,
 };
 
@@ -124,6 +144,7 @@ pub const SOLANA_MAINNET: Network = Network {
     default_submit_endpoint: None,
     explorer: "https://explorer.solana.com",
     testnet: false,
+    tags: &["svm", "spl"],
     max_fee: 10_000_000,
 };
 
@@ -138,6 +159,7 @@ pub const CARDANO_PREPROD: Network = Network {
     default_submit_endpoint: None,
     explorer: "https://preprod.cardanoscan.io",
     testnet: true,
+    tags: &["utxo", "testnet", "native-assets"],
     // The protocol's own worst case is min_fee_a x 16384 + min_fee_b, about
     // 0.88 ADA at today's parameters; a real transfer costs about 0.17.
     max_fee: 5_000_000,
@@ -154,6 +176,7 @@ pub const CARDANO_PREVIEW: Network = Network {
     default_submit_endpoint: None,
     explorer: "https://preview.cardanoscan.io",
     testnet: true,
+    tags: &["utxo", "testnet", "native-assets"],
     max_fee: 5_000_000,
 };
 
@@ -168,6 +191,7 @@ pub const CARDANO_MAINNET: Network = Network {
     default_submit_endpoint: None,
     explorer: "https://cardanoscan.io",
     testnet: false,
+    tags: &["utxo", "native-assets"],
     max_fee: 5_000_000,
 };
 
@@ -182,6 +206,7 @@ pub const MIDNIGHT_PREVIEW: Network = Network {
     default_submit_endpoint: Some("https://rpc.preview.midnight.network"),
     explorer: "https://preview.midnightexplorer.com",
     testnet: true,
+    tags: &["privacy", "testnet", "shielded", "zk"],
     // Counted in DUST, not NIGHT: 100 DUST against a transfer's usual 0.82.
     max_fee: 100_000_000_000_000_000,
 };
@@ -197,6 +222,7 @@ pub const MIDNIGHT_DEVNET: Network = Network {
     default_submit_endpoint: Some("https://rpc.devnet.midnight.network"),
     explorer: "https://devnet.midnightexplorer.com",
     testnet: true,
+    tags: &["privacy", "testnet", "shielded", "zk"],
     max_fee: 100_000_000_000_000_000,
 };
 
@@ -222,6 +248,26 @@ pub const DEFAULT_NETWORK: &str = CRONOS_TESTNET.key;
 /// The networks belonging to one chain, in menu order.
 pub fn for_chain(chain: ChainId) -> Vec<Network> {
     ALL.iter().filter(|n| n.chain == chain).copied().collect()
+}
+
+/// The networks a query keeps, in table order.
+///
+/// An empty query keeps all ten, which is the state the picker opens in: the
+/// search box narrows a list that is already there rather than summoning one.
+pub fn search(query: &str) -> Vec<Network> {
+    let terms = crate::search::terms(query);
+    ALL.iter().filter(|n| n.matches(&terms)).copied().collect()
+}
+
+/// Every tag any network carries, sorted and deduplicated.
+///
+/// What a picker offers as suggestions under an empty search box — the tags
+/// are only useful if you can find out they exist without reading the table.
+pub fn tags() -> Vec<&'static str> {
+    let mut all: Vec<&'static str> = ALL.iter().flat_map(|n| n.tags.iter().copied()).collect();
+    all.sort_unstable();
+    all.dedup();
+    all
 }
 
 /// A chain's default network: the first row it lists.
@@ -317,6 +363,18 @@ fn short_name(key: &str) -> &str {
 }
 
 impl Network {
+    /// Does this row survive a search query?
+    ///
+    /// Searched by key, name, symbol, chain and tags — the five things someone
+    /// might have in mind when they go looking for a network. The chain is in
+    /// there because `evm` reaches Cronos through a tag but `solana` should
+    /// reach its three networks without every one of them repeating the word.
+    pub fn matches(&self, terms: &[String]) -> bool {
+        let mut haystacks = vec![self.key, self.name, self.symbol, self.chain.as_str()];
+        haystacks.extend_from_slice(self.tags);
+        crate::search::haystack_matches(&haystacks, terms)
+    }
+
     /// The environment variable that overrides this network's endpoint.
     pub fn endpoint_env_var(&self) -> String {
         format!(
@@ -437,6 +495,88 @@ mod tests {
                 .map(|c| for_chain(*c).len())
                 .sum::<usize>()
         );
+    }
+
+    #[test]
+    fn a_tag_says_what_the_name_does_not() {
+        // The rule the table is kept to: no tag repeats a word already in the
+        // key, the name or the symbol, because search reads those anyway. A
+        // redundant tag is a tag nobody can trust to mean anything.
+        for n in ALL {
+            for tag in n.tags {
+                // `testnet` is the deliberate exception: devnet, preprod and
+                // preview are test networks whose names never say so, and one
+                // query has to reach all six.
+                if *tag == "testnet" {
+                    continue;
+                }
+                assert!(
+                    !n.key.split('-').any(|word| word == *tag),
+                    "{}: tag `{tag}` only repeats a word of the row's own key",
+                    n.key
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_test_network_is_tagged_as_one() {
+        // "Show me where I can lose nothing" has to be one query, not four
+        // spellings of it.
+        for n in ALL {
+            assert_eq!(
+                n.tags.contains(&"testnet"),
+                n.testnet,
+                "{} disagrees with its own testnet flag",
+                n.key
+            );
+        }
+    }
+
+    #[test]
+    fn an_empty_search_is_the_whole_table() {
+        assert_eq!(search("").len(), ALL.len());
+        assert_eq!(search("   ").len(), ALL.len());
+    }
+
+    #[test]
+    fn searching_a_tag_crosses_names_that_never_mention_it() {
+        let evm: Vec<&str> = search("evm").iter().map(|n| n.key).collect();
+        assert_eq!(evm, vec!["cronos-testnet", "cronos-mainnet"]);
+        // Every chain's test networks at once, whatever each calls itself.
+        let keys: Vec<&str> = search("testnet").iter().map(|n| n.key).collect();
+        assert!(keys.contains(&"cardano-preprod"), "{keys:?}");
+        assert!(keys.contains(&"solana-devnet"), "{keys:?}");
+        assert!(keys.contains(&"midnight-preview"), "{keys:?}");
+        assert!(!keys.contains(&"cronos-mainnet"), "{keys:?}");
+    }
+
+    #[test]
+    fn adding_a_word_narrows_the_result() {
+        assert!(search("mainnet").len() > 1);
+        let one: Vec<&str> = search("solana mainnet").iter().map(|n| n.key).collect();
+        assert_eq!(one, vec!["solana-mainnet"]);
+    }
+
+    #[test]
+    fn a_search_that_matches_nothing_is_empty_rather_than_everything() {
+        // The failure mode worth pinning: a picker that falls back to the
+        // whole table on a typo looks like it ignored what was typed.
+        assert!(search("ethereum-sepolia").is_empty());
+    }
+
+    #[test]
+    fn the_tag_list_is_sorted_deduplicated_and_non_empty() {
+        let tags = tags();
+        assert!(tags.contains(&"evm"));
+        assert!(tags.contains(&"faucet"));
+        let mut sorted = tags.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(tags, sorted);
+        for n in ALL {
+            assert!(!n.tags.is_empty(), "{} carries no tags", n.key);
+        }
     }
 
     #[test]

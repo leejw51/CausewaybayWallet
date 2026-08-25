@@ -146,6 +146,8 @@ impl ChainClient for EvmClient {
             amount: request.amount,
             fee,
             fee_unit: None,
+            amount_unit: None,
+            token: None,
             fee_rate: Some(to_u128(gas_price, "the gas price")?),
             nonce: Some(nonce),
             gas_limit: Some(gas_limit),
@@ -158,6 +160,108 @@ impl ChainClient for EvmClient {
                 "max_cost_wei": max_cost.to_string(),
             }),
         })
+    }
+
+    /// An ERC-20 balance: one `balanceOf(address)` call.
+    ///
+    /// The decimals are not read here. The registry row states them and the
+    /// caller formats with those; a token whose contract disagrees with the
+    /// row is a bug in the row, and reading them per call would cost a second
+    /// round trip on every balance to confirm a constant.
+    async fn token_balance(&self, token: &crate::token::Token, address: &str) -> Result<u128> {
+        let contract = wallet::parse_address(token.id)?;
+        let owner = wallet::parse_address(address)?;
+        let raw = crate::erc20::decode_uint(
+            &self
+                .rpc
+                .eth_call(contract, &crate::erc20::encode_balance_of(owner))
+                .await?,
+        )?;
+        to_u128(raw, "the token balance")
+    }
+
+    /// An ERC-20 transfer: a zero-value call to the contract carrying
+    /// `transfer(address,uint256)`.
+    ///
+    /// Two things are checked here that a native transfer gets for free.
+    /// The **decimals** are read off the contract and compared with the
+    /// registry row, because every other number in this transfer is scaled by
+    /// them — a row claiming 6 where the contract says 18 would move a
+    /// trillionth of what the user typed, silently and irreversibly. And the
+    /// **token balance** is checked separately from the CRO balance, since an
+    /// account can have ample gas and none of the token.
+    async fn prepare_token_transfer(
+        &self,
+        token: &crate::token::Token,
+        signer_secret: &str,
+        request: &TransferRequest,
+    ) -> Result<PreparedTransfer> {
+        let keypair = Keypair::from_hex(signer_secret)?;
+        let from = keypair.address();
+        let recipient = wallet::parse_address(&request.to)?;
+        let contract = wallet::parse_address(token.id)?;
+
+        // Same rule as a native transfer, and the same reason: the sender's
+        // own address is the one most likely to be on the clipboard.
+        if recipient == from {
+            return Err(error::usage(format!(
+                "the recipient is the sending account ({}); a transfer to itself \
+                 moves nothing and still pays the gas",
+                recipient.to_checksum(None)
+            )));
+        }
+
+        let on_chain = crate::erc20::decode_u8(
+            &self
+                .rpc
+                .eth_call(
+                    contract,
+                    &crate::erc20::encode_getter(crate::erc20::SELECTOR_DECIMALS),
+                )
+                .await?,
+        )?;
+        if on_chain != token.decimals {
+            return Err(error::internal(format!(
+                "{} at {} reports {on_chain} decimals but this wallet's table says \
+                 {}; refusing to scale an amount by a number the contract denies",
+                token.name, token.id, token.decimals
+            )));
+        }
+
+        let units = token.units();
+        let held = self.token_balance(token, &from.to_checksum(None)).await?;
+        if held < request.amount {
+            return Err(error::insufficient_funds(format!(
+                "token balance {} is less than {}",
+                units.format_with_symbol(held),
+                units.format_with_symbol(request.amount),
+            )));
+        }
+
+        // The transfer itself is an ordinary contract call, so it is built as
+        // one: value zero, recipient the contract, the real recipient inside
+        // the call data. Everything after this — gas estimation, the fee
+        // ceiling, the CRO balance check, signing — is the native path
+        // unchanged, which is why a token send cannot drift away from it.
+        let mut call = TransferRequest::new(contract.to_checksum(None), 0);
+        call.data = crate::erc20::encode_transfer(recipient, U256::from(request.amount));
+        call.fee_override = request.fee_override;
+        call.nonce_override = request.nonce_override;
+        call.gas_limit = request.gas_limit;
+        call.max_fee = request.max_fee;
+
+        let mut prepared = self.prepare_transfer(signer_secret, &call).await?;
+        // The call moved zero CRO to a contract; the *transfer* moved tokens
+        // to a person, and that is what the confirmation has to say.
+        prepared.to = recipient.to_checksum(None);
+        prepared.amount = request.amount;
+        prepared.amount_unit = Some(units);
+        prepared.token = Some(*token);
+        if let Some(map) = prepared.detail.as_object_mut() {
+            map.insert("token".into(), json!(token.key));
+            map.insert("token_contract".into(), json!(token.id));
+        }
+        Ok(prepared)
     }
 
     async fn submit(&self, prepared: &PreparedTransfer) -> Result<TransferReceipt> {
