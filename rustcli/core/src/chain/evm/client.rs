@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use crate::chain::{
-    Balance, ChainClient, ClientConfig, PreparedTransfer, TransactionStatus, TransferReceipt,
+    self, Balance, ChainClient, ClientConfig, PreparedTransfer, TransactionStatus, TransferReceipt,
     TransferRequest,
 };
 use crate::error::{self, Result};
@@ -98,11 +98,23 @@ impl ChainClient for EvmClient {
             None => with_headroom(self.rpc.estimate_gas(from, to, value, &data).await?),
         };
 
-        // Fail before signing when the balance obviously cannot cover this.
-        let balance = self.rpc.get_balance(from).await?;
         let gas_cost = gas_price * U256::from(gas_limit);
         let max_cost = value + gas_cost;
         let units = self.network.units();
+
+        // The gas price is the node's number, so it is questioned before the
+        // balance is: an account rich enough to pay an absurd fee would sail
+        // through the balance check and be told nothing.
+        let fee = to_u128(gas_cost, "the gas cost")?;
+        chain::check_fee(
+            &self.network,
+            request.fee_ceiling(&self.network),
+            fee,
+            units,
+        )?;
+
+        // Fail before signing when the balance obviously cannot cover this.
+        let balance = self.rpc.get_balance(from).await?;
         if balance < max_cost {
             return Err(error::insufficient_funds(format!(
                 "balance {} cannot cover {} plus up to {} of gas",
@@ -132,18 +144,13 @@ impl ChainClient for EvmClient {
             from: from.to_checksum(None),
             to: to.to_checksum(None),
             amount: request.amount,
-            fee: to_u128(gas_cost, "the gas cost")?,
+            fee,
             fee_unit: None,
             fee_rate: Some(to_u128(gas_price, "the gas price")?),
             nonce: Some(nonce),
             gas_limit: Some(gas_limit),
-            prompt: format!(
-                "Send {} from {} to {} on {}",
-                units.format_with_symbol(request.amount),
-                from.to_checksum(None),
-                to.to_checksum(None),
-                self.network.name
-            ),
+            network: self.network,
+            note: None,
             detail: json!({
                 "gas_limit": gas_limit,
                 "gas_price_wei": gas_price.to_string(),

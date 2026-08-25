@@ -39,9 +39,19 @@ with mode `0600`.
 ### 1.1 JSONL rules
 
 * One compact JSON object per line, UTF-8, `\n` terminated. No trailing spaces.
-* Files are **append-only**. State is derived by replaying every line in order;
-  later events supersede earlier ones. Nothing is ever rewritten in place, so a
-  crash can at worst lose the last (partial) line.
+* Files are **append-only**, with one exception below. State is derived by
+  replaying every line in order; later events supersede earlier ones, so a crash
+  can at worst lose the last (partial) line.
+* **Removal rewrites.** `account remove`, `recent forget` and `recent clear`
+  drop the records themselves rather than appending an `account.delete` or
+  `secret.forget` tombstone: those records carry plaintext key material, and a
+  tombstone only stops the replay showing it. The rewrite goes through a
+  sibling temp file created `0600` and renamed over the original, so a reader
+  sees either the old log or the new one. Lines the writer cannot parse, and
+  lines from a newer `schema`, are copied through untouched. Tombstones written
+  by an older binary are still honoured on replay.
+  This removes the record from the file; it is not a guarantee of erasure from
+  the underlying device.
 * Every record carries `schema` (currently `1`), `type`, and an RFC3339 UTC
   timestamp.
 * A malformed or unparsable line is skipped with a warning rather than aborting
@@ -113,7 +123,9 @@ without an `account use` first.
 
 A recall list so a returning user can pick a mnemonic or private key they have
 used before instead of retyping it. Every `account new`, `account import-*` and
-`account derive` records the key material it used.
+`account derive` records the key material it used, and says so in its output —
+this is a second plaintext copy of the phrase, and it is not a secret that it
+exists.
 
 | type               | fields                                                                            |
 | ------------------ | ---------------------------------------------------------------------------------- |
@@ -279,6 +291,24 @@ Both refuse a recipient equal to the sending account with code `usage`, before
 any node is asked: the transfer would move nothing and still pay the gas, and
 the sender's own address is the one most likely to have been pasted by mistake.
 The comparison is case-insensitive, because EIP-55 is a property of the text.
+
+An EVM address is accepted all-lowercase or all-uppercase, neither of which
+carries a checksum. A **mixed-case** address is checked against EIP-55 and
+refused with `invalid_address` when it does not verify: the case pattern is a
+checksum, and it fails exactly when a character has been corrupted.
+
+### Fees
+
+The confirmation question names the fee as well as the amount, on every chain
+and every front end, because it is built once from the prepared transfer rather
+than written out by each chain.
+
+The fee itself is the endpoint's number — `eth_gasPrice` on EVM, `min_fee_a`
+and `min_fee_b` from Koios on Cardano — and a hostile or broken one can make it
+almost anything. So each network in the table carries a `max_fee` the wallet
+will not sign past, in the base units of whatever token pays the fee, checked
+before any key touches the transaction. `--max-fee`, read in that same unit,
+raises the line for one send.
 
 ## 7. Message signing
 

@@ -35,6 +35,21 @@ pub struct Network {
     pub default_submit_endpoint: Option<&'static str>,
     pub explorer: &'static str,
     pub testnet: bool,
+    /// The most this wallet will sign for in fees on this network, in the base
+    /// units of whatever token pays the fee.
+    ///
+    /// A fee is one of the few numbers a wallet takes on an endpoint's word —
+    /// `eth_gasPrice` on EVM, `min_fee_a`/`min_fee_b` from Koios on Cardano —
+    /// and nothing downstream questions it: the transaction balances, the
+    /// signature is valid, and the user is asked a question that used to name
+    /// only the amount. So the ceiling lives here, in the wallet's own table,
+    /// where no endpoint can reach it.
+    ///
+    /// Each is set far above what a real transfer on that network costs and
+    /// far below anything worth losing — two orders of magnitude of headroom,
+    /// which is room for a fee market to move and no room for a hostile
+    /// endpoint to drain an account. `--max-fee` overrides it per send.
+    pub max_fee: u128,
 }
 
 // ------------------------------------------------------------------ the table
@@ -50,6 +65,9 @@ pub const CRONOS_TESTNET: Network = Network {
     default_submit_endpoint: None,
     explorer: "https://explorer.cronos.org/testnet",
     testnet: true,
+    // A plain transfer at Cronos's 5000 gwei costs about 0.105 CRO; this is
+    // room for a 5,000,000-gas contract call at that price.
+    max_fee: 25_000_000_000_000_000_000,
 };
 
 pub const CRONOS_MAINNET: Network = Network {
@@ -63,6 +81,7 @@ pub const CRONOS_MAINNET: Network = Network {
     default_submit_endpoint: None,
     explorer: "https://explorer.cronos.org",
     testnet: false,
+    max_fee: 25_000_000_000_000_000_000,
 };
 
 pub const SOLANA_DEVNET: Network = Network {
@@ -76,6 +95,8 @@ pub const SOLANA_DEVNET: Network = Network {
     default_submit_endpoint: None,
     explorer: "https://explorer.solana.com/?cluster=devnet",
     testnet: true,
+    // Solana charges 5000 lamports per signature, and this wallet signs once.
+    max_fee: 10_000_000,
 };
 
 pub const SOLANA_TESTNET: Network = Network {
@@ -89,6 +110,7 @@ pub const SOLANA_TESTNET: Network = Network {
     default_submit_endpoint: None,
     explorer: "https://explorer.solana.com/?cluster=testnet",
     testnet: true,
+    max_fee: 10_000_000,
 };
 
 pub const SOLANA_MAINNET: Network = Network {
@@ -102,6 +124,7 @@ pub const SOLANA_MAINNET: Network = Network {
     default_submit_endpoint: None,
     explorer: "https://explorer.solana.com",
     testnet: false,
+    max_fee: 10_000_000,
 };
 
 pub const CARDANO_PREPROD: Network = Network {
@@ -115,6 +138,9 @@ pub const CARDANO_PREPROD: Network = Network {
     default_submit_endpoint: None,
     explorer: "https://preprod.cardanoscan.io",
     testnet: true,
+    // The protocol's own worst case is min_fee_a x 16384 + min_fee_b, about
+    // 0.88 ADA at today's parameters; a real transfer costs about 0.17.
+    max_fee: 5_000_000,
 };
 
 pub const CARDANO_PREVIEW: Network = Network {
@@ -128,6 +154,7 @@ pub const CARDANO_PREVIEW: Network = Network {
     default_submit_endpoint: None,
     explorer: "https://preview.cardanoscan.io",
     testnet: true,
+    max_fee: 5_000_000,
 };
 
 pub const CARDANO_MAINNET: Network = Network {
@@ -141,6 +168,7 @@ pub const CARDANO_MAINNET: Network = Network {
     default_submit_endpoint: None,
     explorer: "https://cardanoscan.io",
     testnet: false,
+    max_fee: 5_000_000,
 };
 
 pub const MIDNIGHT_PREVIEW: Network = Network {
@@ -154,6 +182,8 @@ pub const MIDNIGHT_PREVIEW: Network = Network {
     default_submit_endpoint: Some("https://rpc.preview.midnight.network"),
     explorer: "https://preview.midnightexplorer.com",
     testnet: true,
+    // Counted in DUST, not NIGHT: 100 DUST against a transfer's usual 0.82.
+    max_fee: 100_000_000_000_000_000,
 };
 
 pub const MIDNIGHT_DEVNET: Network = Network {
@@ -167,6 +197,7 @@ pub const MIDNIGHT_DEVNET: Network = Network {
     default_submit_endpoint: Some("https://rpc.devnet.midnight.network"),
     explorer: "https://devnet.midnightexplorer.com",
     testnet: true,
+    max_fee: 100_000_000_000_000_000,
 };
 
 /// Every network, grouped by chain, each chain's default first.

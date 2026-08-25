@@ -162,12 +162,35 @@ pub fn parse_hex(input: &str) -> Result<Vec<u8>> {
     hex::decode(body).map_err(|e| error::usage(format!("invalid hex: {e}")))
 }
 
-/// Parse and checksum-normalise an address.
+/// Parse an address, enforcing EIP-55 where the text carries a checksum.
+///
+/// `Address::from_str` is case-insensitive hex and verifies nothing, which is
+/// right for the two spellings that carry no checksum: an all-lowercase
+/// address is what `eth_getLogs` and half the tooling emit, and an all-uppercase
+/// one is the other conventional way of saying "no checksum here".
+///
+/// A *mixed-case* address is different. The case pattern is the checksum, and
+/// the only reason EIP-55 exists is to catch a character that got corrupted
+/// between the sender's screen and this field. Accepting one that does not
+/// verify throws that away: the funds land on the wrong twenty bytes, and
+/// there is nothing to undo it with.
 pub fn parse_address(input: &str) -> Result<Address> {
     let trimmed = input.trim();
-    trimmed
+    let address = trimmed
         .parse::<Address>()
-        .map_err(|_| error::invalid_address(format!("not a valid EVM address: {trimmed}")))
+        .map_err(|_| error::invalid_address(format!("not a valid EVM address: {trimmed}")))?;
+    let body = trimmed
+        .strip_prefix("0x")
+        .or_else(|| trimmed.strip_prefix("0X"))
+        .unwrap_or(trimmed);
+    let mixed_case = body.bytes().any(|b| b.is_ascii_uppercase())
+        && body.bytes().any(|b| b.is_ascii_lowercase());
+    if mixed_case && Address::parse_checksummed(format!("0x{body}"), None).is_err() {
+        return Err(error::invalid_address(format!(
+            "{trimmed} does not pass its EIP-55 checksum. A mixed-case address              carries one, and it only fails when a character is wrong — check              the address against wherever it came from rather than retyping it"
+        )));
+    }
+    Ok(address)
 }
 
 #[cfg(test)]
@@ -305,16 +328,45 @@ mod tests {
     }
 
     #[test]
-    fn parses_addresses_case_insensitively() {
+    fn parses_the_spellings_that_carry_no_checksum() {
         let want = "0x9858EfFD232B4033E47d90003D41EC34EcaEda94";
         assert_eq!(parse_address(want).unwrap().to_checksum(None), want);
+        // All lower and all upper are the two conventional ways of saying
+        // "there is no checksum in this text"; both are ordinary and accepted.
         assert_eq!(
             parse_address(&want.to_lowercase())
                 .unwrap()
                 .to_checksum(None),
             want
         );
+        assert_eq!(
+            parse_address(&format!("0x{}", want[2..].to_uppercase()))
+                .unwrap()
+                .to_checksum(None),
+            want
+        );
         assert!(parse_address("0x123").is_err());
         assert!(parse_address("nonsense").is_err());
+    }
+
+    /// The case EIP-55 was invented for, and the one that used to get through.
+    #[test]
+    fn a_mixed_case_address_whose_checksum_fails_is_refused() {
+        let good = "0x9858EfFD232B4033E47d90003D41EC34EcaEda94";
+        // One character's case flipped: still valid hex, still the same twenty
+        // bytes to `from_str`, and no longer a valid EIP-55 rendering. In the
+        // real failure the flipped character is a *digit*, and then the bytes
+        // differ and the funds are gone.
+        let corrupted = good.replacen('E', "e", 1);
+        assert_ne!(corrupted, good);
+
+        let err = parse_address(&corrupted).unwrap_err();
+        assert_eq!(err.code, error::Code::InvalidAddress);
+        assert!(err.message.contains("EIP-55"), "{}", err.message);
+
+        // And a corrupted character that changes the bytes is refused too,
+        // rather than quietly resolving to somebody else's account.
+        let wrong_byte = format!("0x0{}", &good[3..]);
+        assert!(parse_address(&wrong_byte).is_err(), "{wrong_byte}");
     }
 }

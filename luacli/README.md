@@ -212,7 +212,7 @@ CLI prints exactly what `cwbwallet` would.
 | `nonce` | `wallet:nonce{address=, account=}` |
 | `gas-price` | `wallet:gas_price()` |
 | `chain-info` | `wallet:chain_info()` |
-| `send` | `wallet:send{to=, amount=, gas_limit=, gas_price_gwei=, nonce=, data=, wait=, account=, yes=}` |
+| `send` | `wallet:send{to=, amount=, gas_limit=, gas_price_gwei=, nonce=, data=, max_fee=, wait=, account=, yes=}` |
 | `tx` | `wallet:tx(hash)` |
 | `history` | `wallet:history{limit=, network=}` |
 | `sign` | `wallet:sign(message, {account=})` |

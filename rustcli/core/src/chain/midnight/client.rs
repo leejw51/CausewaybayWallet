@@ -12,14 +12,14 @@ use serialize::tagged_serialize;
 
 use crate::chain::http;
 use crate::chain::{
-    Balance, ChainClient, ClientConfig, PreparedTransfer, TransactionStatus, TransferReceipt,
+    self, Balance, ChainClient, ClientConfig, PreparedTransfer, TransactionStatus, TransferReceipt,
     TransferRequest,
 };
 use crate::error::{self, Result};
 use crate::runtime;
 
 use super::address::{MidnightAddress, NetworkId, TYPE_UNSHIELDED};
-use super::dust;
+use super::dust::{self, DUST};
 use super::indexer::{Indexer, UtxoInfo, NIGHT_TOKEN_TYPE};
 use super::keys::MidnightAccount;
 use super::send;
@@ -243,6 +243,16 @@ impl ChainClient for MidnightClient {
             )));
         }
 
+        // The fee is the ledger's own estimate rather than an endpoint's
+        // answer, but it is built from parameters the endpoint supplied, and
+        // this is the last point before the transfer leaves the machine.
+        chain::check_fee(
+            &self.config.network,
+            request.fee_ceiling(&self.config.network),
+            built.fee,
+            DUST,
+        )?;
+
         let id = hex::encode(built.sealed.transaction_hash().0 .0);
         let mut bytes = Vec::new();
         tagged_serialize(&built.sealed, &mut bytes)
@@ -255,21 +265,14 @@ impl ChainClient for MidnightClient {
             to: request.to.clone(),
             amount: request.amount,
             fee: built.fee,
-            fee_unit: Some(crate::chain::Amount::new(15, "DUST")),
+            fee_unit: Some(DUST),
             fee_rate: None,
             nonce: None,
             gas_limit: None,
-            prompt: format!(
-                "Send {} from {sender} to {} on {}{}",
-                units.format_with_symbol(request.amount),
-                request.to,
-                self.config.network.name,
-                if built.proved {
-                    " (fee paid by a proved DUST spend)"
-                } else {
-                    ""
-                }
-            ),
+            network: self.config.network,
+            note: built
+                .proved
+                .then(|| " (fee paid by a proved DUST spend)".to_string()),
             detail: json!({
                 "fee_specks": built.fee.to_string(),
                 "fee_dust": dust::format_dust(built.fee),

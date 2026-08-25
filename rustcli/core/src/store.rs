@@ -1,8 +1,16 @@
 //! The append-only JSONL store described in `SPEC.md`.
 //!
-//! Nothing is ever rewritten: every mutation appends one line, and state is the
-//! fold of every line in order. That makes the files trivially inspectable, safe
-//! against partial writes, and shareable between the Rust and Python front ends.
+//! Every mutation appends one line, and state is the fold of every line in
+//! order. That makes the files trivially inspectable, safe against partial
+//! writes, and shareable between the Rust and Python front ends.
+//!
+//! Removal is the one exception, and it has to be. An account record holds a
+//! plaintext private key and often a mnemonic; a recall entry is nothing but
+//! one. A tombstone stops the replay showing them and leaves the plaintext in
+//! the file for good, so `account remove`, `recent forget` and `recent clear`
+//! rewrite their log instead — see [`Store::compact`], which does it through a
+//! temp file and a rename so a reader never sees a half-written store. The
+//! replay still honours the tombstones an older binary wrote.
 
 use std::collections::BTreeMap;
 use std::fs::OpenOptions;
@@ -286,6 +294,72 @@ impl Store {
         Ok(())
     }
 
+    /// Rewrite one log without the records `drop` selects.
+    ///
+    /// The one operation in this store that is not an append, and it exists
+    /// because a tombstone is not a deletion. `recent forget`, `recent clear`
+    /// and `account remove` used to append a `secret.forget` / `account.delete`
+    /// line and stop there: the replay stopped showing the entry, and the
+    /// plaintext mnemonic or private key stayed in the file for good. Someone
+    /// who imports a phrase to try it and then removes it reasonably believes
+    /// it is gone, and it was one `cat` away.
+    ///
+    /// Written to a sibling temp file with owner-only permissions and renamed
+    /// over the original, so a reader sees either the old log or the new one
+    /// and never a half-written file. Lines this store cannot parse are copied
+    /// through untouched — an unreadable line is not the same as a line that
+    /// may be discarded, and a record from a newer schema belongs to a binary
+    /// that knows more than this one.
+    ///
+    /// What it cannot promise is erasure: the bytes are no longer in the file,
+    /// but a journalling filesystem or an SSD's remapping may still hold the
+    /// block that carried them. The store's stance on plaintext key material
+    /// is unchanged and stated in `SPEC.md`.
+    fn compact<F>(&self, path: &Path, drop: F) -> Result<usize>
+    where
+        F: Fn(&Value) -> bool,
+    {
+        if !path.exists() {
+            return Ok(0);
+        }
+        let text = std::fs::read_to_string(path)?;
+        let mut kept = String::with_capacity(text.len());
+        let mut dropped = 0usize;
+        for line in text.lines() {
+            let discard = serde_json::from_str::<Value>(line.trim())
+                .ok()
+                .filter(Value::is_object)
+                .is_some_and(|value| drop(&value));
+            if discard {
+                dropped += 1;
+                continue;
+            }
+            kept.push_str(line);
+            kept.push('\n');
+        }
+        if dropped == 0 {
+            return Ok(0);
+        }
+
+        let temp = path.with_file_name(format!(
+            ".{}.{}.compact",
+            path.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("store.jsonl"),
+            std::process::id(),
+        ));
+        paths::write_private(&temp, kept.as_bytes())?;
+        // Atomic on POSIX, and `MOVEFILE_REPLACE_EXISTING` on Windows: the
+        // secret is either wholly in the old file or wholly absent from the
+        // new one, and a crash in between leaves the original intact.
+        if let Err(e) = std::fs::rename(&temp, path) {
+            let _ = std::fs::remove_file(&temp);
+            return Err(e.into());
+        }
+        paths::set_private(path, 0o600)?;
+        Ok(dropped)
+    }
+
     /// Read every well-formed JSON object from a log, skipping junk lines.
     ///
     /// Lines from a newer schema are skipped too, so an old binary degrades
@@ -560,16 +634,15 @@ impl Store {
         )
     }
 
+    /// Remove an account, taking its key material out of the file with it.
+    ///
+    /// An `account.delete` tombstone is no longer written: the record it would
+    /// hide is gone. [`Self::accounts`] still honours the tombstones an older
+    /// binary wrote, so an existing store replays unchanged.
     pub fn delete_account(&self, id: &str) -> Result<()> {
-        self.append(
-            &self.accounts_path(),
-            &json!({
-                "schema": SCHEMA,
-                "type": "account.delete",
-                "id": id,
-                "deleted_at": now_rfc3339(),
-            }),
-        )?;
+        self.compact(&self.accounts_path(), |record| {
+            record.get("id").and_then(Value::as_str) == Some(id)
+        })?;
         // Drop a dangling active-account pointer so later reads stay consistent.
         if self.config_get(KEY_ACTIVE_ACCOUNT)?.as_deref() == Some(id) {
             if let Some(next) = self.accounts()?.first() {
@@ -793,25 +866,28 @@ impl Store {
             .ok_or_else(|| error::not_found(format!("no remembered entry matching '{needle}'")))
     }
 
+    /// Forget one remembered secret, taking its plaintext out of the file.
+    ///
+    /// A `secret.forget` tombstone is no longer written: there is nothing left
+    /// for it to hide. The replay in [`Self::recent`] still honours the ones an
+    /// older binary wrote, so an existing store reads exactly as it did.
     pub fn forget_secret(&self, id: &str) -> Result<()> {
-        self.append(
-            &self.recent_path(),
-            &json!({
-                "schema": SCHEMA,
-                "type": "secret.forget",
-                "id": id,
-                "deleted_at": now_rfc3339(),
-            }),
-        )
+        self.compact(&self.recent_path(), |record| {
+            record.get("id").and_then(Value::as_str) == Some(id)
+        })?;
+        Ok(())
     }
 
-    /// Forget everything, one record per entry so the log stays append-only.
+    /// Forget everything, leaving no remembered secret behind in the file.
     pub fn clear_recent(&self) -> Result<usize> {
-        let entries = self.recent()?;
-        for entry in &entries {
-            self.forget_secret(&entry.id)?;
-        }
-        Ok(entries.len())
+        let count = self.recent()?.len();
+        self.compact(&self.recent_path(), |record| {
+            record
+                .get("type")
+                .and_then(Value::as_str)
+                .is_some_and(|kind| kind.starts_with("secret."))
+        })?;
+        Ok(count)
     }
 
     // --------------------------------------------------------------- history
@@ -1365,19 +1441,47 @@ mod tests {
         assert_eq!(store.accounts().unwrap().len(), 1);
     }
 
+    /// Everything but a removal appends, and earlier lines never change.
     #[test]
-    fn files_stay_append_only() {
+    fn files_stay_append_only_short_of_a_removal() {
         let (_dir, store) = store();
         let a = add(&store, Some("a"), "0x1");
         let after_create = std::fs::read_to_string(store.accounts_path()).unwrap();
         store.rename_account(&a.id, "b").unwrap();
-        store.delete_account(&a.id).unwrap();
-        let after_delete = std::fs::read_to_string(store.accounts_path()).unwrap();
+        let after_rename = std::fs::read_to_string(store.accounts_path()).unwrap();
         assert!(
-            after_delete.starts_with(&after_create),
+            after_rename.starts_with(&after_create),
             "earlier lines must never change"
         );
-        assert_eq!(after_delete.lines().count(), 3);
+        assert_eq!(after_rename.lines().count(), 2);
+    }
+
+    /// A removal is the exception, and has to be: an account record holds a
+    /// plaintext private key and often a mnemonic, and a tombstone leaves both
+    /// exactly where they were.
+    #[test]
+    fn removing_an_account_takes_its_key_material_out_of_the_file() {
+        let (_dir, store) = store();
+        let a = store
+            .create_account(
+                Some("a"),
+                "0x1",
+                ChainId::Evm,
+                Source::Mnemonic,
+                "0xthesecretkey",
+                Some("the phrase itself"),
+                None,
+                Some(0),
+            )
+            .unwrap();
+        let b = add(&store, Some("b"), "0x2");
+
+        store.delete_account(&a.id).unwrap();
+        let after = std::fs::read_to_string(store.accounts_path()).unwrap();
+        assert!(!after.contains("0xthesecretkey"), "{after}");
+        assert!(!after.contains("the phrase itself"), "{after}");
+        assert_eq!(after.lines().count(), 1);
+        assert_eq!(store.accounts().unwrap()[0].id, b.id);
     }
 
     #[test]
@@ -1545,16 +1649,54 @@ mod tests {
         assert!(store.recent().unwrap().is_empty());
     }
 
+    /// The whole point of the change: the phrase leaves the file.
+    ///
+    /// A `secret.forget` tombstone stopped the replay showing the entry and
+    /// left the plaintext where it was, so `recent forget` promised something
+    /// the store did not do.
     #[test]
-    fn forgetting_is_append_only() {
+    fn forgetting_takes_the_secret_out_of_the_file() {
+        let (_dir, store) = store();
+        let entry = store
+            .remember_secret("mnemonic", "the phrase itself", "0x1", Some(12))
+            .unwrap();
+        store
+            .remember_secret("mnemonic", "somebody else's", "0x2", Some(12))
+            .unwrap();
+
+        store.forget_secret(&entry.id).unwrap();
+        let after = std::fs::read_to_string(store.recent_path()).unwrap();
+        assert!(!after.contains("the phrase itself"), "{after}");
+        assert!(after.contains("somebody else's"), "{after}");
+    }
+
+    /// Compaction rewrites the file, so what it must *not* do is throw away
+    /// what it cannot read: a corrupt line is not a line to discard, and a
+    /// record from a newer schema belongs to a binary that knows more.
+    #[test]
+    fn compaction_keeps_the_lines_it_does_not_understand() {
+        use std::io::Write;
         let (_dir, store) = store();
         let entry = store
             .remember_secret("mnemonic", "one", "0x1", Some(12))
             .unwrap();
-        let before = std::fs::read_to_string(store.recent_path()).unwrap();
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(store.recent_path())
+            .unwrap();
+        writeln!(file, "{{not json at all").unwrap();
+        writeln!(
+            file,
+            r#"{{"schema":99,"type":"secret.remember","id":"sec_future"}}"#
+        )
+        .unwrap();
+        drop(file);
+
         store.forget_secret(&entry.id).unwrap();
         let after = std::fs::read_to_string(store.recent_path()).unwrap();
-        assert!(after.starts_with(&before));
+        assert!(after.contains("not json at all"), "{after}");
+        assert!(after.contains("sec_future"), "{after}");
+        assert!(!after.contains(&entry.id), "{after}");
     }
 
     #[test]

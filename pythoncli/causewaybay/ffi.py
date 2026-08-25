@@ -67,9 +67,33 @@ def search_paths(root: Path, override: str | None = None) -> list[str]:
     paths.append(str(repo / "rustcli" / "target" / "debug" / name))
     paths.append(str(repo / "rustcli" / "target" / "release" / name))
     paths.append(str(repo / "dist" / name))
-    # Last resort: whatever the system linker can find on its own.
-    paths.append(name)
+    # Last resort: a system install, named absolutely.
+    #
+    # The bare name used to be here instead, and it was a way in. `dlopen` on
+    # macOS and `LoadLibrary` on Windows both search the working directory for
+    # a name with no slash in it, so running `cwbwallet` out of Downloads or a
+    # cloned repo on a machine with no library at any of the paths above would
+    # load whatever `libcausewaybay_ffi.dylib` was sitting there — and hand it
+    # every mnemonic that crosses `cwb_execute`. The ABI check catches nothing:
+    # a planted library exports `cwb_abi_version` returning whatever it likes.
+    for directory in _system_library_dirs():
+        paths.append(str(Path(directory) / name))
     return paths
+
+
+def _system_library_dirs() -> list[str]:
+    """Absolute directories a system-wide install would land in.
+
+    Named in full so that the loader never asks the platform to search on its
+    own behalf; there is no entry here that a working directory can supply.
+    """
+    if sys.platform == "win32":
+        # Windows has no equivalent convention, and its default search order is
+        # exactly the one being avoided. `$CAUSEWAYBAY_LIB` is the way in.
+        return []
+    if sys.platform == "darwin":
+        return ["/usr/local/lib", "/opt/homebrew/lib"]
+    return ["/usr/local/lib", "/usr/lib"]
 
 
 class Library:

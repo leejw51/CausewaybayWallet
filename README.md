@@ -360,6 +360,12 @@ Every file is append-only: state is the fold of every line, so a crash can at
 worst lose the last partial line, and the whole history stays readable with
 `cat`. The directory is `0700`, the files `0600`.
 
+Removal is the exception. `account remove`, `recent forget` and `recent clear`
+rewrite their file without the record, rather than appending a tombstone — an
+account record holds a plaintext private key and a recall entry is nothing but
+a phrase, and a tombstone would leave both exactly where they were. "Forget"
+means the line is gone.
+
 ## Testing
 
 `make test` runs five things:

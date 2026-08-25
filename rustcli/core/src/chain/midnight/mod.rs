@@ -52,6 +52,11 @@ impl Chain for MidnightChain {
         network.units()
     }
 
+    /// A Midnight transfer moves NIGHT and pays its fee in DUST.
+    fn fee_units(&self, _network: &Network) -> Amount {
+        dust::DUST
+    }
+
     fn derivation_path(&self, index: u32) -> String {
         keys::path(index)
     }

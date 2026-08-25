@@ -40,6 +40,11 @@ const CACHE_DIR: &str = "cache";
 /// How often `--wait` asks whether a transfer has landed.
 const CONFIRM_POLL: Duration = Duration::from_millis(1500);
 
+/// Said out loud on every import, because a second plaintext copy of somebody's
+/// phrase should not be a thing they find out about by reading `recent.jsonl`.
+const REMEMBERED_NOTE: &str =
+    "\n\nRemembered for `recent list`; drop that copy with `recent forget`.";
+
 /// A send that has passed every check and is waiting only on a yes.
 ///
 /// Splitting the plan from the execution is what lets the TUI run its own
@@ -56,16 +61,18 @@ pub struct SendPlan {
 
 impl SendPlan {
     /// The question a caller should put to the user.
-    pub fn prompt(&self) -> &str {
-        &self.prepared.prompt
+    ///
+    /// One sentence, built by the chain layer, naming the fee as well as the
+    /// amount — so a front end cannot ask for a yes without showing what the
+    /// yes costs.
+    pub fn prompt(&self) -> String {
+        self.prepared.prompt()
     }
 
     /// How to render this transfer's fee, which is not always the unit the
     /// transfer itself is counted in.
     pub fn fee_units(&self) -> chain::Amount {
-        self.prepared
-            .fee_unit
-            .unwrap_or_else(|| self.network.units())
+        self.prepared.fee_units()
     }
 }
 
@@ -380,7 +387,10 @@ impl App {
                     created.len(),
                     if created.len() == 1 { "" } else { "s" }
                 );
-                Ok(self.render_created(&created, Some(seed.phrase()), false, &heading))
+                let mut output =
+                    self.render_created(&created, Some(seed.phrase()), false, &heading);
+                output.human.push_str(REMEMBERED_NOTE);
+                Ok(output)
             }
 
             AccountCommand::ImportKey { private_key, label } => {
@@ -408,7 +418,7 @@ impl App {
                 Ok(CommandOutput::new(
                     account.public_view(),
                     format!(
-                        "Imported {} ({}) on {}",
+                        "Imported {} ({}) on {}{REMEMBERED_NOTE}",
                         account.label, account.address, account.chain
                     ),
                 ))
@@ -1363,7 +1373,7 @@ impl App {
             // transfer is signed — it simply never leaves the machine.
             return Ok(self.render_dry_run(&plan));
         }
-        self.confirm(plan.prompt())?;
+        self.confirm(&plan.prompt())?;
         self.execute_send(plan, args.wait)
     }
 
@@ -1388,6 +1398,11 @@ impl App {
         }
         if let Some(data) = &args.data {
             request.data = wallet::parse_hex(data)?;
+        }
+        if let Some(ceiling) = &args.max_fee {
+            // In the fee's own unit, which on Midnight is not the transfer's:
+            // a NIGHT transfer pays in DUST.
+            request.max_fee = Some(self.chain().fee_units(&self.network).parse(ceiling)?);
         }
         if !request.data.is_empty() && self.chain != ChainId::Evm {
             return Err(error::usage(format!(
@@ -1950,12 +1965,21 @@ impl App {
                     )
                 })??;
 
+                // The same guard a native send gets: the gas price is the
+                // node's number, and an ERC-20 transfer pays it too.
+                let gas_cost = gas_price * U256::from(gas_limit);
+                let fee = chain::evm::to_u128(gas_cost, "the gas cost")?;
+                let units = self.units();
+                chain::check_fee(&self.network, self.network.max_fee, fee, units)?;
+
                 self.confirm(&format!(
-                    "Transfer {amount} of token {} from {} to {} on {}",
+                    "Transfer {amount} of token {} from {} to {} on {}, paying a \
+                     fee of up to {}",
                     token.to_checksum(None),
                     account.label,
                     recipient.to_checksum(None),
-                    self.network.name
+                    self.network.name,
+                    units.format_with_symbol(fee),
                 ))?;
 
                 let transaction = LegacyTransaction {

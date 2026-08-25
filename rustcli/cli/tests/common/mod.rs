@@ -102,6 +102,24 @@ impl Wallet {
         envelope["data"].clone()
     }
 
+    /// Run a command expected to fail, returning its whole error object.
+    ///
+    /// For the tests that care what the wallet *said*, not only that it
+    /// refused — a confirmation question is a message before it is a code.
+    pub fn json_failure(&self, args: &[&str]) -> Value {
+        let mut all = vec!["--json"];
+        all.extend_from_slice(args);
+        let output = self.cmd(&all).output().unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let envelope: Value = serde_json::from_str(stdout.trim())
+            .unwrap_or_else(|e| panic!("stdout was not one JSON line ({e}): {stdout}"));
+        assert_eq!(
+            envelope["ok"], false,
+            "expected {args:?} to fail, got {envelope}"
+        );
+        envelope["error"].clone()
+    }
+
     /// Run a command expected to fail, returning the error code.
     pub fn json_error(&self, args: &[&str]) -> String {
         let mut all = vec!["--json"];

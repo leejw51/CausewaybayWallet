@@ -12,7 +12,9 @@
 
 use super::address::Address;
 use super::keys::{hash32, CardanoAccount};
+use crate::chain;
 use crate::error::{self, Result};
+use crate::network::Network;
 
 /// CBOR tag 258 — "this array is a set", required by the Conway-era CDDL.
 const TAG_SET: u64 = 258;
@@ -127,10 +129,14 @@ impl TxBody {
     }
 
     /// Inputs minus outputs minus fee. A node rejects anything but zero.
+    ///
+    /// Summed in `i128` rather than `u64`: the input values are the endpoint's
+    /// numbers, and a debug build would panic on a total that overflows before
+    /// anything got the chance to reject it.
     pub fn imbalance(&self) -> i128 {
-        let ins: u64 = self.inputs.iter().map(|i| i.lovelace).sum();
-        let outs: u64 = self.outputs.iter().map(|o| o.lovelace).sum();
-        ins as i128 - outs as i128 - self.fee as i128
+        let ins: i128 = self.inputs.iter().map(|i| i.lovelace as i128).sum();
+        let outs: i128 = self.outputs.iter().map(|o| o.lovelace as i128).sum();
+        ins - outs - self.fee as i128
     }
 }
 
@@ -211,8 +217,15 @@ impl Default for ProtocolParams {
 }
 
 impl ProtocolParams {
+    /// The protocol's fee for a transaction of `tx_size` bytes.
+    ///
+    /// Saturating, because both coefficients come from the endpoint: a Koios
+    /// instance answering `min_fee_a = 10^18` would otherwise overflow here
+    /// rather than being refused by the fee ceiling a few lines on.
     pub fn min_fee(&self, tx_size: usize) -> u64 {
-        self.min_fee_a * tx_size as u64 + self.min_fee_b
+        self.min_fee_a
+            .saturating_mul(tx_size as u64)
+            .saturating_add(self.min_fee_b)
     }
 
     /// The minimum lovelace an output must carry, given its serialized size.
@@ -237,11 +250,30 @@ impl ProtocolParams {
 pub struct TxBuilder {
     pub params: ProtocolParams,
     pub ttl: u64,
+    /// The network and ceiling to hold the computed fee to, once one is set.
+    fee_limit: Option<(Network, u128)>,
 }
 
 impl TxBuilder {
+    /// A builder with no fee ceiling, for the offline CBOR and coin-selection
+    /// work. Every real send goes through [`Self::limit_fee`] as well.
     pub fn new(params: ProtocolParams, ttl: u64) -> Self {
-        TxBuilder { params, ttl }
+        TxBuilder {
+            params,
+            ttl,
+            fee_limit: None,
+        }
+    }
+
+    /// Refuse to sign a transaction whose fee exceeds `ceiling` lovelace.
+    ///
+    /// `min_fee_a` and `min_fee_b` arrive from the endpoint, and the fee they
+    /// imply is spent whether or not the transfer is what the user meant — so
+    /// the ceiling is applied to the number this builder arrives at, before a
+    /// key touches it.
+    pub fn limit_fee(mut self, network: Network, ceiling: u128) -> Self {
+        self.fee_limit = Some((network, ceiling));
+        self
     }
 
     /// Send `amount` to `to`, funding it from `utxos`, change to `change_address`.
@@ -313,6 +345,11 @@ impl TxBuilder {
                     }],
                 };
                 let fee = self.params.min_fee(probe_signed.to_cbor().len());
+                // Before the arithmetic below turns an absurd fee into a plain
+                // "insufficient funds", which would name the wrong culprit.
+                if let Some((network, ceiling)) = self.fee_limit {
+                    chain::check_fee(&network, ceiling, fee as u128, network.units())?;
+                }
 
                 let Some(remainder) = total.checked_sub(amount).and_then(|r| r.checked_sub(fee))
                 else {
@@ -459,6 +496,45 @@ mod tests {
         assert_eq!(signed.body.outputs.len(), 1, "no dust change output");
         assert_eq!(signed.body.imbalance(), 0);
         assert!(signed.body.fee > params.min_fee(signed.to_cbor().len()));
+    }
+
+    /// The protocol parameters come from Koios, and nothing downstream
+    /// questions them: the transaction they imply balances exactly, signs
+    /// cleanly and hands almost the whole balance to a stake pool.
+    #[test]
+    fn a_protocol_fee_the_endpoint_inflated_is_refused_before_signing() {
+        let signer = signer();
+        let change = signer.base_address(CardanoNetwork::Testnet);
+        let to = Address::base(CardanoNetwork::Testnet, [0x33; 28], [0x44; 28]);
+        let hostile = ProtocolParams {
+            min_fee_a: 1_000_000_000,
+            ..ProtocolParams::default()
+        };
+        let err = TxBuilder::new(hostile, 100_000)
+            .limit_fee(crate::network::CARDANO_PREPROD, 5_000_000)
+            .build_transfer(
+                &[utxo(1, 1_000_000_000_000)],
+                &to,
+                5_000_000,
+                &change,
+                &signer,
+            )
+            .unwrap_err();
+
+        assert_eq!(err.code, error::Code::InvalidAmount, "{}", err.message);
+        assert!(err.message.contains("--max-fee"), "{}", err.message);
+    }
+
+    /// Both fee coefficients are the endpoint's numbers, so the formula they
+    /// go through must not be able to panic on them.
+    #[test]
+    fn an_overflowing_fee_formula_saturates_rather_than_panicking() {
+        let hostile = ProtocolParams {
+            min_fee_a: u64::MAX,
+            min_fee_b: u64::MAX,
+            coins_per_utxo_byte: 4_310,
+        };
+        assert_eq!(hostile.min_fee(300), u64::MAX);
     }
 
     #[test]

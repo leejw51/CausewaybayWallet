@@ -169,6 +169,9 @@ pub struct TransferRequest {
     pub gas_limit: Option<u64>,
     /// Extra call data, where the chain has any.
     pub data: Vec<u8>,
+    /// The most the user is willing to pay in fees, in the fee token's base
+    /// units. `None` means the network's own [`Network::max_fee`].
+    pub max_fee: Option<u128>,
 }
 
 impl TransferRequest {
@@ -180,8 +183,40 @@ impl TransferRequest {
             nonce_override: None,
             gas_limit: None,
             data: Vec::new(),
+            max_fee: None,
         }
     }
+
+    /// The ceiling this request should be held to on `network`.
+    pub fn fee_ceiling(&self, network: &Network) -> u128 {
+        self.max_fee.unwrap_or(network.max_fee)
+    }
+}
+
+/// Refuse a fee no honest transfer on this network would charge.
+///
+/// Every chain calls this from `prepare_transfer` *before* it signs, because
+/// the fee is the one number in a transfer that the wallet takes on the
+/// endpoint's word. A Koios instance answering `min_fee_a = 10^9` builds a
+/// transaction that is valid, balanced and signed, and hands almost the whole
+/// balance to a stake pool; an EVM node quoting an absurd `eth_gasPrice` does
+/// the same through the gas cost. Neither is caught by the balance check —
+/// that only asks whether the account *can* pay.
+///
+/// So the wallet keeps its own idea of what a fee may be, and a signature is
+/// never produced for one above it. `--max-fee` moves the line for a caller
+/// who means it.
+pub fn check_fee(network: &Network, ceiling: u128, fee: u128, fee_units: Amount) -> Result<()> {
+    if fee <= ceiling {
+        return Ok(());
+    }
+    Err(error::invalid_amount(format!(
+        "{} wants a fee of {}, above the {} this wallet will sign for on {}.          That is the endpoint's number, not yours — check the endpoint before          raising the ceiling with --max-fee",
+        network.name,
+        fee_units.format_with_symbol(fee),
+        fee_units.format_with_symbol(ceiling),
+        network.name,
+    )))
 }
 
 /// A transfer that has passed every check the chain can make offline *and*
@@ -222,10 +257,39 @@ pub struct PreparedTransfer {
     pub nonce: Option<u64>,
     /// The gas limit signed into the transaction, where the chain has one.
     pub gas_limit: Option<u64>,
-    /// The question to put to the user before [`ChainClient::submit`].
-    pub prompt: String,
+    /// The network this is a transfer on, which the question names.
+    pub network: Network,
+    /// A clause only this chain has to add to the question.
+    pub note: Option<String>,
     /// Chain-specific detail worth showing in a dry run.
     pub detail: Value,
+}
+
+impl PreparedTransfer {
+    /// How this transfer's fee is counted, which is not always how the
+    /// transfer itself is.
+    pub fn fee_units(&self) -> Amount {
+        self.fee_unit.unwrap_or_else(|| self.network.units())
+    }
+
+    /// The question to put to the user before [`ChainClient::submit`].
+    ///
+    /// Built here rather than by each chain, because a chain that writes its
+    /// own sentence is a chain that can leave the fee out of it — and all four
+    /// did. The fee is the number that decides whether a send is reasonable,
+    /// so it belongs in the sentence the user says yes to, on every front end,
+    /// including the ones that never draw a screen.
+    pub fn prompt(&self) -> String {
+        format!(
+            "Send {} from {} to {} on {}, paying a fee of {}{}",
+            self.network.units().format_with_symbol(self.amount),
+            self.from,
+            self.to,
+            self.network.name,
+            self.fee_units().format_with_symbol(self.fee),
+            self.note.as_deref().unwrap_or(""),
+        )
+    }
 }
 
 /// What a chain reports back once a transfer is on its way.
@@ -332,6 +396,15 @@ pub trait Chain: Send + Sync + 'static {
 
     /// Base units per whole token, as a decimal exponent, and the ticker.
     fn units(&self, network: &Network) -> Amount;
+
+    /// The unit this chain's fees are counted in.
+    ///
+    /// The same as [`Self::units`] for three chains out of four. Midnight
+    /// moves NIGHT and pays in DUST, and `--max-fee` has to be read in the
+    /// unit the ceiling is actually applied in.
+    fn fee_units(&self, network: &Network) -> Amount {
+        self.units(network)
+    }
 
     /// The derivation path this chain uses at `index`, for display.
     fn derivation_path(&self, index: u32) -> String;

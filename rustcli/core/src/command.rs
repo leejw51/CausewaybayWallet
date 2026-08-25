@@ -514,6 +514,13 @@ pub struct SendArgs {
     /// Hex call data to attach.
     #[arg(long)]
     pub data: Option<String>,
+    /// Raise the fee this send will accept, in the fee's own unit.
+    ///
+    /// Every network carries a ceiling the wallet will not sign past, because
+    /// the fee is the endpoint's number rather than yours. This moves the line
+    /// for one send; it is not a way of paying more.
+    #[arg(long)]
+    pub max_fee: Option<String>,
     /// Wait for the receipt before returning.
     #[arg(long)]
     pub wait: bool,

@@ -457,11 +457,13 @@ end
 --- Send native CRO/TCRO. Requires `opts.to` and `opts.amount`; needs `yes`.
 ---
 --- Everything else has a sensible default: the gas limit is estimated, the gas
---- price comes from the node, and the nonce is the account's pending one.
+--- price comes from the node, the nonce is the account's pending one, and the
+--- fee is held to the network's ceiling unless `max_fee` raises it.
 function Wallet:send(opts)
   opts = opts or {}
   return self:call(with_flags({ "send" }, opts,
-    { "to", "amount", "gas_limit", "gas_price_gwei", "nonce", "data", "wait", "account" }), opts)
+    { "to", "amount", "gas_limit", "gas_price_gwei", "nonce", "data", "max_fee", "wait", "account" }),
+    opts)
 end
 
 --- Look a transaction up on chain.

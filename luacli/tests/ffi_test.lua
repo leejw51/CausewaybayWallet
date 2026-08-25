@@ -69,6 +69,16 @@ t.suite("ffi / discovery", function()
     t.ok(at["/release/"] < at["/dist/"], "./dist is the least fresh of the three")
   end)
 
+  t.case("never asks the platform to search on its own behalf", function()
+    -- A slash-less name reaches `dlopen`/`LoadLibrary` as "search for this",
+    -- and on macOS and Windows that search includes the working directory. A
+    -- library planted beside an untrusted checkout would then be handed every
+    -- mnemonic the wallet is given.
+    for _, path in ipairs(binding.search_paths("/checkout/luacli/causewaybay")) do
+      t.ok(path:sub(1, 1) == "/", "relative candidate: " .. path)
+    end
+  end)
+
   t.case("an explicit path is reported when it does not exist", function()
     local lib, err = binding.load("/definitely/not/a/library.dylib")
     t.equal(lib, nil)

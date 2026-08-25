@@ -1656,6 +1656,7 @@ fn stage_send(app: &App, state: &mut State) {
         gas_price_gwei: None,
         nonce: None,
         data: None,
+        max_fee: None,
         wait: false,
         dry_run: false,
         account: Some(account.id.clone()),

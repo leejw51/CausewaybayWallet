@@ -191,15 +191,10 @@ impl ChainClient for CardanoClient {
             self.tip_slot(),
         )?;
 
-        let signed = TxBuilder::new(params, tip + TTL_SLACK_SLOTS).build_transfer(
-            &utxos,
-            &destination,
-            lovelace,
-            &source,
-            &account,
-        )?;
+        let signed = TxBuilder::new(params, tip + TTL_SLACK_SLOTS)
+            .limit_fee(self.network, request.fee_ceiling(&self.network))
+            .build_transfer(&utxos, &destination, lovelace, &source, &account)?;
 
-        let units = self.network.units();
         Ok(PreparedTransfer {
             id: hex::encode(signed.tx_id()),
             signed: signed.to_cbor(),
@@ -211,12 +206,8 @@ impl ChainClient for CardanoClient {
             fee_rate: None,
             nonce: None,
             gas_limit: None,
-            prompt: format!(
-                "Send {} from {source_bech32} to {} on {}",
-                units.format_with_symbol(request.amount),
-                request.to,
-                self.network.name
-            ),
+            network: self.network,
+            note: None,
             detail: json!({
                 "fee_lovelace": signed.body.fee,
                 "inputs": signed.body.inputs.len(),
