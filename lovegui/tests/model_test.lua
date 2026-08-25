@@ -1190,6 +1190,21 @@ t.suite("model / ecash", function()
     t.equal(model.wallets[1].address, shown, "the face came back unchanged")
   end)
 
+  --- The address the GUI *offers* has to be the one for the network it is
+  --- pointed at, because a person reads it off the screen and hands it over.
+  t.case("the face follows the network within the chain", function()
+    local model = model_over()
+    model:create("mine")
+    t.ok(model:switch_network("ecash-testnet"))
+    local testnet_face = model.wallets[1].address
+
+    t.ok(model:switch_network("ecash-mainnet"))
+    local mainnet_face = model.wallets[1].address
+    t.ok(mainnet_face:match("^ecash:"), "mainnet face: " .. tostring(mainnet_face))
+    t.ok(testnet_face ~= mainnet_face,
+      "one string served both networks, which is how funds cross the line")
+  end)
+
   t.case("the derived faces are the ones the vectors pin down", function()
     -- Through the same C ABI the GUI uses, against the shared file rather
     -- than a string typed into this test.
