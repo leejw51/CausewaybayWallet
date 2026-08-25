@@ -164,18 +164,18 @@ those are EVM. On chains with no per-account sequence or gas, `nonce` and
 Every network belongs to exactly one chain, so naming a network settles the
 chain too. Each chain's first row is its default.
 
-| key                | chain      | chain id | symbol | decimals | endpoint                                             |
-| ------------------ | ---------- | -------- | ------ | -------- | ---------------------------------------------------- |
-| `cronos-testnet`   | `evm`      | 338      | TCRO   | 18       | `https://evm-t3.cronos.org`                           |
-| `cronos-mainnet`   | `evm`      | 25       | CRO    | 18       | `https://evm.cronos.org`                              |
-| `solana-devnet`    | `solana`   | —        | SOL    | 9        | `https://api.devnet.solana.com`                       |
-| `solana-testnet`   | `solana`   | —        | SOL    | 9        | `https://api.testnet.solana.com`                      |
-| `solana-mainnet`   | `solana`   | —        | SOL    | 9        | `https://api.mainnet-beta.solana.com`                 |
-| `cardano-preprod`  | `cardano`  | —        | tADA   | 6        | `https://preprod.koios.rest/api/v1`                   |
-| `cardano-preview`  | `cardano`  | —        | tADA   | 6        | `https://preview.koios.rest/api/v1`                   |
-| `cardano-mainnet`  | `cardano`  | —        | ADA    | 6        | `https://api.koios.rest/api/v1`                       |
-| `midnight-preview` | `midnight` | —        | NIGHT  | 6        | `https://indexer.preview.midnight.network/api/v4/graphql` |
-| `midnight-devnet`  | `midnight` | —        | NIGHT  | 6        | `https://indexer.devnet.midnight.network/api/v4/graphql`  |
+| key                | chain      | chain id | symbol | decimals | tags                             | endpoint                                             |
+| ------------------ | ---------- | -------- | ------ | -------- | -------------------------------- | ---------------------------------------------------- |
+| `cronos-testnet`   | `evm`      | 338      | TCRO   | 18       | evm testnet smart-contracts erc20 | `https://evm-t3.cronos.org`                           |
+| `cronos-mainnet`   | `evm`      | 25       | CRO    | 18       | evm smart-contracts erc20        | `https://evm.cronos.org`                              |
+| `solana-devnet`    | `solana`   | —        | SOL    | 9        | svm testnet faucet spl           | `https://api.devnet.solana.com`                       |
+| `solana-testnet`   | `solana`   | —        | SOL    | 9        | svm testnet faucet spl           | `https://api.testnet.solana.com`                      |
+| `solana-mainnet`   | `solana`   | —        | SOL    | 9        | svm spl                          | `https://api.mainnet-beta.solana.com`                 |
+| `cardano-preprod`  | `cardano`  | —        | tADA   | 6        | utxo testnet native-assets       | `https://preprod.koios.rest/api/v1`                   |
+| `cardano-preview`  | `cardano`  | —        | tADA   | 6        | utxo testnet native-assets       | `https://preview.koios.rest/api/v1`                   |
+| `cardano-mainnet`  | `cardano`  | —        | ADA    | 6        | utxo native-assets               | `https://api.koios.rest/api/v1`                       |
+| `midnight-preview` | `midnight` | —        | NIGHT  | 6        | privacy testnet shielded zk      | `https://indexer.preview.midnight.network/api/v4/graphql` |
+| `midnight-devnet`  | `midnight` | —        | NIGHT  | 6        | privacy testnet shielded zk      | `https://indexer.devnet.midnight.network/api/v4/graphql`  |
 
 Only EVM networks have a chain id; it is the EIP-155 replay-protection number
 and is omitted rather than faked for the others.
@@ -189,7 +189,37 @@ The default network is `cronos-testnet`. Endpoint resolution order:
 → the built-in default; and for the submission half,
 `CAUSEWAYBAY_SUBMIT_<NETWORK_KEY_UPPER_SNAKE>` → `submit.<network>` → default.
 
-### 2.1 Naming a network
+### 2.1 Tags, and finding a row
+
+A tag says what a row's **name does not**. Search already reads the key, the
+name, the symbol and the chain, so `cronos-mainnet` carries no `cronos` tag and
+no `mainnet` one; it carries `evm`, which appears nowhere else on the row. The
+one deliberate exception is `testnet`, because `devnet`, `preprod` and `preview`
+are test networks whose names never say so and "show me where I can lose
+nothing" has to be one query. There is no matching `mainnet` tag: every mainnet
+row is already called one.
+
+The same matching rule serves the networks and the tokens, in every front end:
+
+* An **empty query matches everything.** Filtering is opted into; a wallet that
+  hid rows until you typed would have lost them rather than tidied them.
+* A query splits on whitespace and commas into terms, and **every term must
+  match** — `usdc cronos` is USDC *and* Cronos. Narrowing by adding words is
+  the one habit every search box has taught.
+* A term matches as a **substring** of any of the row's searchable fields —
+  key, name, symbol, chain, tags, and a token's network. `net` finds
+  `cronos-testnet`; `main` finds every mainnet.
+* Case, and the `-`/`_`/space difference, are ignored, so `Cronos Mainnet`,
+  `cronos-mainnet` and `CRONOS_MAINNET` are one query.
+
+There is no ranking. These are tables of fixed rows where the user is looking
+for one they can already name, and sorting the survivors by a score would only
+move a row someone had learned the position of.
+
+`network list [FILTER…]` applies it; `network list --tags` lists the tags
+themselves, because a tag nobody can discover is a tag nobody uses.
+
+### 2.2 Naming a network
 
 A key is matched in full first. A bare name that only one chain uses resolves to
 that chain's network — `preprod` means `cardano-preprod`. A bare name several
@@ -200,7 +230,7 @@ The two exceptions are `testnet` and `mainnet`, which meant Cronos before the
 wallet had other chains and still do. `--chain solana -n testnet` reaches
 `solana-testnet`, because inside a chain a short name is unambiguous.
 
-### 2.2 Moving to another chain's network
+### 2.3 Moving to another chain's network
 
 `network use` writes both `network` and `network.<chain>`, and moves the wallet
 onto that chain: `active_account` is repointed at the chain's account, so the
@@ -217,6 +247,97 @@ reproduce the wallet: one imported from a bare private key, which has no
 mnemonic, and one made with a BIP-39 passphrase, which the store does not keep.
 Such a wallet simply has no account on the new chain, and a front end must say
 so rather than falling back to the chain it came from.
+
+## 2.4 Tokens
+
+A token is not a thing you hold; a token **on a network** is. USDC on Cronos and
+USDC on Solana share a name, a peg and nothing else — different issuer,
+different decimals, different bytes on the wire, and an address that means
+nothing on the other chain. So the registry row is the pair, and it is named as
+the pair: key `usdc-cronos-mainnet`, name **"USDC Cronos Mainnet"**. Naming a
+row settles the chain, the network, the decimals and the on-chain id at once,
+and there is never a second act of choosing.
+
+| key                    | network           | standard        | dp | on-chain id                                                                        |
+| ---------------------- | ----------------- | --------------- | -- | ---------------------------------------------------------------------------------- |
+| `usdc-cronos-mainnet`  | `cronos-mainnet`  | `erc20`         | 6  | `0xc21223249CA28397B4B6541dfFaEcC539BfF0c59`                                        |
+| `usdt-cronos-mainnet`  | `cronos-mainnet`  | `erc20`         | 6  | `0x66e428c3f67a68878562e79A0234c1F83c208770`                                        |
+| `dai-cronos-mainnet`   | `cronos-mainnet`  | `erc20`         | 18 | `0xF2001B145b43032AAF5Ee2884e456CCd805F677D`                                        |
+| `usdc-solana-mainnet`  | `solana-mainnet`  | `spl-token`     | 6  | `EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v`                                      |
+| `usdt-solana-mainnet`  | `solana-mainnet`  | `spl-token`     | 6  | `Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB`                                      |
+| `usdc-solana-devnet`   | `solana-devnet`   | `spl-token`     | 6  | `4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU`                                      |
+| `usdc-cardano-mainnet` | `cardano-mainnet` | `cardano-asset` | 8  | `25c5de5f…55534443` (Wanchain-bridged)                                              |
+| `usdm-cardano-mainnet` | `cardano-mainnet` | `cardano-asset` | 6  | `c48cbb3d…5553444d`                                                                 |
+| `djed-cardano-mainnet` | `cardano-mainnet` | `cardano-asset` | 6  | `8db269c3…6f555344`                                                                 |
+| `iusd-cardano-mainnet` | `cardano-mainnet` | `cardano-asset` | 6  | `f66d78b4…69555344`                                                                 |
+
+Every id above was read **off the chain it names**, not off a list: the EVM
+contracts answered `symbol()` and `decimals()` on Cronos mainnet, the Solana
+mints answered `getAccountInfo` as SPL mints, and the Cardano assets answered
+Koios with their registered metadata. Note the decimals are not uniform — the
+bridged USDC on Cardano carries **eight** places, not the six it has everywhere
+else, and assuming otherwise misstates a balance by a factor of a hundred.
+
+### What a row does not promise
+
+That the wallet can **move** it. The standard says how a token is held, and the
+chains are not equal:
+
+| standard        | balance | transfer |
+| --------------- | ------- | -------- |
+| `erc20`         | yes     | yes — `transfer(address,uint256)` |
+| `spl-token`     | yes     | yes — `transferChecked` between associated token accounts, creating the recipient's if it is missing |
+| `cardano-asset` | yes     | **no** |
+
+A Cardano native asset is read but not moved: spending the output holding it
+means rebuilding every other asset riding on the same UTxO, and dropping one
+silently is not something a wallet may do. The refusal happens before anything
+is signed and names the reason. Such rows carry a `read-only` tag.
+
+Two guards apply to every transfer, both aimed at the same failure — a registry
+row whose decimals are wrong would scale the amount by a power of ten, silently
+and irreversibly. The decimals are read from the contract or the mint and
+compared against the row, and the transfer is refused if they disagree; on
+Solana they are additionally signed into the instruction, so the cluster
+refuses it too.
+
+### Naming a token
+
+Full key first, then the on-chain id, then a bare symbol — which resolves only
+when **one** row carries it. `dai` is unambiguous; `usdc` is not, and the error
+names the rows rather than picking whichever came first. Naming the network
+settles it: with `-n cronos-mainnet`, `usdc` can only mean one row.
+
+### Commands
+
+    token list [FILTER…]      the rows a search keeps; empty is all of them
+    token list --tags         the tags, so a search box can be filled in
+    token list --here         only tokens on the network in view
+    token info <token>        where it lives, how it is counted, what moves it
+    token balance <token>     on that token's own network, without moving there
+    token send <token> --to <address> --amount <n>
+
+`token balance` and `token send` bind to the token's network for the call and
+leave the stored one alone: asking what USDC is on Solana from a Cronos wallet
+is a question with an answer, not a relocation.
+
+`erc20` is unchanged and still takes a contract address, for a token the
+registry has never heard of.
+
+### Where a command runs
+
+`token balance` and `token send` bind a **client** to the token's network, not
+a second wallet. The distinction matters beyond tidiness: opening another `App`
+means another store, another client stack and a great deal of stack, and doing
+that inside a host thread with a modest one — the LÖVE GUI's worker has 512 KB
+— took the process down. Reading a balance on another network costs a client.
+
+More generally, the C ABI runs every command on a thread of its own with an
+8 MB stack, because a library loaded into someone else's process does not
+choose which thread calls it. Argument parsing alone does not fit in 512 KB:
+clap builds its command tree on the stack, one frame per subcommand, and a
+stack overflow is not a panic — there is nothing to catch and nothing to
+report. See `guarded` in the `ffi` crate.
 
 ## 3. Key derivation
 

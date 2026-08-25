@@ -971,6 +971,112 @@ t.suite("model / networks", function()
   end)
 end)
 
+t.suite("model / the asset in view", function()
+  --- The registry row for one token, as `rows` hands it over.
+  local function row(model, key)
+    for _, entry in ipairs(model:rows()) do
+      if entry.kind == "token" and entry.key == key then return entry end
+    end
+    return nil
+  end
+
+  t.case("a network row means that network's own coin", function()
+    local model = model_over()
+    t.ok(model:switch_network("cronos-mainnet"))
+    local asset = model:asset()
+    t.equal(asset.is_token, false)
+    t.equal(asset.symbol, "CRO")
+    t.equal(model.token, nil)
+  end)
+
+  t.case("picking a token row moves the window to it, network and all",
+    function()
+      -- The whole point: one click settles both halves. Reading a Cronos
+      -- ERC-20 balance while the wallet is pointed at the testnet is not a
+      -- smaller mistake than sending to it.
+      local model = model_over()
+      model:create("only")
+      t.equal(model.info.network, "cronos-testnet")
+
+      t.ok(model:pick_row(row(model, "usdc-cronos-mainnet")))
+      t.equal(model.info.network, "cronos-mainnet", "the network moved too")
+      t.equal(model:asset().is_token, true)
+      t.equal(model:symbol(), "USDC")
+      t.equal(model:asset().key, "usdc-cronos-mainnet")
+    end)
+
+  t.case("the balance and the send both follow the token", function()
+    local model = model_over()
+    model:create("only")
+    t.ok(model:pick_row(row(model, "usdc-cronos-mainnet")))
+
+    -- The command a send would run, without running it. A window showing a
+    -- USDC balance that then sends CRO is the bug this pins.
+    local argv = model:send_argv("0xabc", "25")
+    t.equal(argv[1], "token")
+    t.equal(argv[2], "send")
+    t.equal(argv[3], "usdc-cronos-mainnet")
+
+    -- And back to the coin, where it is the plain command again.
+    t.ok(model:pick_row({ kind = "network", key = "cronos-mainnet" }))
+    t.equal(model:send_argv("0xabc", "25")[1], "send")
+  end)
+
+  t.case("moving network drops the token rather than carrying it across",
+    function()
+      -- A token belongs to one network. Carried across, the window would
+      -- claim to hold Cronos USDC on Solana.
+      local model = model_over()
+      model:create("only")
+      t.ok(model:pick_row(row(model, "usdc-cronos-mainnet")))
+      t.equal(model:symbol(), "USDC")
+
+      t.ok(model:switch_network("solana-devnet"))
+      t.equal(model.token, nil, "the token should not have followed")
+      t.equal(model:asset().is_token, false)
+    end)
+
+  t.case("picking the network already in view drops the token", function()
+    local model = model_over()
+    model:create("only")
+    t.ok(model:pick_row(row(model, "usdc-cronos-mainnet")))
+    -- The row is `cronos-mainnet`, which is where the window already is — so
+    -- there is no network to switch, only the token to let go of. Left as a
+    -- no-op, this row would have been the one way into USDC with no way out.
+    t.ok(model:pick_row({ kind = "network", key = "cronos-mainnet", current = true }))
+    t.equal(model.token, nil)
+    t.equal(model:symbol(), "CRO")
+  end)
+
+  t.case("an asset this wallet cannot move is refused before a node is asked",
+    function()
+      local model = model_over()
+      model:create("only")
+      t.ok(model:pick_row(row(model, "djed-cardano-mainnet")))
+      t.equal(model:asset().transferable, false)
+      t.equal(model:begin_send("addr1abc", "1"), false)
+      t.equal(model.status.code, "usage")
+      t.equal(model.confirm, nil, "nothing may be priced, let alone signed")
+    end)
+
+  t.case("a confirmation keeps the asset it was priced in", function()
+    -- The window must not be able to move underneath an open question: a
+    -- dialog priced in USDC and broadcast in CRO describes a transfer nobody
+    -- made. The plan carries its own argv for exactly that reason.
+    local model = model_over()
+    model:create("only")
+    t.ok(model:pick_row(row(model, "usdc-cronos-mainnet")))
+    model.confirm = {
+      summary = "Send 25 USDC", to = "0xabc", amount = "25",
+      symbol = "USDC",
+      argv = model:send_argv("0xabc", "25"),
+    }
+    local plan = model.confirm
+    t.ok(model:switch_network("solana-devnet"))
+    t.equal(plan.argv[3], "usdc-cronos-mainnet", "the plan moved with the window")
+  end)
+end)
+
 t.suite("model / chains", function()
   t.case("lists the chains the library has, not a list kept here", function()
     local model = model_over()

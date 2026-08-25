@@ -274,9 +274,17 @@ class Wallet:
         """
         return self.call(["chains"])
 
-    def networks(self) -> list[dict[str, Any]]:
-        """Every network, of every chain."""
-        return self.call(["network", "list"])
+    def networks(self, filter: str | None = None) -> list[dict[str, Any]]:
+        """Every network, of every chain — or the ones a search keeps.
+
+        The same search the tokens use: key, name, symbol, chain and tags,
+        every word matching. ``"testnet"`` reaches all six test networks
+        including the three whose names never say so.
+        """
+        argv = ["network", "list"]
+        if filter:
+            argv.append(filter)
+        return self.call(argv)
 
     def current_network(self) -> dict[str, Any]:
         return self.call(["network", "current"])
@@ -337,14 +345,72 @@ class Wallet:
 
     # ---------------------------------------------------------------- tokens
 
-    def token_info(self, token: str, **opts: Any) -> dict[str, Any]:
+    def erc20_info(self, token: str, **opts: Any) -> dict[str, Any]:
+        """A token's name, symbol, decimals and supply, read from its contract."""
         return self.call(_flags(["erc20", "info"], token=token, **opts), **_call_options(opts))
 
-    def token_balance(self, token: str, **opts: Any) -> dict[str, Any]:
+    def erc20_balance(self, token: str, **opts: Any) -> dict[str, Any]:
         return self.call(_flags(["erc20", "balance"], token=token, **opts), **_call_options(opts))
 
-    def token_send(self, *, yes: bool = False, **opts: Any) -> dict[str, Any]:
+    def erc20_send(self, *, yes: bool = False, **opts: Any) -> dict[str, Any]:
         return self.call(_flags(["erc20", "send"], **opts), yes=yes, **_call_options(opts))
+
+    # The names these three had before the registry arrived. `token_*` now
+    # means the flat, named registry below — which is what someone reaching
+    # for the name would expect — but a caller written against the old ones
+    # must not break for a rename, so both names reach the same command.
+    erc20_token_info = erc20_info
+    erc20_token_balance = erc20_balance
+    erc20_token_send = erc20_send
+
+    # ------------------------------------------------------------- the tokens
+    #
+    # One flat row per token per network — `usdc-cronos-mainnet`, said "USDC
+    # Cronos Mainnet". Naming a row settles the chain, the network and the
+    # contract at once, which is the whole reason the table is flat.
+
+    def tokens(self, filter: str | None = None) -> list[dict[str, Any]]:
+        """Every token this wallet knows by name, or the ones a search keeps.
+
+        The filter is matched against each row's key, name, symbol, chain,
+        network and tags, and every word has to match — so ``"usdc cronos"``
+        is one row and ``"stablecoin"`` is all of them. An empty filter is
+        every row, because a wallet that hides tokens until you type has lost
+        them rather than tidied them.
+        """
+        argv = ["token", "list"]
+        if filter:
+            argv.append(filter)
+        return self.call(argv)
+
+    def token_info(self, token: str) -> dict[str, Any]:
+        """One registry row: where it lives, how it is counted, what moves it."""
+        return self.call(["token", "info", token])
+
+    def token_balance(self, token: str, address: str | None = None) -> dict[str, Any]:
+        """A token balance, on that token's own network.
+
+        The network in view is not consulted beyond disambiguating a bare
+        symbol: ``token_balance("usdc-solana-mainnet")`` answers from Solana
+        whatever the wallet is currently pointed at, and moves nothing.
+        """
+        return self.call(_flags(["token", "balance", token], address=address))
+
+    def token_send(
+        self,
+        token: str,
+        *,
+        to: str,
+        amount: str,
+        yes: bool = False,
+        **opts: Any,
+    ) -> dict[str, Any]:
+        """Transfer a token. ``to`` is the holder's ordinary address on that chain."""
+        return self.call(
+            _flags(["token", "send", token], to=to, amount=amount, **opts),
+            yes=yes,
+            **_call_options(opts),
+        )
 
     # ----------------------------------------------------------- offline bits
 
@@ -475,9 +541,13 @@ COMMANDS: dict[str, str | tuple[str, ...] | None] = {
     "history": "history",
     "sign": "sign",
     "verify": "verify",
-    "erc20 info": "token_info",
-    "erc20 balance": "token_balance",
-    "erc20 send": "token_send",
+    "erc20 info": ("erc20_info", "erc20_token_info"),
+    "erc20 balance": ("erc20_balance", "erc20_token_balance"),
+    "erc20 send": ("erc20_send", "erc20_token_send"),
+    "token list": "tokens",
+    "token info": "token_info",
+    "token balance": "token_balance",
+    "token send": "token_send",
     "utils keccak": "keccak",
     "utils checksum": "checksum",
     "utils to-wei": "to_wei",

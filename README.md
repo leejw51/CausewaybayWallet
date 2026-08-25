@@ -324,26 +324,112 @@ accident.
 `cwbwallet network list` prints them grouped by chain; `cwbwallet chains` prints
 what each chain can do. The default is `cronos-testnet`.
 
-| key | chain | chain id | symbol | endpoint |
-| --- | ----- | -------- | ------ | -------- |
-| `cronos-testnet` (default) | evm | 338 | TCRO | `https://evm-t3.cronos.org` |
-| `cronos-mainnet` | evm | 25 | CRO | `https://evm.cronos.org` |
-| `solana-devnet` | solana | — | SOL | `https://api.devnet.solana.com` |
-| `solana-testnet` | solana | — | SOL | `https://api.testnet.solana.com` |
-| `solana-mainnet` | solana | — | SOL | `https://api.mainnet-beta.solana.com` |
-| `cardano-preprod` | cardano | — | tADA | `https://preprod.koios.rest/api/v1` |
-| `cardano-preview` | cardano | — | tADA | `https://preview.koios.rest/api/v1` |
-| `cardano-mainnet` | cardano | — | ADA | `https://api.koios.rest/api/v1` |
-| `midnight-preview` | midnight | — | NIGHT | `https://indexer.preview.midnight.network/api/v4/graphql` |
-| `midnight-devnet` | midnight | — | NIGHT | `https://indexer.devnet.midnight.network/api/v4/graphql` |
+| key | chain | chain id | symbol | tags | endpoint |
+| --- | ----- | -------- | ------ | ---- | -------- |
+| `cronos-testnet` (default) | evm | 338 | TCRO | evm testnet smart-contracts erc20 | `https://evm-t3.cronos.org` |
+| `cronos-mainnet` | evm | 25 | CRO | evm smart-contracts erc20 | `https://evm.cronos.org` |
+| `solana-devnet` | solana | — | SOL | svm testnet faucet spl | `https://api.devnet.solana.com` |
+| `solana-testnet` | solana | — | SOL | svm testnet faucet spl | `https://api.testnet.solana.com` |
+| `solana-mainnet` | solana | — | SOL | svm spl | `https://api.mainnet-beta.solana.com` |
+| `cardano-preprod` | cardano | — | tADA | utxo testnet native-assets | `https://preprod.koios.rest/api/v1` |
+| `cardano-preview` | cardano | — | tADA | utxo testnet native-assets | `https://preview.koios.rest/api/v1` |
+| `cardano-mainnet` | cardano | — | ADA | utxo native-assets | `https://api.koios.rest/api/v1` |
+| `midnight-preview` | midnight | — | NIGHT | privacy testnet shielded zk | `https://indexer.preview.midnight.network/api/v4/graphql` |
+| `midnight-devnet` | midnight | — | NIGHT | privacy testnet shielded zk | `https://indexer.devnet.midnight.network/api/v4/graphql` |
 
 Only EVM networks have a chain id — it is the EIP-155 replay-protection number,
 omitted rather than faked for the rest.
+
+### Finding one
+
+There are twenty rows now — ten networks and ten tokens — and there will be
+more as coins are added, so every list is searchable and the search works the
+same way everywhere:
+
+    cwbwallet network list                # all of them; this is the default
+    cwbwallet network list evm            # the two Cronos rows
+    cwbwallet network list testnet        # all six test networks, however named
+    cwbwallet network list --tags         # what there is to search by
+
+A **tag says what the row's name does not.** Searching already reads the key,
+the name, the symbol and the chain, so `cronos-mainnet` needs no `cronos` tag;
+it needs `evm`, which appears nowhere else on the row. Every word in a query
+has to match, so adding a word narrows: `evm testnet` is one network. Case and
+`-`/`_`/space are ignored. An empty query is everything — the search narrows a
+list that is already in front of you, it never gates it.
+
+In the **terminal UI**, `/` opens the same search over the command pane: type
+`usdc cro`, press Enter, done. In the **LÖVE GUI**, the network screen has a
+search box at the top of its frame that is always focused — arrive and type.
+
+### Picking one, in the GUI
+
+A row on the network screen is a **destination**, not a preview. Picking
+`cronos-mainnet` puts the window on Cronos mainnet in CRO; picking the USDC row
+on it puts the window on Cronos mainnet **in USDC** — and from then on the
+balance shown is the ERC-20 balance, the send screen sends USDC, the amount
+field is labelled `AMOUNT (USDC)`, and the header says `USDC · cronos-mainnet`.
+One click settles both halves, which is the whole reason the token table is
+flat: the row already names the chain, the network and the contract.
+
+Picking a network row afterwards drops back to that network's own coin.
+Switching network at any point drops the token too — a token belongs to one
+network, and carrying it across would leave the window claiming to hold Cronos
+USDC on Solana. An asset the wallet reads but cannot move greys out SEND and
+says why.
 
 Override an endpoint with `cwbwallet network set-rpc testnet <url>` or the
 `CAUSEWAYBAY_RPC_<NETWORK>` environment variable. Midnight reads from an indexer
 and submits to a different service, its node RPC; that half is overridden with
 `CAUSEWAYBAY_SUBMIT_MIDNIGHT_PREVIEW` or the `submit.<network>` config key.
+
+## Tokens
+
+A token is not a thing you hold; a token **on a network** is. USDC on Cronos and
+USDC on Solana share a name, a peg and nothing else — different issuer,
+different decimals, an address that means nothing on the other chain. So a
+registry row is the pair, and it is named as the pair: `usdc-cronos-mainnet`,
+said **"USDC Cronos Mainnet"**. Naming it settles the chain, the network, the
+decimals and the contract at once.
+
+    cwbwallet token list                   # all of them, grouped by network
+    cwbwallet token list usdc              # the four USDC rows
+    cwbwallet token list stablecoin cronos # the three on Cronos mainnet
+    cwbwallet token list --tags            # what there is to search by
+
+    cwbwallet token info usdc-cronos-mainnet
+    cwbwallet token balance usdc-cronos-mainnet
+    cwbwallet token send usdc-cronos-mainnet --to 0x… --amount 25
+
+| token | network | dp | reads | moves |
+| ----- | ------- | -- | ----- | ----- |
+| USDC, USDT, DAI | `cronos-mainnet` | 6, 6, 18 | yes | yes |
+| USDC, USDT | `solana-mainnet` | 6 | yes | yes |
+| USDC | `solana-devnet` | 6 | yes | yes |
+| USDC, USDM, DJED, iUSD | `cardano-mainnet` | 8, 6, 6, 6 | yes | no |
+
+Every contract address, mint and asset id was **read off the chain it names**,
+not copied from a list. The decimals are not uniform and it matters: Cardano's
+bridged USDC carries eight places, not six, and assuming otherwise misstates a
+balance by a factor of a hundred. Before any transfer the wallet re-reads the
+decimals from the contract or the mint and refuses if they disagree with its
+own table — a wrong number there would scale the amount by a power of ten.
+
+Cardano native assets are **read but not moved**. Spending the output holding
+one means rebuilding every other asset riding on the same UTxO, and dropping one
+silently is not something a wallet may do; the refusal says so before anything
+is signed. Those rows are tagged `read-only`.
+
+On Solana, a balance does not live on your address — it lives in an *associated
+token account* derived from your address and the mint, which this wallet finds
+for you. Sending to someone who has never held that token creates their account
+and costs the sender its rent (about 0.002 SOL); that cost is added to the fee
+you are asked to approve rather than hidden, and both instructions ride one
+transaction, so there is no state where the account was made and the tokens did
+not arrive.
+
+`cwbwallet erc20 …` is unchanged and still takes a contract address, for a token
+the registry has never heard of.
 
 ### The fee ceiling
 

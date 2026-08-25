@@ -111,6 +111,13 @@ local game = {
   boot = nil,  -- the MSX-style boot sequence, until it hands over
   login = nil, -- the mnemonic gate, until a session is open
   list_rows = 6,
+  -- The first grid row showing on the NETWORK screen. Whole rows, so a row is
+  -- never half on screen; clamped where the frame is drawn, since only the
+  -- frame knows how many of them fit.
+  net_scroll = 0,
+  -- The row the screen last scrolled to on its own, so it does so once per
+  -- change rather than fighting the wheel every frame.
+  net_revealed = nil,
   -- A confirmed send launches the rocket. See LAUNCH below for why the
   -- animation has a floor and the outcome waits behind it.
   launch = nil,
@@ -666,6 +673,11 @@ function love.wheelmoved(_, y)
     -- Three rows a notch, which is the step that feels like a list rather
     -- than a slingshot.
     game.model:scroll_by(-y * 3, game.list_rows)
+  elseif game.model.screen == "network" then
+    -- One row a notch here: the grid's rows are two wide, so three notches
+    -- would jump six entries and the eye would lose its place. The upper
+    -- bound is the frame's, so it is applied where the frame is drawn.
+    game.net_scroll = math.max(0, (game.net_scroll or 0) - y)
   end
 end
 
@@ -683,7 +695,15 @@ end
 function love.textinput(text)
   if game.boot then return end
   if game.login then return game.login:type_into(text) end
-  if game.model then game.model:type_into(text) end
+  if not game.model then return end
+  -- On the network screen the keyboard has nothing else to do, so it narrows
+  -- the list: arriving and typing `usdc` is the whole interaction, with no
+  -- click into a field first. Everywhere else the form owns it as before.
+  if game.model.screen == "network" and not game.model:asking() then
+    game.net_scroll = 0
+    return game.model:search_for(game.model:search() .. text)
+  end
+  game.model:type_into(text)
 end
 
 function love.keypressed(key)
@@ -749,6 +769,14 @@ function love.keypressed(key)
     elseif game.model and game.model.write then
       sound.play("back")
       game.model:cancel_write()
+    -- A search is a thing you are in the middle of, and Escape is how anyone
+    -- gets out of one. Quitting the wallet instead — from a screen where the
+    -- last thing they did was type — is not a mistake worth allowing.
+    elseif game.model and game.model.screen == "network"
+        and game.model:search() ~= "" then
+      sound.play("back")
+      game.net_scroll = 0
+      game.model:search_for("")
     else
       love.event.quit()
     end
@@ -793,7 +821,12 @@ function love.keypressed(key)
     sound.play("blip", { pitch = 1.1 })
     model:next_field()
   elseif key == "backspace" then
-    model:backspace()
+    if model.screen == "network" then
+      game.net_scroll = 0
+      model:search_for(model:search():sub(1, -2))
+    else
+      model:backspace()
+    end
   elseif key == "return" or key == "kpenter" then
     if model.screen == "send" then
       model:begin_send(model.form.to, model.form.amount)
@@ -801,14 +834,20 @@ function love.keypressed(key)
       model:fetch_balance()
     end
   elseif key == "1" or key == "2" or key == "3" then
-    -- Only when a text field is not the point of the screen.
-    if model.screen ~= "send" then
+    -- Only when a text field is not the point of the screen. The network
+    -- screen's search box is one: `1` there is a character in `usdt1`, not a
+    -- jump to the wallet list, and a digit that did both would type and
+    -- navigate at once.
+    if model.screen ~= "send" and model.screen ~= "network" then
       sound.play("tab")
       model:go(Model.SCREENS[tonumber(key)])
       game.screen_slide:set(1):to(0)
     end
   elseif key == "up" or key == "down" then
-    if model.screen == "wallets" and #model.wallets > 0 then
+    if model.screen == "network" then
+      game.net_scroll = math.max(0, (game.net_scroll or 0) + (key == "down" and 1 or -1))
+      sound.play("blip", { pitch = 1.1 })
+    elseif model.screen == "wallets" and #model.wallets > 0 then
       local step = key == "down" and 1 or -1
       local was = model.selected
       model.selected = math.max(1, math.min(#model.wallets, model.selected + step))
@@ -911,9 +950,30 @@ local function draw_header(model)
   local network = model and model.info and model.info.network or "…"
   local chain = model and model.info and model.info.chain or ""
   local where = L.portrait and network or ("%s · %s"):format(chain, network)
+  -- And which asset, when that is not the network's own coin. The header is
+  -- the one line on every screen, so it is where "you are spending USDC, not
+  -- CRO" has to be legible — a balance and a send form that quietly changed
+  -- denomination with nothing above them saying so is the mistake this line
+  -- exists to prevent.
+  --
+  -- The symbol goes *first*, and the chain word is dropped. This line is
+  -- clipped from the right when it will not fit, and appending the token put
+  -- the one thing worth saying in the first place to be cut: the header read
+  -- `evm · cronos-main`, which is the old line with a character missing rather
+  -- than the new one. The network key still opens with its chain, so nothing
+  -- is lost by dropping the word that repeats it.
+  if model and model.token then
+    where = ("%s · %s"):format(model.token.symbol or model.token.key, network)
+  end
   local spot = L.header.network
-  while theme.width(where, theme.font.small) > spot.max_w and #where > 1 do
-    where = where:sub(1, -2)
+  -- Marked when it had to be cut, rather than silently ending early: chopped
+  -- bare, `cronos-mainnet` becomes `cronos-mai`, which does not look like a
+  -- shortened name so much as a different one.
+  if theme.width(where, theme.font.small) > spot.max_w then
+    while theme.width(where .. "…", theme.font.small) > spot.max_w and #where > 1 do
+      where = where:sub(1, -2)
+    end
+    where = where .. "…"
   end
   if spot.align == "right" then
     theme.text_right(where, spot.x, spot.y, theme.colour.dim, theme.font.small, t)
@@ -1504,8 +1564,12 @@ local function draw_send(model, state, x)
     model:clear_field("to")
   end
 
+  -- The label carries the unit, because an amount box with no denomination on
+  -- it is the one field in this window whose meaning changes silently.
   local amount = { x = form.x, y = form.y + 85, w = 120, h = field_h }
-  widgets.field(game.springs, "amount", amount, model.form.amount, "AMOUNT",
+  local unit = model:symbol()
+  widgets.field(game.springs, "amount", amount, model.form.amount,
+    unit ~= "" and ("AMOUNT (%s)"):format(unit) or "AMOUNT",
     model.focus == "amount", { placeholder = "0.0" })
 
   if state.clicked then
@@ -1521,19 +1585,28 @@ local function draw_send(model, state, x)
   -- rather than at a fixed offset, which is what ran it off the edge when the
   -- network name got longer.
   if model.info then
+    -- Where it is going, and nothing more: the amount field's own label
+    -- carries the unit, and a chip that repeated it grew wide enough to be
+    -- drawn through the amount box beside it. Gold when the asset is a token,
+    -- because the colour is what makes the difference noticeable at a glance
+    -- and it costs no width at all.
+    local asset = model:asset()
     local name = model.info.network or "?"
     local width = theme.width(name, theme.font.small) + 10
     theme.text_right("SENDING ON", form.x + form.w, amount.y - 13,
       theme.colour.faint, theme.font.small)
-    widgets.chip(form.x + form.w - width, amount.y + 3, name, theme.colour.cyan)
+    widgets.chip(form.x + form.w - width, amount.y + 3, name,
+      asset.is_token and theme.colour.gold or theme.colour.cyan)
   end
 
   local send = { x = form.x, y = form.y + form.h - 25, w = form.w, h = 21 }
   if widgets.button(game.springs, "send", send,
       game.launch and "LAUNCHING…" or "SEND >", state,
       { colour = theme.colour.gold,
-        -- Nothing to send *from* is as good a reason to refuse as being busy.
-        disabled = model:busy() or game.launch ~= nil or from == nil }) then
+        -- Nothing to send *from* is as good a reason to refuse as being busy —
+        -- and so is an asset this wallet reads but cannot move.
+        disabled = model:busy() or game.launch ~= nil or from == nil
+          or not model:asset().transferable }) then
     model:begin_send(model.form.to, model.form.amount)
   end
 
@@ -1552,12 +1625,31 @@ local function draw_send(model, state, x)
 end
 
 local function draw_network(model, state, x)
-  local frame = widgets.frame(x + L.net.x, L.net.y, L.net.w, L.net.h, "NETWORK")
 
-  -- Every network on screen at once, with no scrolling: a network you have to
-  -- scroll to find is a network the wallet has hidden from you. How they
-  -- divide the frame is `layout.net_grid`, so the sums can be tested.
-  local networks = model:networks()
+  -- Every network *and* every token, in one flat list, narrowed by the search
+  -- box at the top of the frame.
+  --
+  -- The screen used to fit everything at once, on the principle that a row you
+  -- have to scroll to find is a row the wallet has hidden from you. The
+  -- principle is intact; what changed is what makes it true. There are twenty
+  -- rows now and there will be many more — every stablecoin on every chain —
+  -- and fitting them all would mean rows too small to read or to hit, which
+  -- hides them far more thoroughly than a scrollbar. So: the list still opens
+  -- whole, the search only ever narrows it, and one word brings back anything
+  -- that scrolled away. How the frame divides is `layout.net_grid`, so the
+  -- sums can be tested.
+  local rows = model:rows()
+  local total = model:row_total()
+  local query = model:search()
+
+  -- The border's right-hand end says how much of the list is on screen. It
+  -- goes there because the alternative is a line inside the frame, and a line
+  -- inside the frame is a row that cannot be a row. A filtered list that does
+  -- not say it is filtered is a list that has quietly lost things.
+  local note = query ~= "" and ("%d/%d"):format(#rows, total) or nil
+  local frame = widgets.frame(x + L.net.x, L.net.y, L.net.w, L.net.h, "NETWORK",
+    { note = note })
+
   -- The sentence under the grid is wrapped before the grid is measured, so the
   -- rows know how many lines they have to leave room for. On a phone's width
   -- it is two, and it used to be one line 370 pixels wide printed across a
@@ -1580,27 +1672,99 @@ local function draw_network(model, state, x)
       ceiling, model.info.max_fee_symbol or "", sentence)
   end
   local footer = wrap(sentence, frame.w - 8)
-  local grid = layout.net_grid(frame.w, frame.h, #networks, #footer)
-  for i, network in ipairs(networks) do
-    local column = math.floor((i - 1) / grid.rows)
-    local row = (i - 1) % grid.rows
+  local grid = layout.net_grid(frame.w, frame.h, #rows, #footer)
+
+  -- The search box, on the frame's own top line. Focused whenever this screen
+  -- is up: the keyboard has nothing else to do here, so typing narrows rather
+  -- than requiring a click into a field first. That is the difference between
+  -- a search box people use and one they find later.
+  local searching = model.screen == "network"
+  widgets.field(game.springs, "netsearch", {
+    x = frame.x, y = frame.y, w = frame.w, h = grid.search.h,
+  }, query, nil, searching, {
+    placeholder = "type a tag - usdc, stablecoin, evm, testnet, faucet",
+    colour = #rows == 0 and query ~= "" and theme.colour.red or nil,
+  })
+
+  -- What scrolled off, if anything. `net_scroll` is in whole grid rows so a
+  -- row is never half on screen.
+  local hidden_rows = math.max(0, grid.rows - grid.visible_rows)
+  game.net_scroll = math.max(0, math.min(hidden_rows, game.net_scroll or 0))
+
+  -- Scroll to whatever the window is aimed at, when that changes.
+  --
+  -- Twenty rows do not fit, and the marked one is often not among the first
+  -- eight — pick USDC on Cronos from a search, clear the search, and the
+  -- screen showed no ● anywhere, which reads as "nothing is selected" rather
+  -- than "it is further down". Only on a change, so scrolling away afterwards
+  -- stays where it was put.
+  local marked = model.token and model.token.key
+    or (model.info and model.info.network)
+  if marked ~= game.net_revealed then
+    game.net_revealed = marked
+    for i, entry in ipairs(rows) do
+      local is_token = entry.kind == "token"
+      if is_token == (model.token ~= nil) and entry.key == marked then
+        local at = game.net_scroll * grid.columns
+        if i <= at or i > at + grid.visible then
+          -- The least scrolling that brings it on screen, in whole grid rows.
+          game.net_scroll = math.max(0, math.min(hidden_rows,
+            math.ceil((i - grid.visible) / grid.columns)))
+        end
+        break
+      end
+    end
+  end
+  local first = game.net_scroll * grid.columns
+
+  -- A chevron at the right-hand end of the search row, pointing at whichever
+  -- way there is more. Two characters rather than a scrollbar: the frame has
+  -- no width to spare, and what a reader needs to know is only that the list
+  -- continues and which way.
+  if hidden_rows > 0 then
+    local arrows = ""
+    if game.net_scroll > 0 then arrows = arrows .. "^" end
+    if game.net_scroll < hidden_rows then arrows = arrows .. "v" end
+    theme.text_right(arrows, frame.x + frame.w - 5,
+      frame.y + math.floor((grid.search.h - 8) / 2), theme.colour.cyan,
+      theme.font.small)
+  end
+
+  for i = first + 1, math.min(#rows, first + grid.visible) do
+    local place = i - first - 1
+    local column = math.floor(place / grid.visible_rows)
+    local row = place % grid.visible_rows
+    local network = rows[i]
     local box = {
       x = frame.x + column * (grid.column_w + grid.column_gap),
-      y = frame.y + row * (grid.row_h + grid.gap),
+      y = frame.y + grid.rows_y + row * (grid.row_h + grid.gap),
       w = grid.column_w,
       h = grid.row_h,
     }
-    local current = model.info and model.info.network == network.key
+    -- Exactly one row wears the mark, and it is the one the window is aimed
+    -- at: the token if a token is selected, the network otherwise. Two marked
+    -- rows would be the screen saying it was in two places.
+    local current
+    if network.kind == "token" then
+      current = model.token ~= nil and model.token.key == network.key
+    else
+      current = model.token == nil
+        and model.info and model.info.network == network.key
+    end
     local clicked, hovered, row_x, slide = widgets.row(game.springs, "net" .. i, box, state,
       current)
-    if clicked and not current then model:switch_network(network.key) end
+    if clicked then model:pick_row(network) end
 
     theme.rect(theme.colour.void, row_x, box.y, box.w, box.h, current and 0.5 or 0.35)
     theme.outline(current and theme.colour.green or theme.colour.raised,
       row_x, box.y, box.w, box.h, current and 0.8 or 0.4)
 
     local tint = theme.chain_colour(network.chain)
-    sprite.draw_glowing("globe", row_x + 18, box.y + box.h / 2, 22, {
+    -- A globe for a place you can go, a coin for a thing you can hold. The two
+    -- kinds of row do different things when clicked — one moves the wallet,
+    -- one reads a balance — so they must not look like one kind of row.
+    sprite.draw_glowing(network.kind == "token" and "coin" or "globe",
+      row_x + 18, box.y + box.h / 2, math.min(22, box.h - 2), {
       angle = game.time * (current and 0.5 or 0.15),
       glow = current and 0.6 or 0.15,
       glow_colour = current and theme.colour.green or tint,
@@ -1617,15 +1781,25 @@ local function draw_network(model, state, x)
     -- network the badge *is* the right-hand end: which network you are on is
     -- what that row is being asked, and a 224-pixel row cannot hold a name, a
     -- ticker and a badge at a size anybody can read.
+    -- One thing at the right-hand end, never two: a row this narrow cannot
+    -- hold a name, a ticker and a badge at a size anybody can read.
+    --
+    -- Which one gives depends on the kind of row. For a network the ticker is
+    -- derivable from the name and the badge is the answer to the question the
+    -- row is being asked, so the badge wins. For a token the ticker *is* the
+    -- identity — three rows on this screen say `cronos-mainnet`, and only the
+    -- symbol tells them apart — so it stays, and being current is said by the
+    -- green it is drawn in and the frame around it.
     local tail = row_x + box.w - 8
-    if current then
+    if current and network.kind ~= "token" then
       local chip_w = theme.width("NOW", theme.font.small) + 10
       tail = tail - chip_w
       widgets.chip(tail, box.y + math.floor((box.h - 14) / 2), "NOW",
         theme.colour.green)
     else
       theme.text_right(network.symbol, tail,
-        box.y + math.floor(box.h / 2) - 4, tint, theme.font.small)
+        box.y + math.floor(box.h / 2) - 4,
+        current and theme.colour.green or tint, theme.font.small)
       tail = tail - theme.width(network.symbol, theme.font.small)
     end
 
@@ -1634,11 +1808,25 @@ local function draw_network(model, state, x)
     -- and "Cronos EVM Testnet" runs off the end. Clipped to where the tail
     -- starts, so a key longer than any of today's is cut off rather than
     -- printed through whatever is over there.
+    -- A token row prints the network it is on, not its whole key: the ticker
+    -- at the right-hand end already says USDC, and `usdc-cronos-mainnet`
+    -- alongside it both repeats the symbol and runs out of row — it was
+    -- clipped to `usdc-cronos-mainne`, which names no network at all. Read
+    -- across, the row still says the flat name it has: USDC · cronos-mainnet.
+    local said = network.kind == "token" and network.network or network.key
     local name = { x = row_x + 34, y = box.y, w = tail - 6 - (row_x + 34), h = box.h }
     theme.clip(name, function()
-      theme.text(network.key, name.x, box.y + math.floor(box.h / 2) - 5, ink,
+      theme.text(said, name.x, box.y + math.floor(box.h / 2) - 5, ink,
         theme.font.body)
     end)
+  end
+
+  -- A miss says so, rather than leaving an empty frame to be read as a bug.
+  -- Where the rows would have been, so the eye finds it without being led.
+  if #rows == 0 then
+    theme.text_centred("nothing matches - backspace to bring it all back",
+      frame.x + frame.w / 2, frame.y + grid.rows_y + 12, theme.colour.faint,
+      theme.font.small)
   end
 
   -- The sentence the grid left room for, on the lines it was wrapped into.
@@ -1785,7 +1973,13 @@ local function draw_confirm(model, state)
   -- the amount. Nothing here is a fixed height any more.
   local w = math.min(theme.WIDTH - 24, 412)
   local inner = w - 24
+  -- With its denomination, always. A bare "25" in a dialog whose window may
+  -- be aimed at USDC or at CRO is the one number here that could be read as
+  -- either, and this dialog is somebody's money.
   local amount = tostring(plan and plan.amount or "?")
+  if plan and plan.symbol and plan.symbol ~= "" then
+    amount = amount .. " " .. plan.symbol
+  end
   local from = wrap(plan and plan.from or "?", inner)
   local to = wrap(plan and plan.to or "?", inner)
   local words = wrap(plan and plan.summary or "", inner)
@@ -2165,15 +2359,21 @@ local function advance_replay(dt)
       -- the dialog was the one screen no picture could be taken of. The plan
       -- is planted directly; every field in it is what the real one carries.
       if game.model then
+        -- In whatever the window is aimed at, so a shot of this dialog with a
+        -- token selected shows the token — the same as the real one would.
+        local asset = game.model:asset()
+        local unit = asset.symbol or "TCRO"
         game.model.confirm = {
-          summary = "Send " .. tostring(game.model.form.amount) .. " TCRO from "
-            .. tostring(game.model:active_label())
+          summary = "Send " .. tostring(game.model.form.amount) .. " " .. unit
+            .. " from " .. tostring(game.model:active_label())
             .. " to " .. tostring(game.model.form.to)
-            .. " on Cronos EVM Testnet, fee about 0.000021 TCRO",
+            .. " on " .. tostring(asset.network) .. ", fee about 0.000021 TCRO",
           from = game.model.active,
           from_label = game.model:active_label(),
           to = game.model.form.to,
           amount = game.model.form.amount,
+          symbol = unit,
+          argv = game.model:send_argv(game.model.form.to, game.model.form.amount),
         }
       end
     elseif step:match("^click:") then
@@ -2188,6 +2388,19 @@ local function advance_replay(dt)
       if cx then
         game.pointer = { x = tonumber(cx), y = tonumber(cy) }
         game.clicked = true
+      end
+    elseif step:match("^token:") then
+      -- Aim the window at one registry row, the way clicking it does. By key
+      -- rather than by canvas position, so a shot does not silently start
+      -- photographing a different row when the grid's arithmetic changes.
+      local key = step:match("^token:(.+)$")
+      if game.model then
+        for _, entry in ipairs(game.model:rows()) do
+          if entry.key == key then
+            game.model:pick_row(entry)
+            break
+          end
+        end
       end
     elseif step == "save" or step == "keys" then
       -- The two dialogs that stand in front of a file being written. They open

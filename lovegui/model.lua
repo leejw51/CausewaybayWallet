@@ -65,7 +65,11 @@ function Model.new(wallet, jobs)
     status = nil,
     pending = {},
     next_id = 0,
-    form = { to = "", amount = "" },
+    form = { to = "", amount = "", search = "" },
+    -- The asset the whole window is working in, or nil for the network's own
+    -- token. Picking a token row on the NETWORK screen sets it; picking a
+    -- network row clears it. See `Model:asset`.
+    token = nil,
     confirm = nil,
     -- A file the window is about to write, waiting to be approved. See
     -- `ask_save` below for why writing one is a question and not a button.
@@ -865,6 +869,13 @@ function Model:switch_network(key)
   local ok, err = self.wallet:use_network(key)
   if not ok then return self:fail(err) end
   self.balance = nil
+  -- A token belongs to one network. Carrying it across would leave the window
+  -- claiming to hold Cronos USDC on Solana — so moving network means the
+  -- network's own coin until something says otherwise. `pick_row` sets the
+  -- token again, after.
+  self.token = nil
+  -- The rows carry a `current` mark, so they are stale the moment this lands.
+  self._rows = nil
   self:refresh()
   self:say("Now on " .. key)
   self:emit("network")
@@ -873,6 +884,159 @@ end
 
 function Model:networks()
   return self.wallet:networks() or {}
+end
+
+--- What the search box holds, as a string, whatever the form is up to.
+function Model:search()
+  return self.form.search or ""
+end
+
+--- Type into the search box and drop the cached rows.
+---
+--- Every screen but this one owns the keyboard through `form`/`focus`; the
+--- network screen borrows the same machinery so that typing, backspacing and
+--- pasting behave identically there without a second implementation.
+function Model:search_for(text)
+  self.form.search = text or ""
+  self._rows = nil
+  self._rows_for = nil
+  return true
+end
+
+--- The rows the NETWORK screen draws: every network, then every token, both
+--- narrowed by the search box.
+---
+--- Networks first because a network is a place you go and a token is a thing
+--- you read, and the screen should not offer the two as the same kind of move.
+--- Both are in one list because the user has one question — "where is my
+--- USDC?" — and answering it should not require knowing whether the answer is
+--- a network or a token.
+---
+--- The filtering is the library's, not this file's. `network list <filter>`
+--- and `token list <filter>` apply the one matching rule the CLI and the
+--- terminal UI use, so a tag that finds a row in one finds it in all three.
+--- The result is cached against the query that produced it, because this is
+--- called once per frame and the answer only changes when someone types.
+function Model:rows()
+  local query = self:search()
+  local network = self.info and self.info.network or ""
+  local key = query .. "\0" .. network
+  if self._rows and self._rows_for == key then return self._rows end
+
+  local rows = {}
+  for _, entry in ipairs(self.wallet:networks(query) or {}) do
+    entry.kind = "network"
+    rows[#rows + 1] = entry
+  end
+  for _, entry in ipairs(self.wallet:tokens(query) or {}) do
+    entry.kind = "token"
+    rows[#rows + 1] = entry
+  end
+  self._rows = rows
+  self._rows_for = key
+  return rows
+end
+
+--- How many rows there are in total, so the screen can say "7 of 24".
+---
+--- Counted unfiltered, and cached separately: a count that moved with the
+--- filter would say "7 of 7" and tell nobody anything.
+function Model:row_total()
+  if not self._row_total then
+    self._row_total = #(self.wallet:networks() or {}) + #(self.wallet:tokens() or {})
+  end
+  return self._row_total
+end
+
+--- Act on a row of the NETWORK screen: this is where the window is aimed.
+---
+--- A row is a *destination*, not a preview. Picking `cronos-mainnet` puts the
+--- window on Cronos mainnet in CRO; picking the USDC row on it puts the window
+--- on Cronos mainnet in USDC — and from then on the balance shown is the
+--- ERC-20 balance, the send screen sends USDC, and the header says so. One
+--- click settles both halves, which is the whole reason the token table is
+--- flat: the row already names the chain, the network and the contract.
+---
+--- A network row clears the token, because the network's own coin is what
+--- "cronos-mainnet" means with nothing further said.
+function Model:pick_row(row)
+  if not row then return false end
+  if row.kind == "network" then
+    if row.current and not self.token then return false end
+    -- `switch_network` clears the token itself; when the row is the network
+    -- already in view there is nothing to switch, only the token to drop.
+    if row.current then
+      self:select_token(nil)
+      return true
+    end
+    return self:switch_network(row.key)
+  end
+
+  -- A token row moves the window to that token's network first, so the two
+  -- can never disagree: an ERC-20 balance read against the wrong chain is not
+  -- a smaller mistake than a transfer to it.
+  if self.info and self.info.network ~= row.network then
+    if not self:switch_network(row.network) then return false end
+  end
+  self:select_token(row)
+  return true
+end
+
+--- Aim the window at one token, or at the network's own coin with nil.
+function Model:select_token(row)
+  self.token = row
+  self.balance = nil -- it is a different number now
+  self._rows = nil   -- and a different row is marked
+  self:emit("network")
+  if row then
+    -- And why SEND is greyed out, where it is. A disabled button with no
+    -- reason beside it is a dead end: the user is left to guess whether the
+    -- wallet is busy, the form is wrong, or the asset simply cannot be moved.
+    if row.transferable == false then
+      self:say(("%s on %s — read-only here, this wallet reads it but does not move it")
+        :format(row.symbol or row.key, row.network))
+    else
+      self:say(("Now in %s on %s"):format(row.symbol or row.key, row.network))
+    end
+  end
+  self:fetch_balance()
+  return true
+end
+
+--- What the window is working in: a registry token, or the network's own coin.
+---
+--- One place answers it, because four screens ask — the header, the wallet
+--- list's balance, the send form's unit, and the confirmation. A screen that
+--- worked it out for itself is a screen that can disagree with the one beside
+--- it about what is being spent.
+function Model:asset()
+  local token = self.token
+  if token then
+    return {
+      key = token.key,
+      symbol = token.symbol,
+      name = token.name,
+      network = token.network,
+      is_token = true,
+      -- Cardano native assets are read but not moved; the send screen has to
+      -- know before it offers a button.
+      transferable = token.transferable ~= false,
+    }
+  end
+  local info = self.info or {}
+  return {
+    key = nil,
+    symbol = info.symbol,
+    name = info.network,
+    network = info.network,
+    is_token = false,
+    transferable = true,
+  }
+end
+
+--- The unit an amount on this window is counted in.
+function Model:symbol()
+  return self:asset().symbol or ""
 end
 
 --- The chains this build supports, each with its own networks.
@@ -981,12 +1145,17 @@ function Model:fetch_balance()
   if #self.wallets == 0 then
     return self:fail({ code = "no_active_account", message = "create a wallet first" })
   end
-  self:say("Asking the node…", "busy")
-  self:submit({ argv = { "balance" } }, function(envelope)
+  -- Whichever asset the window is aimed at. `token balance` answers in the
+  -- same shape as `balance` — a `balance` and a `symbol` — so nothing
+  -- downstream has to know which of the two it is reading.
+  local asset = self:asset()
+  local argv = asset.is_token and { "token", "balance", asset.key } or { "balance" }
+  self:say(("Asking the node for %s…"):format(asset.symbol or "the balance"), "busy")
+  self:submit({ argv = argv }, function(envelope)
     local data, err = unwrap(envelope)
     if not data then return self:fail(err) end
     self.balance = data
-    self:say(data.balance .. " " .. data.symbol)
+    self:say((data.balance or "?") .. " " .. (data.symbol or ""))
     self:emit("balance")
   end)
   return true
@@ -1001,6 +1170,20 @@ local CONFIRM_SUFFIX = " — re-run with --yes to confirm"
 function Model.plan_summary(message)
   if not message then return nil end
   return (message:gsub(CONFIRM_SUFFIX:gsub("%p", "%%%0") .. "$", ""))
+end
+
+--- The command that moves this window's asset, ready for `submit`.
+---
+--- Built once and used by both halves of a send — the pricing round trip and
+--- the broadcast that follows it — because the two must not be able to differ.
+--- A confirmation priced in USDC and broadcast in CRO would be a dialog that
+--- described a transfer nobody made.
+function Model:send_argv(to, amount)
+  local asset = self:asset()
+  if asset.is_token then
+    return { "token", "send", asset.key, "--to", to, "--amount", amount }
+  end
+  return { "send", "--to", to, "--amount", amount }
 end
 
 function Model:begin_send(to, amount)
@@ -1028,9 +1211,19 @@ function Model:begin_send(to, amount)
       message = "sending to yourself would only pay the gas",
     })
   end
+  -- An asset this wallet reads but cannot move is refused here, with the
+  -- reason, rather than after a round trip that was never going to succeed.
+  local asset = self:asset()
+  if not asset.transferable then
+    return self:fail({
+      code = "usage",
+      message = ("%s is read-only here — this wallet reads it but does not move it")
+        :format(asset.symbol or asset.key),
+    })
+  end
   self:say("Pricing the transaction…", "busy")
   self:submit({
-    argv = { "send", "--to", to, "--amount", amount },
+    argv = self:send_argv(to, amount),
     yes = false,
   }, function(envelope)
     if envelope and envelope.ok then
@@ -1053,6 +1246,11 @@ function Model:begin_send(to, amount)
       from_label = self:active_label(),
       to = to,
       amount = amount,
+      -- Captured with the plan rather than read again when the dialog draws,
+      -- for the same reason `from` is: it is what this transfer was priced in,
+      -- and the window must not be able to move underneath an open question.
+      symbol = asset.symbol,
+      argv = self:send_argv(to, amount),
     }
     self.status = nil
     self:emit("confirm")
@@ -1085,7 +1283,9 @@ function Model:confirm_send()
   self.confirm = nil
   self:say("Signing and broadcasting…", "busy")
   self:submit({
-    argv = { "send", "--to", plan.to, "--amount", plan.amount },
+    -- The very command that was priced and agreed to, not one rebuilt from a
+    -- window that may have moved since.
+    argv = plan.argv or self:send_argv(plan.to, plan.amount),
     yes = true,
   }, function(envelope)
     local data, err = unwrap(envelope)
