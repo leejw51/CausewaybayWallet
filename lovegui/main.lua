@@ -909,10 +909,27 @@ local function draw_mode_button(box, state)
   end
 end
 
---- Where that button goes on a screen that has no header to hang it in.
---- A function, because the width it hangs from changes with the orientation.
+--- The orientation button: TALL when wide, WIDE when tall.
+---
+--- Labelled like FULL/WIN — the button names what pressing it gives you, not
+--- what you already have. On the same three screens as the mode button, and
+--- for the same reason: a game that can stand on its side needs the way back
+--- visible from the first frame, not only from behind the mnemonic prompt.
+local function draw_layout_button(box, state)
+  if widgets.button(game.springs, "layout", box, L.portrait and "WIDE" or "TALL",
+      state, { colour = theme.colour.cyan, font = theme.font.small }) then
+    set_orientation(not L.portrait)
+  end
+end
+
+--- Where those buttons go on a screen that has no header to hang them in.
+--- Functions, because the width they hang from changes with the orientation.
 local function mode_box()
   return { x = theme.WIDTH - 50, y = 4, w = 44, h = 15 }
+end
+
+local function layout_box()
+  return { x = theme.WIDTH - 98, y = 4, w = 44, h = 15 }
 end
 
 --- The header's two buttons: the window mode, and the way out.
@@ -921,13 +938,7 @@ local function draw_header_buttons(model, state)
   -- letter is typed into a field somewhere, so `M` has to be ignored on the
   -- screens that take text — and a control that stops working on some screens
   -- is not a control anyone trusts. This one is always here.
-  -- TALL/WIDE turns the whole game on its side. Labelled like FULL/WIN: the
-  -- button names what pressing it gives you, not what you already have.
-  local turn = L.header.buttons.layout
-  if widgets.button(game.springs, "layout", turn, L.portrait and "WIDE" or "TALL",
-      state, { colour = theme.colour.cyan, font = theme.font.small }) then
-    set_orientation(not L.portrait)
-  end
+  draw_layout_button(L.header.buttons.layout, state)
 
   local sfx = L.header.buttons.sfx
   if widgets.button(game.springs, "sfx", sfx, sound.enabled and "SFX" or "MUTE",
@@ -1692,7 +1703,10 @@ function love.draw()
       -- The way back out of a fullscreen window, from the very first screen.
       -- Not during the black hold or the power-on flash, which are a machine
       -- coming up and not a screen with controls on it.
-      if game.boot:lit() then draw_mode_button(mode_box(), mouse_state()) end
+      if game.boot:lit() then
+        draw_mode_button(mode_box(), mouse_state())
+        draw_layout_button(layout_box(), mouse_state())
+      end
     end)
     game.clicked = false
     return
@@ -1708,6 +1722,7 @@ function love.draw()
       game.stars:draw(game.time)
       game.login:draw(game.model, mouse_state(), game.springs)
       draw_mode_button(mode_box(), mouse_state())
+      draw_layout_button(layout_box(), mouse_state())
       game.fx:draw(sprite.images)
       theme.scanlines(0.10)
       theme.vignette(0.4)
