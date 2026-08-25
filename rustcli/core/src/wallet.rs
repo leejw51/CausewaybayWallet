@@ -3,13 +3,18 @@
 use alloy_primitives::{keccak256, Address, B256};
 use k256::ecdsa::{RecoveryId, Signature as EcdsaSignature, SigningKey, VerifyingKey};
 use k256::SecretKey;
+use zeroize::ZeroizeOnDrop;
 
 use crate::bip32::{ethereum_path, ExtendedPrivateKey};
 use crate::bip39;
 use crate::error::{self, Result};
 
 /// A private key plus everything derivable from it.
-#[derive(Clone)]
+///
+/// Wiped on drop, clones included: a `Keypair` is made and dropped on almost
+/// every command that touches an account, and each one used to leave the
+/// scalar in freed memory.
+#[derive(Clone, ZeroizeOnDrop)]
 pub struct Keypair {
     pub private_key: [u8; 32],
 }
@@ -59,7 +64,7 @@ impl Keypair {
             bip39::mnemonic_to_entropy(phrase)?;
         }
         let seed = bip39::to_seed(phrase, passphrase);
-        let master = ExtendedPrivateKey::from_seed(&seed)?;
+        let master = ExtendedPrivateKey::from_seed(&seed[..])?;
         let child = master.derive_path(&ethereum_path(index))?;
         Keypair::from_bytes(child.key)
     }

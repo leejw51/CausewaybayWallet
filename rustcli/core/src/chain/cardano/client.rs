@@ -225,9 +225,15 @@ impl ChainClient for CardanoClient {
             prepared.signed.clone(),
         )
         .await?;
+        // The locally computed id is authoritative, as it is on EVM: it is the
+        // blake2b-256 of the body that was signed, and Koios cannot change
+        // what that hashes to. Returning its answer instead meant a
+        // misbehaving endpoint could send `--wait` to follow a transaction
+        // that does not exist while the real one confirmed unwatched.
+        let returned = reply.trim().trim_matches('"').to_string();
         Ok(TransferReceipt {
-            id: reply.trim().trim_matches('"').to_string(),
-            secondary_id: None,
+            id: prepared.id.clone(),
+            secondary_id: (returned != prepared.id && !returned.is_empty()).then_some(returned),
         })
     }
 

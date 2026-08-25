@@ -43,7 +43,7 @@ impl Chain for SolanaChain {
     }
 
     fn derive(&self, seed: &Seed, index: u32) -> Result<DerivedAccount> {
-        let account = SolanaAccount::from_seed(&seed.bip39_seed(), index)?;
+        let account = SolanaAccount::from_seed(&seed.bip39_seed()[..], index)?;
         Ok(describe(account))
     }
 

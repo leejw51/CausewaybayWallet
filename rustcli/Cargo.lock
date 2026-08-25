@@ -762,6 +762,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "unicode-normalization",
+ "zeroize",
 ]
 
 [[package]]

@@ -164,7 +164,7 @@ mod tests {
     #[test]
     fn bip32_vector_one() {
         let seed = hex::decode("000102030405060708090a0b0c0d0e0f").unwrap();
-        let master = ExtendedPrivateKey::from_seed(&seed).unwrap();
+        let master = ExtendedPrivateKey::from_seed(&seed[..]).unwrap();
         assert_eq!(
             hex::encode(master.key),
             "e8f32e723decf4051aefac8e2c93c9c5b214313817cdb01a1494b917c8436b35"
@@ -200,7 +200,7 @@ mod tests {
             "fffcf9f6f3f0edeae7e4e1dedbd8d5d2cfccc9c6c3c0bdbab7b4b1aeaba8a5a29f9c999693908d8a8784817e7b7875726f6c696663605d5a5754514e4b484542",
         )
         .unwrap();
-        let master = ExtendedPrivateKey::from_seed(&seed).unwrap();
+        let master = ExtendedPrivateKey::from_seed(&seed[..]).unwrap();
         assert_eq!(
             hex::encode(master.key),
             "4b03d6fc340455b363f51020ad3ecca4f0850280cf436c70c727923f6db46c3e"
@@ -220,7 +220,7 @@ mod tests {
             "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
             "",
         );
-        let master = ExtendedPrivateKey::from_seed(&seed).unwrap();
+        let master = ExtendedPrivateKey::from_seed(&seed[..]).unwrap();
         let a = master.derive_path(&ethereum_path(0)).unwrap();
         let b = master.derive_path(&ethereum_path(0)).unwrap();
         let c = master.derive_path(&ethereum_path(1)).unwrap();

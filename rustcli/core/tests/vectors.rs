@@ -209,8 +209,8 @@ fn bip39_matches_the_official_trezor_vectors() {
             text(vector, "entropy")
         );
         assert_eq!(
-            bip39::mnemonic_to_entropy(phrase).unwrap(),
-            entropy,
+            bip39::mnemonic_to_entropy(phrase).unwrap()[..],
+            entropy[..],
             "phrase should decode back to entropy"
         );
         assert!(bip39::validate(phrase), "official vector must validate");

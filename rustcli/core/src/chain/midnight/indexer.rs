@@ -33,6 +33,15 @@ pub const NIGHT_TOKEN_TYPE: &str =
 /// How long to let a historical replay run before giving up.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(45);
 
+/// The most history events one address's replay may hold in memory.
+///
+/// The replay accumulates every event until it catches up, and the indexer
+/// decides how many that is — so the timeout alone bounds the *time*, not the
+/// memory. An address with a hundred thousand transactions does not exist on
+/// these networks; an endpoint that says it does is answering something other
+/// than the question.
+pub const MAX_REPLAY_EVENTS: usize = 100_000;
+
 /// One unspent output as the indexer reports it, carrying everything a spend
 /// needs: the (intent hash, output index) pair is the UTxO's identity on
 /// chain, and the dust fields decide how its fee can be paid.
@@ -109,7 +118,13 @@ impl Indexer {
     pub async fn balance(&self, address: &str) -> Result<UnshieldedBalance> {
         let mut balance = UnshieldedBalance::default();
         for utxo in self.utxos(address).await? {
-            *balance.by_token.entry(utxo.token_type).or_insert(0) += utxo.value;
+            let running = balance.by_token.entry(utxo.token_type).or_insert(0);
+            // The values are the indexer's; `+=` panics in a debug build on a
+            // total it cannot represent, which is a lying endpoint crashing
+            // the wallet rather than being refused by it.
+            *running = running.checked_add(utxo.value).ok_or_else(|| {
+                error::rpc_error("the indexer reported a balance that does not add up")
+            })?;
         }
         Ok(balance)
     }
@@ -139,6 +154,7 @@ subscription($addr: UnshieldedAddress!) {
         let mut events: Vec<Value> = Vec::new();
         let mut target_id: Option<u64> = None;
         let mut highest_seen: u64 = 0;
+        let mut overflowed = false;
 
         let caught_up = self
             .subscribe(
@@ -158,6 +174,15 @@ subscription($addr: UnshieldedAddress!) {
                         if let Some(id) = item.pointer("/transaction/id").and_then(Value::as_u64) {
                             highest_seen = highest_seen.max(id);
                         }
+                        // Every event is held until the replay is caught up,
+                        // and how many arrive is the indexer's decision. Past
+                        // this the wallet stops rather than growing until the
+                        // process is killed — a partial history is refused
+                        // below either way.
+                        if events.len() >= MAX_REPLAY_EVENTS {
+                            overflowed = true;
+                            return Ok(true);
+                        }
                         events.push(item.clone());
                     }
                     Ok(matches!(target_id, Some(target) if highest_seen >= target))
@@ -165,6 +190,13 @@ subscription($addr: UnshieldedAddress!) {
             )
             .await?;
 
+        if overflowed {
+            return Err(error::rpc_error(format!(
+                "the indexer sent more than {MAX_REPLAY_EVENTS} history events \
+                 for this address without finishing the replay — refusing to \
+                 report a balance built from part of it"
+            )));
+        }
         if !caught_up {
             return Err(error::rpc_error(format!(
                 "the indexer did not finish replaying this address's history \

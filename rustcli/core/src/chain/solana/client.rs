@@ -308,7 +308,7 @@ mod tests {
                 "",
             )
             .unwrap()
-            .bip39_seed(),
+            .bip39_seed()[..],
             0,
         )
         .unwrap();

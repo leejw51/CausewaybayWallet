@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 use alloy_primitives::keccak256;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use zeroize::Zeroize;
 
 use crate::chain::ChainId;
 use crate::error::{self, Result};
@@ -90,6 +91,21 @@ pub struct Account {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub index: Option<u32>,
     pub created_at: String,
+}
+
+/// The two secret fields are wiped when an account is dropped.
+///
+/// An `Account` is cloned freely — into a send plan, into a render, into the
+/// list a front end shows — and every one of those clones used to leave a
+/// private key and often a mnemonic in freed memory when it went out of scope.
+/// What this cannot reach is the plaintext in `accounts.jsonl`, or the copies
+/// serde makes on the way through a JSON envelope; it is the difference
+/// between a secret with a lifetime and one without.
+impl Drop for Account {
+    fn drop(&mut self) {
+        self.private_key.zeroize();
+        self.mnemonic.zeroize();
+    }
 }
 
 /// Redacted on purpose: a `{:?}` of an account must never leak its secrets.
@@ -449,14 +465,14 @@ impl Store {
     /// phrase wins; failing that, the first one in the wallet.
     pub fn current_seed(&self) -> Result<Option<String>> {
         if let Ok(active) = self.active_account() {
-            if let Some(mnemonic) = active.mnemonic {
-                return Ok(Some(mnemonic));
+            if let Some(mnemonic) = &active.mnemonic {
+                return Ok(Some(mnemonic.clone()));
             }
         }
         Ok(self
             .accounts()?
-            .into_iter()
-            .find_map(|account| account.mnemonic))
+            .iter()
+            .find_map(|account| account.mnemonic.clone()))
     }
 
     /// Every account belonging to one chain, in creation order.
@@ -1135,7 +1151,7 @@ mod tests {
             .accounts()
             .unwrap()
             .into_iter()
-            .map(|a| a.label)
+            .map(|a| a.label.clone())
             .collect();
         assert_eq!(labels, ["first", "second", "third"]);
     }
@@ -1419,7 +1435,7 @@ mod tests {
             .accounts()
             .unwrap()
             .into_iter()
-            .map(|a| a.label)
+            .map(|a| a.label.clone())
             .collect();
         assert_eq!(labels, ["good", "also-good"]);
     }

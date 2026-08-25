@@ -342,6 +342,77 @@ fn cardano_builds_signs_and_submits_a_transfer() {
     );
 }
 
+/// The transaction id is blake2b-256 of the body that was signed, and Koios
+/// cannot change what that hashes to. Taking its word for it meant `--wait`
+/// could follow a transaction that does not exist while the real one confirmed
+/// unwatched — the EVM client has always done the opposite, and said why.
+#[test]
+fn cardano_keeps_the_id_it_computed_rather_than_the_endpoints() {
+    let api = koios();
+    api.on("submittx", json!("dd".repeat(32)));
+    let wallet = cardano_wallet(&api);
+
+    let sent = wallet.json(&[
+        "--yes",
+        "--chain",
+        "cardano",
+        "send",
+        "--to",
+        CARDANO_RECIPIENT,
+        "--amount",
+        "2",
+    ]);
+    let hash = sent["hash"].as_str().unwrap();
+    assert_eq!(hash.len(), 64, "a blake2b-256 transaction id");
+    assert_ne!(hash, "dd".repeat(32), "the endpoint's answer is not the id");
+    // The disagreement is not swallowed, it is reported alongside.
+    assert_eq!(sent["secondary_id"], "dd".repeat(32));
+}
+
+/// The headline of the review: the fee comes from `min_fee_a`/`min_fee_b`, and
+/// a Koios instance can answer anything at all.
+#[test]
+fn cardano_refuses_a_fee_its_endpoint_inflated() {
+    let api = koios();
+    api.on(
+        "epoch_params",
+        json!([{"min_fee_a": 1_000_000_000, "min_fee_b": 155_381, "coins_per_utxo_size": 4_310}]),
+    );
+    api.on(
+        "address_utxos",
+        json!([{
+            "tx_hash": "aa".repeat(32),
+            "tx_index": 0,
+            "value": "1000000000000",
+            "asset_list": [],
+            "datum_hash": null,
+            "inline_datum": null,
+            "reference_script": null,
+        }]),
+    );
+    let wallet = cardano_wallet(&api);
+
+    let error = wallet.json_failure(&[
+        "--yes",
+        "--chain",
+        "cardano",
+        "send",
+        "--to",
+        CARDANO_RECIPIENT,
+        "--amount",
+        "5",
+    ]);
+    assert_eq!(error["code"], "invalid_amount");
+    assert!(
+        error["message"].as_str().unwrap().contains("--max-fee"),
+        "{error}"
+    );
+    assert!(
+        api.bodies_for("submittx").is_empty(),
+        "nothing may be signed, let alone submitted"
+    );
+}
+
 #[test]
 fn a_cardano_dry_run_shows_the_coin_selection_without_submitting() {
     let api = koios();

@@ -430,7 +430,7 @@ impl App {
                 secret,
             } => {
                 let accounts = self.store.accounts()?;
-                let active = self.store.active_account().ok().map(|a| a.id);
+                let active = self.store.active_account().ok().map(|a| a.id.clone());
 
                 // `--format` turns this into an export; without it the command
                 // behaves exactly as it always has.
@@ -1585,7 +1585,14 @@ impl App {
             rows.push(("Block", block.to_string()));
         }
         if let Some(secondary) = &secondary_id {
-            rows.push(("Extrinsic", secondary.clone()));
+            // Midnight's second identifier is a real one — Substrate's hash for
+            // the extrinsic, not the ledger's for the transfer. Everywhere else
+            // it means the endpoint disagreed with the id computed here, and
+            // the locally computed one is the one that was signed.
+            rows.push(match record.chain {
+                ChainId::Midnight => ("Extrinsic", secondary.clone()),
+                _ => ("Endpoint reported", secondary.clone()),
+            });
         }
         rows.push(("Explorer", explorer.clone()));
 
@@ -1631,7 +1638,7 @@ impl App {
                 self.chain().check_address(&self.network, raw)?;
                 raw.trim().to_string()
             }
-            None => self.pick_account(None)?.address,
+            None => self.pick_account(None)?.address.clone(),
         };
         let client = self.client()?;
         let id = runtime::block_on(client.faucet(&target, requested))??;
@@ -1792,7 +1799,7 @@ impl App {
                 match account {
                     // These chains verify with key material, so the account's
                     // secret is what goes through, not its address.
-                    Some(account) => Some(account.private_key),
+                    Some(account) => Some(account.private_key.clone()),
                     None if given.is_some() => Some(given.unwrap().to_string()),
                     None => None,
                 }
@@ -1804,7 +1811,7 @@ impl App {
                 .store
                 .active_account_on(self.chain)
                 .ok()
-                .map(|account| account.address),
+                .map(|account| account.address.clone()),
         };
 
         let recovered =

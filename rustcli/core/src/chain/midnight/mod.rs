@@ -62,7 +62,7 @@ impl Chain for MidnightChain {
     }
 
     fn derive(&self, seed: &Seed, index: u32) -> Result<DerivedAccount> {
-        describe(MidnightAccount::from_seed(&seed.bip39_seed(), index)?)
+        describe(MidnightAccount::from_seed(&seed.bip39_seed()[..], index)?)
     }
 
     fn account_from_secret(&self, secret: &str) -> Result<DerivedAccount> {

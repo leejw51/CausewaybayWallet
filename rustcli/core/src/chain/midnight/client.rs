@@ -132,7 +132,9 @@ impl ChainClient for MidnightClient {
             .into_iter()
             .filter(|u| u.token_type == NIGHT_TOKEN_TYPE)
             .collect();
-        let total: u128 = night.iter().map(|u| u.value).sum();
+        // Summed with a checked add rather than `sum()`, which panics in a
+        // debug build on values the indexer chose.
+        let total = sum_values(night.iter().map(|u| u.value))?;
         let units = self.config.network.units();
         if total < request.amount {
             return Err(error::insufficient_funds(format!(
@@ -145,11 +147,12 @@ impl ChainClient for MidnightClient {
         // Never-registered outputs can pay their fee prooflessly; registered
         // ones need a real DUST spend, which costs a state sync and a proving
         // run. Prefer the cheap path whenever it suffices.
-        let proofless_funds: u128 = night
-            .iter()
-            .filter(|u| !u.registered_for_dust)
-            .map(|u| u.value)
-            .sum();
+        let proofless_funds = sum_values(
+            night
+                .iter()
+                .filter(|u| !u.registered_for_dust)
+                .map(|u| u.value),
+        )?;
         let via_dust = proofless_funds < request.amount;
         if !via_dust {
             night.retain(|u| !u.registered_for_dust);
@@ -161,7 +164,9 @@ impl ChainClient for MidnightClient {
         let mut selected = Vec::new();
         let mut selected_value = 0u128;
         for utxo in night {
-            selected_value += utxo.value;
+            selected_value = selected_value
+                .checked_add(utxo.value)
+                .ok_or_else(overflowing_utxos)?;
             selected.push(utxo);
             if selected_value >= request.amount {
                 break;
@@ -345,6 +350,21 @@ query($hash: HexEncoded!) {
 /// How long to wait for the indexer to catch up with a submitted transfer.
 pub const CONFIRMATION_TIMEOUT: Duration = Duration::from_secs(180);
 
+/// Total a run of UTxO values without trusting them to add up.
+///
+/// `Iterator::sum` panics on overflow in a debug build and wraps in release,
+/// and every value here is a number the indexer chose. A total that cannot be
+/// represented is a broken endpoint, and saying so beats either.
+fn sum_values(values: impl Iterator<Item = u128>) -> Result<u128> {
+    values.fold(Ok(0u128), |total, value| {
+        total?.checked_add(value).ok_or_else(overflowing_utxos)
+    })
+}
+
+fn overflowing_utxos() -> crate::error::Error {
+    error::rpc_error("the indexer reported unspent outputs whose values do not add up")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -355,7 +375,7 @@ mod tests {
         "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 
     fn account() -> MidnightAccount {
-        MidnightAccount::from_seed(&Seed::new(PHRASE, "").unwrap().bip39_seed(), 0).unwrap()
+        MidnightAccount::from_seed(&Seed::new(PHRASE, "").unwrap().bip39_seed()[..], 0).unwrap()
     }
 
     fn client(network: crate::network::Network) -> MidnightClient {

@@ -370,15 +370,15 @@ means the line is gone.
 
 `make test` runs five things:
 
-* **Rust** — 375 tests. BIP-39, BIP-32 and BIP-44 are implemented from scratch
+* **Rust** — 680 tests. BIP-39, BIP-32 and BIP-44 are implemented from scratch
   and checked against the official vectors; the CLI is exercised end to end
   against a scripted in-process JSON-RPC node, and the C ABI is called the way
   a C host would call it.
-* **Python** — 168 tests over the binding: the shared vectors driven through
+* **Python** — 174 tests over the binding: the shared vectors driven through
   ctypes and the C ABI, a coverage suite that reads the command list out of the
   library and fails if any command has no Python method, and the CLI end to end
   against a real store.
-* **Lua** — 187 tests. Not the cryptography again, but the path through the
+* **Lua** — 198 tests. Not the cryptography again, but the path through the
   boundary: that a 256-bit integer stays a string rather than becoming a
   double, that an emoji arrives as the bytes that were hashed, that an error
   code is the same word on both sides. Plus the interactive menu, driven by

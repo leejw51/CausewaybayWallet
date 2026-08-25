@@ -185,8 +185,12 @@ pub fn build_proofless(
                 .saturating_mul(params.generation_decay_rate as u128),
         );
         allowance = allowance.saturating_add(accrued.min(cap));
-        accrual_rate =
-            accrual_rate.saturating_add(utxo.value * params.generation_decay_rate as u128);
+        // Saturating like everything around it: `utxo.value` is the indexer's
+        // number, and the plain `*` here was the one that could panic.
+        accrual_rate = accrual_rate.saturating_add(
+            utxo.value
+                .saturating_mul(params.generation_decay_rate as u128),
+        );
     }
 
     let mut rng = OsRng;

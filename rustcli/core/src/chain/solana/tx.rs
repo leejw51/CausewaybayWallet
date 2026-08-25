@@ -307,7 +307,7 @@ mod tests {
         let tx = &vectors["solana"]["transfer_tx"];
 
         let from =
-            SolanaAccount::from_seed(&Seed::new(PHRASE, "").unwrap().bip39_seed(), 0).unwrap();
+            SolanaAccount::from_seed(&Seed::new(PHRASE, "").unwrap().bip39_seed()[..], 0).unwrap();
         assert_eq!(from.address(), tx["from"].as_str().unwrap());
 
         let to = address_to_bytes(tx["to"].as_str().unwrap()).unwrap();
@@ -382,8 +382,8 @@ mod tests {
     #[test]
     fn signing_with_a_key_that_is_not_a_signer_is_refused() {
         let seed = Seed::new(PHRASE, "").unwrap().bip39_seed();
-        let payer = SolanaAccount::from_seed(&seed, 0).unwrap();
-        let stranger = SolanaAccount::from_seed(&seed, 1).unwrap();
+        let payer = SolanaAccount::from_seed(&seed[..], 0).unwrap();
+        let stranger = SolanaAccount::from_seed(&seed[..], 1).unwrap();
 
         let ix = Instruction::transfer(payer.public_key_bytes(), [2u8; 32], 1);
         let message = Message::compile(payer.public_key_bytes(), &[ix], [9u8; 32]).unwrap();
