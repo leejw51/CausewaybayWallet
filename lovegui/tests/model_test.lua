@@ -328,7 +328,8 @@ t.suite("model / the session", function()
     model:create("stranger")
     model:login(model:offer_mnemonic(12))
     t.equal(#model.wallets, 1, "the session sees one")
-    t.equal(#model.all_wallets, 2, "the store still holds both")
+    -- Two wallets, four chains each: the stranger's and the session's.
+    t.equal(#model.all_wallets, 8, "the store still holds both, whole")
   end)
 
   t.case("a phrase sees every wallet it controls", function()
@@ -354,8 +355,10 @@ t.suite("model / the session", function()
 
     local seen = {}
     for _, entry in ipairs(fresh.wallets) do seen[entry.label] = true end
-    t.ok(seen["second"] and seen["third"], "including the ones made last time")
-    t.ok(not seen["stranger"], "and not the one it does not own")
+    -- A named wallet spans four chains, so each face carries the chain's
+    -- name; the list shows the chain in view's.
+    t.ok(seen["second-evm"] and seen["third-evm"], "including the ones made last time")
+    t.ok(not seen["stranger-evm"], "and not the one it does not own")
   end)
 
   t.case("a wallet with a gap in its indices is still found whole", function()
@@ -976,6 +979,25 @@ t.suite("model / chains", function()
 
     -- And back, without having to know which network key belongs to which.
     t.ok(model:switch_chain("cardano"))
+    t.equal(model:chain(), "cardano")
+    t.ok(model.info.network:match("^cardano%-"), model.info.network)
+  end)
+
+  t.case("a network is named by its key, however it was described", function()
+    -- `chains` lists networks by key; the library's handshake hands back whole
+    -- records. The switcher takes either, because it reads one and is given
+    -- the other.
+    t.equal(Model.network_key("solana-devnet"), "solana-devnet")
+    t.equal(Model.network_key({ key = "solana-devnet", name = "Solana Devnet" }),
+      "solana-devnet")
+  end)
+
+  t.case("switching to a chain the wallet holds nothing on still lands", function()
+    -- The path that runs for a new wallet: no account anywhere, so the chain's
+    -- own first network is the answer rather than one the store remembers.
+    local model = model_over()
+    t.equal(#model.wallets, 0)
+    t.ok(model:switch_chain("cardano"), model.status and model.status.message)
     t.equal(model:chain(), "cardano")
     t.ok(model.info.network:match("^cardano%-"), model.info.network)
   end)

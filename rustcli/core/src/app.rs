@@ -555,8 +555,7 @@ impl App {
 
             AccountCommand::Use { selector } => {
                 let account = self.store.find_account(&selector)?;
-                self.store
-                    .config_set(store::KEY_ACTIVE_ACCOUNT, &account.id)?;
+                self.activate(&account)?;
                 Ok(CommandOutput::new(
                     account.public_view(),
                     format!(
@@ -953,10 +952,25 @@ impl App {
     /// The very first account becomes active automatically.
     fn activate_if_first(&self, account: &Account) -> Result<()> {
         if self.store.accounts()?.len() == 1 {
-            self.store
-                .config_set(store::KEY_ACTIVE_ACCOUNT, &account.id)?;
+            self.activate(account)?;
         }
         Ok(())
+    }
+
+    /// Make an account the wallet's position: active, and on its chain.
+    ///
+    /// The two halves have to move together. A wallet's chain is the stored
+    /// network's, so an active account on another chain would leave the wallet
+    /// reading balances for a chain it does not hold — and switching network
+    /// without moving the account was announced and then undone by the next
+    /// command. One call sets both, so neither can be set alone.
+    fn activate(&self, account: &Account) -> Result<()> {
+        self.store
+            .config_set(store::KEY_ACTIVE_ACCOUNT, &account.id)?;
+        self.store
+            .config_set(&store::active_account_key_for(account.chain), &account.id)?;
+        let network = self.store.network_on(account.chain)?;
+        self.store.set_network(&network)
     }
 
     // ================================================================= network
@@ -1052,6 +1066,20 @@ impl App {
                 let target =
                     network::find_for(self.chain, &network).or_else(|_| network::find(&network))?;
                 self.store.set_network(&target)?;
+                // Moving to another chain's network moves the wallet with it.
+                //
+                // Without this the switch was announced and then undone: the
+                // next command resolves its chain from the *active account*,
+                // which was still the one on the chain just left, so
+                // `network use solana-devnet` said "Network is now Solana
+                // Devnet" and then read a Cronos balance. Pointing the active
+                // account at that chain's account is what the terminal UI does
+                // by holding the chain in view; every other front end has to
+                // say it out loud.
+                if let Ok(account) = self.store.active_account_on(target.chain) {
+                    self.store
+                        .config_set(store::KEY_ACTIVE_ACCOUNT, &account.id)?;
+                }
                 Ok(CommandOutput::new(
                     json!({
                         "key": target.key,
@@ -2252,12 +2280,14 @@ fn resolve_chain_and_network(
         (Some(key), None) => network::find(key)?,
         (None, Some(id)) => store.network_on(id)?,
         (None, None) => {
-            // No hint at all: follow the account the wallet is on, and fall
-            // back to the stored overall network for a wallet with none.
-            match store.active_account().ok() {
-                Some(account) => store.network_on(account.chain)?,
-                None => store.network()?,
-            }
+            // No hint at all: the stored network *is* where the wallet is.
+            //
+            // It used to follow the active account instead, which made
+            // `network use` on another chain a statement the next command
+            // ignored — the account was still on the chain just left. Both
+            // moves now write it (see `App::activate`), so one place can be
+            // asked and the answer cannot disagree with itself.
+            store.network()?
         }
     };
     Ok((network.chain, network))

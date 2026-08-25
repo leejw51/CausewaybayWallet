@@ -298,14 +298,14 @@ end
 function Wallet:new_account(opts)
   opts = opts or {}
   return self:call(with_flags({ "account", "new" }, opts,
-    { "label", "new_seed", "words", "index", "show_secret" }))
+    { "label", "new_seed", "words", "index", "every_chain", "show_secret" }), opts)
 end
 
 --- Import a BIP-39 mnemonic. Pass the phrase itself, not `-`.
 function Wallet:import_mnemonic(mnemonic, opts)
   opts = opts or {}
   local argv = { "account", "import-mnemonic", "--mnemonic", mnemonic }
-  return self:call(with_flags(argv, opts, { "index", "label", "passphrase" }))
+  return self:call(with_flags(argv, opts, { "index", "label", "passphrase", "every_chain" }), opts)
 end
 
 --- Import a raw private key.

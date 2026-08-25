@@ -126,6 +126,19 @@ def show_balance(session: Session) -> None:
     session.say(f"{balance['balance']} {balance['symbol']}")
 
 
+def network_key(entry: Any) -> str | None:
+    """The key of a network, however the wallet described it.
+
+    The two places that list networks describe them differently: ``chains``
+    names them by key, and the library's handshake gives whole records. A
+    switcher reading one and handed the other would pass a dict where a key
+    belongs, which is not a mistake worth making twice.
+    """
+    if isinstance(entry, dict):
+        return entry.get("key")
+    return entry
+
+
 def switch_chain(session: Session) -> None:
     """Move to another chain, on whichever of its networks was last used.
 
@@ -153,7 +166,7 @@ def switch_chain(session: Session) -> None:
 
     # The chain is settled by the network, so moving to a chain means moving to
     # one of its networks: the one already selected there, or its first.
-    target = (chosen.get("networks") or [None])[0]
+    target = network_key((chosen.get("networks") or [None])[0])
     for held in info.get("chains") or []:
         if held.get("chain") == chosen["chain"] and held.get("network"):
             target = held["network"]

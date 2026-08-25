@@ -541,6 +541,22 @@ t.suite("interactive / networks", function()
     t.ok(wallet:current_network().key:match("^solana%-"), "should be on a Solana network")
   end)
 
+  t.case("a network is named by its key, however it was described", function()
+    local interactive = require("causewaybay.interactive")
+    t.equal(interactive.network_key("cardano-preprod"), "cardano-preprod")
+    t.equal(interactive.network_key({ key = "cardano-preprod", name = "Cardano Preprod" }),
+      "cardano-preprod")
+  end)
+
+  t.case("switching to a chain with no accounts on it still lands", function()
+    -- A new wallet holds nothing anywhere, so the chain's own first network is
+    -- the answer rather than one the store remembers.
+    local wallet = support.wallet()
+    local _, out = session(wallet, { "8", "3", "q" })
+    t.contains(out, "now on Cardano")
+    t.ok(wallet:current_network().key:match("^cardano%-"), "should be on a Cardano network")
+  end)
+
   t.case("the chain menu says what each chain can do", function()
     local _, out = session(support.wallet(), { "8", "q" })
     t.contains(out, "evm")

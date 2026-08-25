@@ -352,6 +352,15 @@ local function switch_network(ctx)
   say(ctx, "now on " .. chosen.name)
 end
 
+--- The key of a network, however the wallet described it: a bare key from
+--- `chains`, or a whole record from the library's handshake.
+local function network_key(entry)
+  if type(entry) == "table" then return entry.key end
+  return entry
+end
+
+interactive.network_key = network_key
+
 --- Move to another chain, on whichever of its networks the wallet last used.
 ---
 --- The wallet has two axes — the chain and the network within it — and a menu
@@ -381,7 +390,10 @@ local function switch_chain(ctx)
 
   -- The chain is settled by the network, so moving to a chain means moving to
   -- one of its networks: the one already selected there, or its first.
-  local target = chosen.networks and chosen.networks[1]
+  --
+  -- `chains` names networks by key and the library's handshake hands back whole
+  -- records; this reads the handshake, so the first one is a record.
+  local target = network_key(chosen.networks and chosen.networks[1])
   for _, held in ipairs((info and info.chains) or {}) do
     if held.chain == chosen.chain and held.network then target = held.network end
   end

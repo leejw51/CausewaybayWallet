@@ -653,3 +653,28 @@ def test_utils_validate_mnemonic_reports_rather_than_refuses(jrun):
         assert bad["valid"] is False, phrase
         assert bad["words"] == words
         assert bad["reason"]
+
+
+# ------------------------------------------------------- the interactive menu
+
+
+def test_a_network_is_named_by_its_key_however_it_was_described():
+    """`chains` names networks by key; the handshake hands back records."""
+    from causewaybay.interactive import network_key
+
+    assert network_key("cardano-preprod") == "cardano-preprod"
+    assert network_key({"key": "cardano-preprod", "name": "Cardano Preprod"}) == "cardano-preprod"
+    assert network_key(None) is None
+
+
+def test_switching_to_a_chain_with_no_accounts_still_lands(wallet, capsys):
+    """A new wallet holds nothing anywhere, so the chain's own first network is
+    the answer rather than one the store remembers."""
+    from causewaybay import interactive
+
+    answers = iter(["7", "3", "q"])
+    code = interactive.run(wallet, out=sys.stdout, err=sys.stderr, read=lambda: next(answers, None))
+    assert code == 0
+    printed = capsys.readouterr().out
+    assert "now on Cardano" in printed, printed
+    assert wallet.current_network()["key"].startswith("cardano-")

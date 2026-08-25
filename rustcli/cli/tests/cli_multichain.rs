@@ -738,6 +738,48 @@ fn export_carries_every_chains_secret_in_its_own_encoding() {
     }
 }
 
+/// `network use` on another chain's network has to *stay* switched.
+///
+/// The wallet resolves its chain from the active account when nothing else
+/// says otherwise, so switching the network without moving the account left
+/// the next command on the chain just left: "Network is now Solana Devnet"
+/// followed by a Cronos balance. Announced and undone in one breath.
+#[test]
+fn switching_to_another_chains_network_moves_the_wallet_with_it() {
+    let wallet = Wallet::new();
+    wallet.json(&["account", "new", "--every-chain"]);
+    assert_eq!(wallet.json(&["network", "current"])["chain"], "evm");
+
+    wallet.json(&["network", "use", "solana-devnet"]);
+    assert_eq!(
+        wallet.json(&["network", "current"])["key"],
+        "solana-devnet",
+        "the switch did not stick"
+    );
+    assert_eq!(wallet.json(&["account", "show"])["chain"], "solana");
+
+    // And back again, to the network that chain was left on rather than to a
+    // default: each chain remembers its own.
+    wallet.json(&["network", "use", "cronos-mainnet"]);
+    wallet.json(&["network", "use", "solana-devnet"]);
+    wallet.json(&["network", "use", "cronos-mainnet"]);
+    assert_eq!(
+        wallet.json(&["network", "current"])["key"],
+        "cronos-mainnet"
+    );
+    assert_eq!(wallet.json(&["account", "show"])["chain"], "evm");
+}
+
+/// A wallet with nothing on the chain it moves to still moves.
+#[test]
+fn switching_to_a_chain_with_no_account_still_switches() {
+    let wallet = Wallet::new();
+    // EVM only: nothing to make active on Solana.
+    wallet.json(&["account", "new"]);
+    wallet.json(&["network", "use", "solana-devnet"]);
+    assert_eq!(wallet.json(&["network", "current"])["key"], "solana-devnet");
+}
+
 #[test]
 fn amounts_are_parsed_at_each_chains_own_scale() {
     let wallet = seeded();
