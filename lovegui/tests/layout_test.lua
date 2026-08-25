@@ -102,10 +102,46 @@ t.suite("layout / portrait", function()
   end)
 
   t.case("ten networks fit one column with no scrolling", function()
-    local rows = 10
-    local row_h = math.min(46, math.floor((L.net.h - 6) / rows) - 4)
-    t.ok(row_h >= 24, "a network row needs room for its name and symbol")
-    t.ok(rows * (row_h + 4) <= L.net.h, "the rows run out of frame")
+    local grid = layout.net_grid(L.net.w - 10, L.net.h - 13, 10)
+    t.equal(grid.columns, 1, "a 254-wide canvas has no room for two columns")
+    t.ok(grid.row_h >= 24, "a network row needs room for its name and symbol")
+  end)
+end)
+
+t.suite("layout / the network grid", function()
+  -- The bug this suite exists for: the last row of networks was drawn over
+  -- the sentence under the grid, because the rows divided the whole frame and
+  -- the footer was placed inside the same space.
+  t.case("the rows stop above the footer, either way up", function()
+    for _, size in ipairs({ { 480, 270 }, { 270, 480 } }) do
+      local L = layout.compute(size[1], size[2])
+      -- The inside of the frame, as `widgets.frame` hands it back.
+      local w, h = L.net.w - 10, L.net.h - 13
+      -- Well past the ten the wallet has, so adding a chain does not need
+      -- this sum revisited.
+      for count = 1, 20 do
+        local grid = layout.net_grid(w, h, count)
+        local bottom = grid.rows * (grid.row_h + grid.gap) - grid.gap
+        t.ok(bottom <= grid.footer_y,
+          ("%d networks at %dx%d: the rows reach %d, the footer is at %d")
+            :format(count, size[1], size[2], bottom, grid.footer_y))
+        t.ok(grid.footer_y + 16 <= h, "the footer is drawn through the border")
+      end
+    end
+  end)
+
+  t.case("the columns divide the width without overlapping", function()
+    local grid = layout.net_grid(454, 143, 10)
+    t.equal(grid.columns, 2, "a 454-wide frame holds two names side by side")
+    t.equal(grid.rows, 5)
+    t.ok(grid.columns * grid.column_w + grid.column_gap <= 454 + 1,
+      "the second column runs off the frame")
+  end)
+
+  t.case("no networks is not a division by zero", function()
+    local grid = layout.net_grid(454, 143, 0)
+    t.equal(grid.rows, 1)
+    t.ok(grid.row_h > 0)
   end)
 end)
 
