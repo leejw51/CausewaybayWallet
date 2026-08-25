@@ -70,6 +70,7 @@ impl Chain for EvmChain {
 
     fn recover_message(
         &self,
+        _network: &Network,
         message: &[u8],
         signature: &[u8],
         address: Option<&str>,
@@ -190,7 +191,7 @@ mod tests {
 
         let signature = signer.sign_message(b"hello causewaybay").unwrap();
         let recovered = EvmChain
-            .recover_message(b"hello causewaybay", &signature, None)
+            .recover_message(&crate::network::CRONOS_TESTNET, b"hello causewaybay", &signature, None)
             .unwrap();
         // No address was supplied and it still knows who signed: this is what
         // `capabilities().recoverable_signatures` claims.
@@ -210,7 +211,7 @@ mod tests {
             .unwrap();
 
         let checked = EvmChain
-            .recover_message(b"hello", &signature, Some(&mine.address))
+            .recover_message(&crate::network::CRONOS_TESTNET, b"hello", &signature, Some(&mine.address))
             .unwrap();
         assert!(!checked.valid);
         assert_eq!(checked.address.as_deref(), Some(theirs.address.as_str()));

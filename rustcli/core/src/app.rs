@@ -288,7 +288,10 @@ impl App {
 
     /// The address an account has on whichever network *its own chain* is
     /// pointed at, which is what a listing spanning several chains needs.
-    fn address_on_its_own_network(&self, account: &Account) -> String {
+    ///
+    /// Public because the TUI shows and copies addresses too, and must show
+    /// the same string the listing does.
+    pub fn address_on_its_own_network(&self, account: &Account) -> String {
         match self.store.network_on(account.chain) {
             Ok(network) => self.address_for(account, &network),
             Err(_) => account.address.clone(),
@@ -466,11 +469,16 @@ impl App {
                     &derived.address,
                     None,
                 )?;
+                // Named as it reads on this network, agreeing with the listing
+                // the user will look at next.
+                let here = self.address_here(&account);
+                let mut view = account.public_view();
+                view["address"] = json!(here);
                 Ok(CommandOutput::new(
-                    account.public_view(),
+                    view,
                     format!(
                         "Imported {} ({}) on {}{REMEMBERED_NOTE}",
-                        account.label, account.address, account.chain
+                        account.label, here, account.chain
                     ),
                 ))
             }
@@ -936,7 +944,11 @@ impl App {
         let mut data: Vec<Value> = Vec::new();
         let mut lines = Vec::new();
         for (account, derived, at) in created {
+            // Each row names the address for the network its own chain is on,
+            // as the listing does — the stored string is the default network's.
+            let shown = self.address_on_its_own_network(account);
             let mut value = account.public_view();
+            value["address"] = json!(shown);
             value["public_key"] = json!(derived.public_key);
             value["extra"] = derived.extra.clone();
             if show_secret {
@@ -948,7 +960,7 @@ impl App {
                 "{:<9} {:<20} {}\n{:>10}{} index {at}",
                 account.chain.as_str(),
                 account.label,
-                account.address,
+                shown,
                 "",
                 account.derivation_path.clone().unwrap_or_default(),
             ));
@@ -2088,9 +2100,12 @@ impl App {
         let text = read_message(self.host.as_ref(), message)?;
         let signature = signer.sign_message(text.as_bytes())?;
         let encoded = format!("0x{}", hex::encode(&signature));
+        // The signer as it is named on this network, matching what `account
+        // list` and `verify` show — not the stored default-network string.
+        let address = self.address_here(&account);
         Ok(CommandOutput::new(
             json!({
-                "address": account.address,
+                "address": address,
                 "account": account.label,
                 "chain": account.chain.as_str(),
                 "scheme": signing_scheme(account.chain),
@@ -2098,7 +2113,7 @@ impl App {
                 "signature": encoded,
             }),
             output::table(&[
-                ("Signer", account.address.clone()),
+                ("Signer", address),
                 ("Scheme", signing_scheme(account.chain).to_string()),
                 ("Signature", encoded),
             ]),
@@ -2137,17 +2152,22 @@ impl App {
             }
             // Nothing to compare against would make `valid` mean only "this
             // parsed", which is true of a signature over any message at all.
-            // The wallet's own account is the expectation worth defaulting to.
+            // The wallet's own account is the expectation worth defaulting to —
+            // as it renders on this network, since the stored string belongs
+            // to the chain's default network and eCash would refuse the other.
             (None, true) => self
                 .store
                 .active_account_on(self.chain)
                 .ok()
-                .map(|account| account.address.clone()),
+                .map(|account| self.address_here(&account)),
         };
 
-        let recovered =
-            self.chain()
-                .recover_message(text.as_bytes(), &bytes, against.as_deref())?;
+        let recovered = self.chain().recover_message(
+            &self.network,
+            text.as_bytes(),
+            &bytes,
+            against.as_deref(),
+        )?;
 
         // The address is echoed back rather than the key that checked it.
         let shown = recovered.address.clone();

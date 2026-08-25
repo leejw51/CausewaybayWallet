@@ -8,6 +8,7 @@
 //! command, and every command also has a single-key shortcut for anyone who
 //! would rather not walk the list. `?` opens a full key reference over the top.
 
+use std::collections::HashMap;
 use std::io::stdout;
 use std::time::{Duration, Instant};
 
@@ -370,12 +371,14 @@ fn build_commands() -> Vec<Command> {
 /// A colour per chain, used everywhere a chain is named so the eye can pick
 /// one out of a mixed list without reading.
 fn chain_colour(chain: ChainId) -> Color {
+    // The same assignment as the LOVE GUI's `theme.chain_colour`, so a chain
+    // keeps its colour when the user moves between the two front ends.
     match chain {
         ChainId::Evm => Color::Magenta,
         ChainId::Solana => Color::Green,
-        ChainId::Cardano => Color::Blue,
+        ChainId::Cardano => Color::Cyan,
         ChainId::Midnight => Color::Yellow,
-        ChainId::Ecash => Color::Cyan,
+        ChainId::Ecash => Color::Blue,
     }
 }
 
@@ -558,6 +561,15 @@ struct State {
     filter: String,
     /// Set when the network changed, so the loop can rebuild `App` around it.
     network_changed: bool,
+    /// Each account's address on the network its own chain is pointed at,
+    /// by account id — what every pane shows and `y` copies.
+    ///
+    /// The store holds the *default* network's string, and on Cardano,
+    /// Midnight and eCash the two differ; showing the stored one under
+    /// another network's heading offers a deposit address that cannot
+    /// receive there. Derived once per reload and network switch rather
+    /// than per frame, because re-deriving is key work.
+    shown_addresses: HashMap<String, String>,
     quit: bool,
 }
 
@@ -610,6 +622,7 @@ impl State {
             show_secrets: false,
             filter: String::new(),
             network_changed: false,
+            shown_addresses: HashMap::new(),
             quit: false,
         };
         state.select_index(active_index);
@@ -620,6 +633,16 @@ impl State {
         // which is how `x` came to remove a wallet nobody had pointed at.
         state.clamp_selection();
         state
+    }
+
+    /// The address to show and copy for an account: its face on the network
+    /// its own chain is on, falling back to the stored string when the map
+    /// has not been filled (the tests) or the account is unknown to it.
+    fn shown_address(&self, account: &Account) -> String {
+        self.shown_addresses
+            .get(&account.id)
+            .cloned()
+            .unwrap_or_else(|| account.address.clone())
     }
 
     /// The account every command acts on: the highlighted wallet, on the
@@ -843,6 +866,7 @@ fn event_loop<B: ratatui::backend::Backend>(
     // a real switch as a no-op.
     let current = app.store.network()?.key;
     let mut state = State::with_network(app.store.accounts()?, active.as_deref(), current);
+    refresh_shown(&app, &mut state);
     refresh_detail(&mut state);
 
     let tick = Duration::from_millis(200);
@@ -860,6 +884,9 @@ fn event_loop<B: ratatui::backend::Backend>(
                 None,
                 std::sync::Arc::clone(&app.host),
             )?;
+            // The addresses shown follow the network, on the chains whose
+            // addresses name it.
+            refresh_shown(&app, &mut state);
             refresh_detail(&mut state);
         }
 
@@ -1194,7 +1221,7 @@ fn run_action(app: &App, state: &mut State, action: Action) {
                             format!(
                                 " ({}, {} …)",
                                 store::display_label(a),
-                                short_address(&a.address)
+                                short_address(&state.shown_address(a))
                             )
                         })
                         .unwrap_or_default();
@@ -1700,21 +1727,18 @@ fn clear_input(state: &mut State) {
     state.input.clear();
 }
 
-/// Put the selected wallet's address on the system clipboard.
+/// Put the selected wallet's address on the system clipboard — as it reads
+/// on the network its chain is on, which is the only string that can
+/// receive there.
 fn copy_address(state: &mut State) {
     let Some(account) = state.current().cloned() else {
         state.fail("No wallet selected");
         return;
     };
-    match crate::clipboard::copy(&account.address) {
-        Ok(helper) => state.info(format!(
-            "Copied {} to the clipboard ({helper})",
-            account.address
-        )),
-        Err(e) => state.fail(format!(
-            "{} — the address is {}",
-            e.message, account.address
-        )),
+    let address = state.shown_address(&account);
+    match crate::clipboard::copy(&address) {
+        Ok(helper) => state.info(format!("Copied {address} to the clipboard ({helper})")),
+        Err(e) => state.fail(format!("{} — the address is {address}", e.message)),
     }
 }
 
@@ -1796,7 +1820,9 @@ fn note_clipboard_address(app: &App, state: &mut State) {
     {
         return;
     }
-    if candidate == account.address {
+    // Compared against both of the account's faces: on the chains whose
+    // addresses name their network, what `y` copies is not the stored string.
+    if candidate == account.address || candidate == state.shown_address(&account) {
         // Blank already means this wallet, and a send to it is refused anyway.
         return;
     }
@@ -1901,14 +1927,18 @@ fn start_balance(app: &App, state: &mut State, target: Option<String>) {
             return;
         }
     };
-    let address = target.unwrap_or_else(|| account.address.clone());
+    // No explicit target means the wallet's own balance, and that goes by
+    // account rather than by address: the stored string is the default
+    // network's, and on eCash or Cardano mainnet it is an address the
+    // chain scoping below would refuse.
+    let selector = target.is_none().then(|| account.id.clone());
 
     let (tx, rx) = std::sync::mpsc::channel();
     let scoped = scoped.with_host(std::sync::Arc::new(JobHost { events: tx.clone() }));
     std::thread::spawn(move || {
         let outcome = match scoped.balance(TargetArgs {
-            address: Some(address),
-            account: None,
+            address: target,
+            account: selector,
             all: false,
         }) {
             Ok(output) => {
@@ -2260,7 +2290,17 @@ fn reload(app: &App, state: &mut State) {
         state.select_index(keep);
         state.clamp_selection();
     }
+    refresh_shown(app, state);
     refresh_detail(state);
+}
+
+/// Re-derive every account's shown address — see `State::shown_addresses`.
+fn refresh_shown(app: &App, state: &mut State) {
+    state.shown_addresses = state
+        .accounts
+        .iter()
+        .map(|account| (account.id.clone(), app.address_on_its_own_network(account)))
+        .collect();
 }
 
 fn refresh_detail(state: &mut State) {
@@ -2290,7 +2330,7 @@ fn refresh_detail(state: &mut State) {
                 Some(account) => format!(
                     "{}\t{}",
                     store::display_label(account),
-                    short_address(&account.address)
+                    short_address(&state.shown_address(account))
                 ),
                 None => "— not derived yet".to_string(),
             },
@@ -2340,7 +2380,7 @@ fn draw(frame: &mut Frame, app: &App, state: &mut State) {
         ])
         .split(frame.area());
 
-    draw_header(frame, app, chunks[0]);
+    draw_header(frame, app, state, chunks[0]);
 
     let body = Layout::default()
         .direction(Direction::Horizontal)
@@ -2433,7 +2473,7 @@ fn pane_style(focused: bool) -> Style {
 /// The second line is the multi-chain one. A wallet spread over four chains
 /// otherwise gives no sign that the other three exist, and "my funds are gone"
 /// is the reading that follows.
-fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
+fn draw_header(frame: &mut Frame, app: &App, state: &State, area: Rect) {
     let network = app.store.network().unwrap_or(app.network);
     let chain = network.chain;
 
@@ -2469,7 +2509,7 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
                 Style::default().fg(Color::DarkGray),
             ));
             first.push(Span::styled(
-                short_address(&account.address),
+                short_address(&state.shown_address(&account)),
                 Style::default()
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
@@ -4326,15 +4366,21 @@ mod tests {
             .skip(2)
             .filter_map(|line| line.split_whitespace().nth(1))
             .collect();
+        // Every distinct address gets a row: Cardano, Midnight and eCash
+        // render a different one per network (Cardano's two test networks
+        // share theirs, so one row covers both).
         assert_eq!(
             names,
             [
                 "account0-cronos-testnet",
                 "account0-cronos-mainnet",
                 "account0-solana",
-                "account0-cardano",
-                "account0-midnight",
-                "account0-ecash",
+                "account0-cardano-preprod",
+                "account0-cardano-mainnet",
+                "account0-midnight-preview",
+                "account0-midnight-devnet",
+                "account0-ecash-testnet",
+                "account0-ecash-mainnet",
             ]
         );
         assert!(!written.contains("private_key"), "secrets stay hidden");

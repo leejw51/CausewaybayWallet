@@ -493,8 +493,13 @@ pub trait Chain: Send + Sync + 'static {
     /// that can also accept an address say so. A chain that is handed
     /// something it cannot use must say what it needed rather than reporting
     /// the signature invalid — a wrong answer is worse than a refusal here.
+    ///
+    /// `network` is where the answer is rendered when nothing else settles it:
+    /// eCash writes a different string per network, and an identity that is an
+    /// address names its own. A chain with one rendering everywhere ignores it.
     fn recover_message(
         &self,
+        network: &Network,
         message: &[u8],
         signature: &[u8],
         identity: Option<&str>,

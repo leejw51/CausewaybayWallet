@@ -106,6 +106,7 @@ impl Chain for EcashChain {
 
     fn recover_message(
         &self,
+        network: &Network,
         message: &[u8],
         signature: &[u8],
         identity: Option<&str>,
@@ -115,23 +116,24 @@ impl Chain for EcashChain {
         let recovered = keys::recover_message(message, signature)?;
 
         // Which prefix to render the answer with. An address given to compare
-        // against settles it; otherwise this follows what the store holds,
-        // so a recovered address can be read straight against an account.
-        let (expected, network) = match identity {
-            None => (None, EcashNetwork::Testnet),
+        // against settles it; otherwise the network in play does, so a
+        // recovered address can be read straight against what the wallet is
+        // showing for its accounts on that network.
+        let (expected, render_on) = match identity {
+            None => (None, EcashNetwork::of(network)),
             Some(given) => match Address::parse(given) {
                 Ok(parsed) => (Some(parsed.hash), parsed.network),
                 // Not an address: a key this wallet holds is the other thing
                 // callers pass, and it names a hash just as well.
                 Err(address_error) => match EcashAccount::from_secret(given) {
-                    Ok(account) => (Some(account.hash160()), EcashNetwork::Testnet),
+                    Ok(account) => (Some(account.hash160()), EcashNetwork::of(network)),
                     Err(_) => return Err(address_error),
                 },
             },
         };
 
         Ok(Recovered {
-            address: Some(Address::p2pkh(network, recovered).to_cashaddr()),
+            address: Some(Address::p2pkh(render_on, recovered).to_cashaddr()),
             valid: expected.map(|hash| hash == recovered).unwrap_or(true),
         })
     }
@@ -268,7 +270,7 @@ mod tests {
 
         let signature = signer.sign_message(b"hello causewaybay").unwrap();
         let recovered = EcashChain
-            .recover_message(b"hello causewaybay", &signature, None)
+            .recover_message(&crate::network::ECASH_TESTNET, b"hello causewaybay", &signature, None)
             .unwrap();
         assert!(recovered.valid);
         assert_eq!(recovered.address.as_deref(), Some(derived.address.as_str()));
@@ -289,13 +291,13 @@ mod tests {
 
         for identity in [derived.address.as_str(), mainnet, derived.secret.as_str()] {
             let checked = EcashChain
-                .recover_message(b"hello", &signature, Some(identity))
+                .recover_message(&crate::network::ECASH_TESTNET, b"hello", &signature, Some(identity))
                 .unwrap();
             assert!(checked.valid, "{identity}");
         }
         // And the answer is rendered on the network it was asked about.
         let on_mainnet = EcashChain
-            .recover_message(b"hello", &signature, Some(mainnet))
+            .recover_message(&crate::network::ECASH_TESTNET, b"hello", &signature, Some(mainnet))
             .unwrap();
         assert_eq!(on_mainnet.address.as_deref(), Some(mainnet));
     }
@@ -311,7 +313,7 @@ mod tests {
             .unwrap();
 
         let checked = EcashChain
-            .recover_message(b"hello", &signature, Some(&mine.address))
+            .recover_message(&crate::network::ECASH_TESTNET, b"hello", &signature, Some(&mine.address))
             .unwrap();
         assert!(!checked.valid);
         assert_eq!(checked.address.as_deref(), Some(theirs.address.as_str()));
@@ -326,7 +328,7 @@ mod tests {
             .sign_message(b"hello")
             .unwrap();
         let err = EcashChain
-            .recover_message(b"hello", &signature, Some("not-an-address"))
+            .recover_message(&crate::network::ECASH_TESTNET, b"hello", &signature, Some("not-an-address"))
             .unwrap_err();
         assert_eq!(err.code, error::Code::InvalidAddress);
     }
