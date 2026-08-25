@@ -36,7 +36,7 @@ MAIN RAM      65536 BYTES OK
 VRAM          16384 BYTES OK
 
 FFI ABI           1   OK
-VERSION       1.0.2   OK
+VERSION       1.0.3   OK
 NETWORK  cronos-testnet
 CHAIN           338
 WALLETS           2

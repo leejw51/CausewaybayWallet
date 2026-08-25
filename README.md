@@ -152,7 +152,7 @@ and `make version` prints it only when the two agree — a mismatch is an error,
 not a warning, and packaging refuses to run:
 
 ```bash
-make version          # 1.0.2
+make version          # 1.0.3
 ```
 
 Nothing repeats that number anywhere else. The Rust crates report
