@@ -11,11 +11,18 @@
 //!
 //! [`Chain::derive`]: super::Chain::derive
 
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
+
 use crate::bip39;
 use crate::error::Result;
 
 /// A mnemonic and its passphrase, ready to be turned into key material.
-#[derive(Clone)]
+///
+/// Both fields are wiped when the seed is dropped. A `String` that simply goes
+/// out of scope leaves the phrase in freed memory, where a later allocation, a
+/// swap file or a core dump can still carry it — and a mnemonic is the whole
+/// wallet, not one key of it.
+#[derive(Clone, Zeroize, ZeroizeOnDrop)]
 pub struct Seed {
     phrase: String,
     passphrase: String,
@@ -62,12 +69,15 @@ impl Seed {
     }
 
     /// The 64-byte BIP-39 seed: what EVM, Solana and Midnight derive from.
-    pub fn bip39_seed(&self) -> [u8; 64] {
+    ///
+    /// Wrapped so the caller's copy is wiped when it goes out of scope. It
+    /// derefs to the array, so it is used exactly as the bytes were.
+    pub fn bip39_seed(&self) -> Zeroizing<[u8; 64]> {
         bip39::to_seed(&self.phrase, &self.passphrase)
     }
 
     /// The raw entropy the phrase encodes: what Cardano's Icarus scheme salts with.
-    pub fn entropy(&self) -> Result<Vec<u8>> {
+    pub fn entropy(&self) -> Result<Zeroizing<Vec<u8>>> {
         bip39::mnemonic_to_entropy(&self.phrase)
     }
 

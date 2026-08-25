@@ -20,6 +20,7 @@ use blake2::digest::{Update, VariableOutput};
 use ed25519_bip32::{DerivationScheme, XPrv, XPub};
 use hmac::Hmac;
 use sha2::Sha512;
+use zeroize::Zeroizing;
 
 use crate::error::{self, Result};
 
@@ -46,14 +47,19 @@ pub fn path(index: u32) -> String {
 }
 
 /// Derive the Icarus root extended private key from BIP-39 entropy.
+///
+/// The PBKDF2 buffer is wiped once `XPrv` has copied it. `XPrv` itself belongs
+/// to `ed25519-bip32` and exposes no mutable view of its bytes, so the extended
+/// keys this wallet holds cannot be wiped in place — the buffers on the way in
+/// are what there is to clean up.
 pub fn root_from_entropy(entropy: &[u8], passphrase: &[u8]) -> Result<XPrv> {
-    let mut out = [0u8; XPRV_SIZE];
-    pbkdf2::pbkdf2::<Hmac<Sha512>>(passphrase, entropy, PBKDF2_ITERATIONS, &mut out)
+    let mut out = Zeroizing::new([0u8; XPRV_SIZE]);
+    pbkdf2::pbkdf2::<Hmac<Sha512>>(passphrase, entropy, PBKDF2_ITERATIONS, &mut out[..])
         .map_err(|e| error::internal(format!("PBKDF2 failed: {e}")))?;
     out[0] &= 0b1111_1000;
     out[31] &= 0b0001_1111;
     out[31] |= 0b0100_0000;
-    XPrv::from_bytes_verified(out)
+    XPrv::from_bytes_verified(*out)
         .map_err(|e| error::internal(format!("the Icarus root key is invalid: {e:?}")))
 }
 

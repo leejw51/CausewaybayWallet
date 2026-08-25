@@ -14,6 +14,7 @@
 use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
 use hmac::{Hmac, Mac};
 use sha2::Sha512;
+use zeroize::{ZeroizeOnDrop, Zeroizing};
 
 use crate::error::{self, Result};
 
@@ -29,10 +30,25 @@ pub fn path(index: u32) -> String {
 }
 
 /// A SLIP-0010 node: 32 bytes of key material plus a 32-byte chain code.
-#[derive(Debug)]
+///
+/// Both halves are wiped on drop, and the `Debug` is written by hand rather
+/// than derived. The derived one printed the key and the chain code in full,
+/// against the convention every other secret type in this tree follows: it is
+/// private and never printed today, and it is one `{:?}` in a future error
+/// path away from leaking the material the account key derives straight from.
+#[derive(ZeroizeOnDrop)]
 struct Node {
     key: [u8; 32],
     chain_code: [u8; 32],
+}
+
+impl std::fmt::Debug for Node {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Node")
+            .field("key", &"<redacted>")
+            .field("chain_code", &"<redacted>")
+            .finish()
+    }
 }
 
 impl Node {
@@ -67,6 +83,11 @@ impl Node {
         chain_code.copy_from_slice(&bytes[32..]);
         Node { key, chain_code }
     }
+
+    /// The node's key, wiped when the caller is done with it.
+    fn key(&self) -> Zeroizing<[u8; 32]> {
+        Zeroizing::new(self.key)
+    }
 }
 
 /// A derived Solana account.
@@ -94,7 +115,7 @@ impl SolanaAccount {
             node = node.derive_child(component)?;
         }
         Ok(SolanaAccount {
-            signing_key: SigningKey::from_bytes(&node.key),
+            signing_key: SigningKey::from_bytes(&node.key()),
             path: Some(path),
         })
     }
@@ -219,6 +240,20 @@ mod tests {
         Seed::new(PHRASE, "").unwrap()
     }
 
+    /// Every secret type in this tree writes its own `Debug`; this one used to
+    /// derive it, and printed the key and the chain code in full.
+    #[test]
+    fn a_derivation_nodes_debug_rendering_leaks_nothing() {
+        let node = Node::master(&seed().bip39_seed()[..]);
+        let rendered = format!("{node:?}");
+        assert!(!rendered.contains(&hex::encode(node.key)), "{rendered}");
+        assert!(
+            !rendered.contains(&hex::encode(node.chain_code)),
+            "{rendered}"
+        );
+        assert!(rendered.contains("<redacted>"), "{rendered}");
+    }
+
     /// The addresses `solana-keygen` derives from this phrase. Checked against
     /// the official CLI, and the reason SLIP-0010 is implemented rather than
     /// approximated.
@@ -230,7 +265,7 @@ mod tests {
             "Hh8QwFUA6MtVu1qAoq12ucvFHNwCcVTV7hpWjeY1Hztb",
             "7WktogJEd2wQ9eH2oWusmcoFTgeYi6rS632UviTBJ2jm",
         ];
-        let bytes = seed().bip39_seed();
+        let bytes = *seed().bip39_seed();
         for (index, want) in expected.iter().enumerate() {
             let account = SolanaAccount::from_seed(&bytes, index as u32).unwrap();
             assert_eq!(account.address(), *want, "index {index}");
@@ -241,7 +276,7 @@ mod tests {
     fn the_path_is_four_hardened_levels() {
         assert_eq!(path(0), "m/44'/501'/0'/0'");
         assert_eq!(path(7), "m/44'/501'/7'/0'");
-        let account = SolanaAccount::from_seed(&seed().bip39_seed(), 3).unwrap();
+        let account = SolanaAccount::from_seed(&seed().bip39_seed()[..], 3).unwrap();
         assert_eq!(account.path.as_deref(), Some("m/44'/501'/3'/0'"));
     }
 
@@ -249,14 +284,14 @@ mod tests {
     fn an_unhardened_index_is_refused_rather_than_hardened() {
         // The mistake this catches: one missing apostrophe silently producing
         // a different wallet.
-        let node = Node::master(&seed().bip39_seed());
+        let node = Node::master(&seed().bip39_seed()[..]);
         let err = node.derive_child(44).unwrap_err();
         assert!(err.message.contains("hardened"), "{}", err.message);
     }
 
     #[test]
     fn the_address_is_the_public_key_itself() {
-        let account = SolanaAccount::from_seed(&seed().bip39_seed(), 0).unwrap();
+        let account = SolanaAccount::from_seed(&seed().bip39_seed()[..], 0).unwrap();
         assert_eq!(
             address_to_bytes(&account.address()).unwrap(),
             account.public_key_bytes()
@@ -265,7 +300,7 @@ mod tests {
 
     #[test]
     fn secrets_round_trip_through_every_encoding_tooling_uses() {
-        let account = SolanaAccount::from_seed(&seed().bip39_seed(), 0).unwrap();
+        let account = SolanaAccount::from_seed(&seed().bip39_seed()[..], 0).unwrap();
         let address = account.address();
 
         // base58 of the 64-byte keypair, which is what wallets export.
@@ -299,7 +334,7 @@ mod tests {
     fn a_keypair_whose_halves_disagree_is_refused() {
         // Signing with this would produce valid signatures for an address the
         // holder does not control, and the wallet would show the wrong one.
-        let account = SolanaAccount::from_seed(&seed().bip39_seed(), 0).unwrap();
+        let account = SolanaAccount::from_seed(&seed().bip39_seed()[..], 0).unwrap();
         let mut bytes = account.signing_key.to_keypair_bytes();
         bytes[32] ^= 0xff;
         let err = SolanaAccount::from_secret(&bs58::encode(bytes).into_string()).unwrap_err();
@@ -320,19 +355,19 @@ mod tests {
     /// message is reproducible byte for byte.
     #[test]
     fn signing_matches_the_official_sdk_byte_for_byte() {
-        let account = SolanaAccount::from_seed(&seed().bip39_seed(), 0).unwrap();
+        let account = SolanaAccount::from_seed(&seed().bip39_seed()[..], 0).unwrap();
         let signature = account.sign(b"midnight-cardano-solana test vector");
         assert_eq!(hex::encode(signature), "52e95ba23743b3219fd434b45e928cb298cf27a59852df2e68efc5538f75769af66805cac25f8601c7397d5413973b68e085174f338855b0dd96c15729cf6601");
     }
 
     #[test]
     fn signatures_verify_against_the_address_and_only_that_message() {
-        let account = SolanaAccount::from_seed(&seed().bip39_seed(), 0).unwrap();
+        let account = SolanaAccount::from_seed(&seed().bip39_seed()[..], 0).unwrap();
         let signature = account.sign(b"hello causewaybay");
         assert!(verify(&account.address(), b"hello causewaybay", &signature).unwrap());
         assert!(!verify(&account.address(), b"tampered", &signature).unwrap());
 
-        let other = SolanaAccount::from_seed(&seed().bip39_seed(), 1).unwrap();
+        let other = SolanaAccount::from_seed(&seed().bip39_seed()[..], 1).unwrap();
         assert!(!verify(&other.address(), b"hello causewaybay", &signature).unwrap());
     }
 
@@ -354,7 +389,7 @@ mod tests {
 
     #[test]
     fn an_accounts_debug_rendering_leaks_nothing() {
-        let account = SolanaAccount::from_seed(&seed().bip39_seed(), 0).unwrap();
+        let account = SolanaAccount::from_seed(&seed().bip39_seed()[..], 0).unwrap();
         let rendered = format!("{account:?}");
         assert!(rendered.contains(&account.address()));
         assert!(!rendered.contains(&account.secret_base58()));

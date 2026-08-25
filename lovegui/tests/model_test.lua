@@ -948,6 +948,22 @@ t.suite("model / networks", function()
     t.equal(model:chain(), "evm")
   end)
 
+  t.case("the fee ceiling arrives with the token it is counted in", function()
+    -- The GUI prints this on the network screen and nowhere else. A bare
+    -- number would be unreadable there: fees are paid in a different token on
+    -- every chain, and on Midnight in a different token from the balance drawn
+    -- two frames away — "2" taken as NIGHT rather than DUST is out by a
+    -- billion. So the symbol travels with the number, always.
+    local model = model_over()
+    t.ok(model.info.max_fee, "no ceiling reported at all")
+    t.equal(model.info.max_fee_symbol, "TCRO")
+    t.equal(model.info.max_fee_is_default, true)
+
+    t.ok(model:switch_network("midnight-preview"))
+    t.equal(model.info.max_fee_symbol, "DUST",
+      "a Midnight fee is paid in DUST, not in the NIGHT a transfer moves")
+  end)
+
   t.case("an unknown network is an error, not a crash", function()
     local model = model_over()
     t.equal(model:switch_network("ethereum"), false)

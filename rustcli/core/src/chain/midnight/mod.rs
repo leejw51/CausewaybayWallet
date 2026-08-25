@@ -52,12 +52,17 @@ impl Chain for MidnightChain {
         network.units()
     }
 
+    /// A Midnight transfer moves NIGHT and pays its fee in DUST.
+    fn fee_units(&self, _network: &Network) -> Amount {
+        dust::DUST
+    }
+
     fn derivation_path(&self, index: u32) -> String {
         keys::path(index)
     }
 
     fn derive(&self, seed: &Seed, index: u32) -> Result<DerivedAccount> {
-        describe(MidnightAccount::from_seed(&seed.bip39_seed(), index)?)
+        describe(MidnightAccount::from_seed(&seed.bip39_seed()[..], index)?)
     }
 
     fn account_from_secret(&self, secret: &str) -> Result<DerivedAccount> {

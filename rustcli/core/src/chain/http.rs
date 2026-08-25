@@ -18,6 +18,16 @@ use crate::error::{self, Result};
 /// The default ceiling on a single request.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// The most of a reply this wallet will hold in memory.
+///
+/// `Response::text()` reads until the body ends, and an endpoint decides when
+/// that is. A node that answers `eth_gasPrice` with an endless stream costs
+/// nothing to run and takes the wallet's process down with it — no funds at
+/// risk, but a wallet that dies mid-send is its own kind of problem. Every
+/// real reply here is kilobytes; a Midnight UTxO page is the largest and does
+/// not approach this.
+pub const MAX_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
+
 /// One shared client, so keep-alive connections are reused across calls and
 /// across chains. Building one per request is what makes a four-chain
 /// `balance --all` slower than it needs to be.
@@ -64,10 +74,7 @@ pub async fn post_bytes(url: &str, content_type: &str, bytes: Vec<u8>) -> Result
         .await
         .map_err(|e| error::rpc_error(format!("request to {url} failed: {e}")))?;
     let status = response.status();
-    let text = response
-        .text()
-        .await
-        .map_err(|e| error::rpc_error(format!("reply from {url} could not be read: {e}")))?;
+    let text = read_capped(url, response).await?;
     if !status.is_success() {
         return Err(status_error(url, status.as_u16(), &text));
     }
@@ -134,10 +141,7 @@ pub async fn graphql(url: &str, query: &str, variables: Value) -> Result<Value> 
 
 async fn read_json(url: &str, response: reqwest::Response) -> Result<Value> {
     let status = response.status();
-    let text = response
-        .text()
-        .await
-        .map_err(|e| error::rpc_error(format!("reply from {url} could not be read: {e}")))?;
+    let text = read_capped(url, response).await?;
     if !status.is_success() {
         return Err(status_error(url, status.as_u16(), &text));
     }
@@ -147,6 +151,39 @@ async fn read_json(url: &str, response: reqwest::Response) -> Result<Value> {
             excerpt(&text)
         ))
     })
+}
+
+/// Read a reply body, refusing one past [`MAX_RESPONSE_BYTES`].
+///
+/// Chunk by chunk rather than `Response::text()`, which reads whatever the
+/// endpoint chooses to send. The `content-length` header is checked first
+/// where there is one, so an oversized reply is refused before a byte of it is
+/// held; a chunked reply is cut off as soon as it crosses the line.
+async fn read_capped(url: &str, mut response: reqwest::Response) -> Result<String> {
+    let too_big = || {
+        error::rpc_error(format!(
+            "reply from {url} is larger than the {} MiB this wallet will read",
+            MAX_RESPONSE_BYTES / (1024 * 1024)
+        ))
+    };
+    if let Some(declared) = response.content_length() {
+        if declared > MAX_RESPONSE_BYTES as u64 {
+            return Err(too_big());
+        }
+    }
+    let mut body: Vec<u8> = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|e| error::rpc_error(format!("reply from {url} could not be read: {e}")))?
+    {
+        if body.len() + chunk.len() > MAX_RESPONSE_BYTES {
+            return Err(too_big());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    String::from_utf8(body)
+        .map_err(|_| error::rpc_error(format!("reply from {url} is not valid UTF-8")))
 }
 
 fn status_error(url: &str, status: u16, body: &str) -> crate::error::Error {

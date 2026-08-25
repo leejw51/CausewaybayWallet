@@ -59,6 +59,18 @@ end
 
 M.normalize = normalize
 
+--- Absolute directories a system-wide install would land in.
+---
+--- Named in full so the loader never asks the platform to search on its own
+--- behalf; there is no entry here a working directory can supply. Windows has
+--- no equivalent convention and its default search order is exactly the one
+--- being avoided, so there `$CAUSEWAYBAY_LIB` is the way in.
+local function system_library_dirs()
+  if ffi.os == "Windows" then return {} end
+  if ffi.os == "OSX" then return { "/usr/local/lib", "/opt/homebrew/lib" } end
+  return { "/usr/local/lib", "/usr/lib" }
+end
+
 --- Where to look, in order, for the shared library.
 ---
 --- `root` is the directory holding this file, so everything is relative to the
@@ -85,8 +97,18 @@ local function search_paths(root, override)
   paths[#paths + 1] = repo .. "/rustcli/target/debug/" .. name
   paths[#paths + 1] = repo .. "/rustcli/target/release/" .. name
   paths[#paths + 1] = repo .. "/dist/" .. name
-  -- Last resort: whatever the system linker can find on its own.
-  paths[#paths + 1] = "causewaybay_ffi"
+  -- Last resort: a system install, named absolutely.
+  --
+  -- A bare `causewaybay_ffi` used to be here instead, and it was a way in:
+  -- `dlopen` on macOS and `LoadLibrary` on Windows both search the working
+  -- directory for a name with no slash in it. Running `cwbwallet` out of
+  -- Downloads or a cloned repo, on a machine holding the library at none of
+  -- the paths above, would load whatever was sitting there and hand it every
+  -- mnemonic that crosses `cwb_execute`. The ABI check catches nothing: a
+  -- planted library exports `cwb_abi_version` returning whatever it likes.
+  for _, directory in ipairs(system_library_dirs()) do
+    paths[#paths + 1] = directory .. "/" .. name
+  end
   return paths
 end
 

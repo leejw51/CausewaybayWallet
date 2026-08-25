@@ -345,6 +345,31 @@ Override an endpoint with `cwbwallet network set-rpc testnet <url>` or the
 and submits to a different service, its node RPC; that half is overridden with
 `CAUSEWAYBAY_SUBMIT_MIDNIGHT_PREVIEW` or the `submit.<network>` config key.
 
+### The fee ceiling
+
+Every network refuses a fee above a number the wallet keeps itself, checked
+before anything is signed. The fee is the endpoint's number — an inflated
+`eth_gasPrice`, a Koios instance answering `min_fee_a = 10⁹` — and nothing else
+in a transfer questions it: the transaction balances, the signature is valid,
+and the confirmation used to name only the amount.
+
+    cwbwallet network current                       # shows the one in force
+    cwbwallet network set-max-fee testnet 3         # refuse anything over 3 TCRO
+    cwbwallet network set-max-fee testnet 0         # back to the built-in one
+
+It is a **refusal threshold, not a price** — setting it low does not make sends
+cheaper, it makes them fail. Nearly everyone should leave it alone; it is there
+to catch an endpoint that lies, not to bid for block space.
+
+The number is counted in the token that *pays* the fee, which is the native
+token everywhere except Midnight — a Midnight transfer moves NIGHT and pays in
+DUST, nine decimal places apart. So write the unit if you want it checked:
+`set-max-fee midnight-preview "2 DUST"` is accepted and `"2 NIGHT"` is refused
+rather than quietly read as DUST. Stored with its denomination either way.
+
+The TUI sets it from the **Fee ceiling** row; the LÖVE GUI shows the one in
+force on its network screen and leaves the changing to the command line.
+
 ## Where state lives
 
 `~/.causewaybaywallet/` — override with `--home PATH` or `CAUSEWAYBAY_HOME`.
@@ -360,19 +385,25 @@ Every file is append-only: state is the fold of every line, so a crash can at
 worst lose the last partial line, and the whole history stays readable with
 `cat`. The directory is `0700`, the files `0600`.
 
+Removal is the exception. `account remove`, `recent forget` and `recent clear`
+rewrite their file without the record, rather than appending a tombstone — an
+account record holds a plaintext private key and a recall entry is nothing but
+a phrase, and a tombstone would leave both exactly where they were. "Forget"
+means the line is gone.
+
 ## Testing
 
 `make test` runs five things:
 
-* **Rust** — 375 tests. BIP-39, BIP-32 and BIP-44 are implemented from scratch
+* **Rust** — 680 tests. BIP-39, BIP-32 and BIP-44 are implemented from scratch
   and checked against the official vectors; the CLI is exercised end to end
   against a scripted in-process JSON-RPC node, and the C ABI is called the way
   a C host would call it.
-* **Python** — 168 tests over the binding: the shared vectors driven through
+* **Python** — 174 tests over the binding: the shared vectors driven through
   ctypes and the C ABI, a coverage suite that reads the command list out of the
   library and fails if any command has no Python method, and the CLI end to end
   against a real store.
-* **Lua** — 187 tests. Not the cryptography again, but the path through the
+* **Lua** — 198 tests. Not the cryptography again, but the path through the
   boundary: that a 256-bit integer stays a string rather than becoming a
   double, that an emoji arrives as the bytes that were hashed, that an error
   code is the same word on both sides. Plus the interactive menu, driven by

@@ -450,6 +450,30 @@ t.suite("interactive / sending", function()
     t.contains(out, "that one is required")
   end)
 
+  t.case("every say() call passes the context it writes through", function()
+    -- The bug this catches: `say(plan_summary(err.message))` in the menu's
+    -- send path, one argument short. Every send from the menu hit it the
+    -- moment the wallet asked for confirmation, the pcall reported
+    -- "error [internal]", and the send died. It failed closed, so nothing was
+    -- ever at risk — but the flow did not work, and the message blamed the
+    -- wallet rather than the caller. A source check rather than a session,
+    -- because reaching that line needs a node the test suite does not have.
+    local file = assert(io.open("causewaybay/interactive.lua"))
+    local source = file:read("*a")
+    file:close()
+    local pos, found = 1, 0
+    while true do
+      local start, stop = source:find("[^%w_.:]say%(", pos)
+      if not start then break end
+      local head = source:sub(stop + 1, stop + 4)
+      t.ok(head == "ctx," or head == "ctx)",
+        "say() without a context: " .. source:sub(stop + 1, stop + 40))
+      found = found + 1
+      pos = stop + 1
+    end
+    t.ok(found > 10, "expected to have checked every say() call, saw " .. found)
+  end)
+
   t.case("the confirmation drops the CLI's advice", function()
     -- The wallet's refusal ends with "— re-run with --yes to confirm", which
     -- is guidance for a shell and nonsense in a prompt.

@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 
 use crate::chain::http;
 use crate::chain::{
-    Balance, ChainClient, ClientConfig, PreparedTransfer, TransactionStatus, TransferReceipt,
+    self, Balance, ChainClient, ClientConfig, PreparedTransfer, TransactionStatus, TransferReceipt,
     TransferRequest,
 };
 use crate::error::{self, Result};
@@ -118,12 +118,21 @@ impl ChainClient for SolanaClient {
             error::rpc_error("the node does not recognise the blockhash it just issued; try again")
         })?;
 
+        // The fee is the cluster's number; question it before asking whether
+        // the account happens to be rich enough to pay it.
+        let units = self.network.units();
+        chain::check_fee(
+            &self.network,
+            request.fee_ceiling(&self.network),
+            fee as u128,
+            units,
+        )?;
+
         // Every reason this transfer cannot work, checked before signing.
         let balance = self.lamports(&sender).await?;
         let needed = lamports
             .checked_add(fee)
             .ok_or_else(|| error::invalid_amount("the amount plus its fee overflows"))?;
-        let units = self.network.units();
         if balance < needed {
             return Err(error::insufficient_funds(format!(
                 "balance {} cannot cover {} plus {} of fee",
@@ -171,12 +180,8 @@ impl ChainClient for SolanaClient {
             fee_rate: None,
             nonce: None,
             gas_limit: None,
-            prompt: format!(
-                "Send {} from {sender} to {} on {}",
-                units.format_with_symbol(request.amount),
-                request.to,
-                self.network.name
-            ),
+            network: self.network,
+            note: None,
             detail: json!({
                 "fee_lamports": fee,
                 "rent_exempt_minimum": rent_minimum,
@@ -303,7 +308,7 @@ mod tests {
                 "",
             )
             .unwrap()
-            .bip39_seed(),
+            .bip39_seed()[..],
             0,
         )
         .unwrap();

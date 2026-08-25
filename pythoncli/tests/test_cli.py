@@ -349,18 +349,26 @@ def test_history_starts_empty(jrun):
     assert data(jrun, "history") == []
 
 
-def test_the_store_is_append_only_and_well_formed(jrun, home):
+def test_the_store_appends_and_is_well_formed(jrun, home):
     account = data(jrun, "account", "new", "-l", "one")
     data(jrun, "account", "rename", "one", "two")
-    data(jrun, "--yes", "account", "remove", "two")
 
     lines = [json.loads(line) for line in (home / "accounts.jsonl").read_text().splitlines()]
-    assert [line["type"] for line in lines] == [
-        "account.create",
-        "account.rename",
-        "account.delete",
-    ]
+    assert [line["type"] for line in lines] == ["account.create", "account.rename"]
     assert all(line["schema"] == 1 and line["id"] == account["id"] for line in lines)
+
+
+def test_removing_an_account_takes_its_key_material_with_it(jrun, home):
+    """A tombstone stopped the replay showing the account and left its
+    plaintext private key and mnemonic in the file for good."""
+    data(jrun, "account", "import-mnemonic", "-m", TEST_MNEMONIC, "-l", "one")
+    secret = data(jrun, "account", "export", "one")["private_key"]
+
+    data(jrun, "--yes", "account", "remove", "one")
+
+    raw = (home / "accounts.jsonl").read_text()
+    assert secret not in raw
+    assert TEST_MNEMONIC not in raw
 
 
 def test_a_corrupt_line_does_not_break_the_wallet(jrun, home):
@@ -665,6 +673,27 @@ def test_a_network_is_named_by_its_key_however_it_was_described():
     assert network_key("cardano-preprod") == "cardano-preprod"
     assert network_key({"key": "cardano-preprod", "name": "Cardano Preprod"}) == "cardano-preprod"
     assert network_key(None) is None
+
+
+@pytest.mark.parametrize("interruption", [EOFError, KeyboardInterrupt])
+def test_the_two_ways_out_of_a_real_terminal_end_the_session_cleanly(
+    wallet, capsys, monkeypatch, interruption
+):
+    """Ctrl-D and Ctrl-C leave a prompt; neither is a crash.
+
+    The scripted-reader tests never touched this, because they hand the loop a
+    reader that returns ``None``. The default reader calls ``input()``, which
+    says the same thing by raising — and both ways out came back as a traceback
+    over an ordinary way to leave a prompt.
+    """
+    from causewaybay import interactive
+
+    def refuse() -> str:
+        raise interruption
+
+    monkeypatch.setattr("builtins.input", refuse)
+    assert interactive.run(wallet, out=sys.stdout, err=sys.stderr) == 0
+    capsys.readouterr()
 
 
 def test_switching_to_a_chain_with_no_accounts_still_lands(wallet, capsys):

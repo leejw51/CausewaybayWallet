@@ -15,6 +15,7 @@
 use k256::schnorr::signature::{Signer, Verifier};
 use k256::schnorr::{Signature, SigningKey, VerifyingKey};
 use sha2::{Digest, Sha256};
+use zeroize::{ZeroizeOnDrop, Zeroizing};
 
 use crate::bip32::ExtendedPrivateKey;
 use crate::error::{self, Result};
@@ -59,14 +60,22 @@ pub fn path(index: u32) -> String {
 }
 
 /// Derive the raw 32-byte key at `m/44'/2400'/0'/<role>/<index>`.
-pub fn derive_key(seed: &[u8], role: Role, index: u32) -> Result<[u8; 32]> {
-    Ok(ExtendedPrivateKey::from_seed(seed)?
-        .derive_path(&path_for(role, index))?
-        .key)
+pub fn derive_key(seed: &[u8], role: Role, index: u32) -> Result<Zeroizing<[u8; 32]>> {
+    Ok(Zeroizing::new(
+        ExtendedPrivateKey::from_seed(seed)?
+            .derive_path(&path_for(role, index))?
+            .key,
+    ))
 }
 
 /// A derived Midnight account on the unshielded (Night) side.
+///
+/// The two raw scalars are wiped on drop. `SigningKey` belongs to the ledger
+/// crates and manages its own memory, so what is wiped here is the material
+/// this wallet copied out of the derivation.
+#[derive(ZeroizeOnDrop)]
 pub struct MidnightAccount {
+    #[zeroize(skip)]
     pub signing_key: SigningKey,
     /// The scalar exactly as BIP-32 produced it.
     ///
@@ -85,6 +94,7 @@ pub struct MidnightAccount {
     /// and says so when a send needs one, rather than silently deriving a
     /// stranger's dust address.
     dust_seed: Option<[u8; 32]>,
+    #[zeroize(skip)]
     pub path: Option<String>,
 }
 
@@ -104,8 +114,8 @@ impl MidnightAccount {
         let key = derive_key(seed, Role::NightExternal, index)?;
         Ok(MidnightAccount {
             signing_key: signing_key(&key)?,
-            secret: key,
-            dust_seed: Some(derive_key(seed, Role::Dust, index)?),
+            secret: *key,
+            dust_seed: Some(*derive_key(seed, Role::Dust, index)?),
             path: Some(path(index)),
         })
     }
@@ -129,7 +139,8 @@ impl MidnightAccount {
             ),
             n => {
                 return Err(error::invalid_private_key(format!(
-                    "a Midnight secret is 32 bytes (a night key) or 64 (a night                      key and its DUST seed), got {n}"
+                    "a Midnight secret is 32 bytes (a night key) or 64 (a night \
+                     key and its DUST seed), got {n}"
                 )))
             }
         };
@@ -159,7 +170,9 @@ impl MidnightAccount {
     pub fn dust_seed(&self) -> Result<[u8; 32]> {
         self.dust_seed.ok_or_else(|| {
             error::usage(
-                "this account was imported as a bare night key, so the wallet does                  not have the DUST key that pays Midnight fees. Re-import it from                  its mnemonic to send; it can still receive and sign as it is",
+                "this account was imported as a bare night key, so the wallet does \
+                 not have the DUST key that pays Midnight fees. Re-import it from \
+                 its mnemonic to send; it can still receive and sign as it is",
             )
         })
     }
@@ -231,7 +244,7 @@ mod tests {
     }
 
     fn seed() -> [u8; 64] {
-        Seed::new(PHRASE, "").unwrap().bip39_seed()
+        *Seed::new(PHRASE, "").unwrap().bip39_seed()
     }
 
     /// Against `@midnight-ntwrk/wallet-sdk-hd`, for every index in the file.

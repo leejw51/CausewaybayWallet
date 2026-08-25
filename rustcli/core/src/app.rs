@@ -40,6 +40,11 @@ const CACHE_DIR: &str = "cache";
 /// How often `--wait` asks whether a transfer has landed.
 const CONFIRM_POLL: Duration = Duration::from_millis(1500);
 
+/// Said out loud on every import, because a second plaintext copy of somebody's
+/// phrase should not be a thing they find out about by reading `recent.jsonl`.
+const REMEMBERED_NOTE: &str =
+    "\n\nRemembered for `recent list`; drop that copy with `recent forget`.";
+
 /// A send that has passed every check and is waiting only on a yes.
 ///
 /// Splitting the plan from the execution is what lets the TUI run its own
@@ -56,16 +61,18 @@ pub struct SendPlan {
 
 impl SendPlan {
     /// The question a caller should put to the user.
-    pub fn prompt(&self) -> &str {
-        &self.prepared.prompt
+    ///
+    /// One sentence, built by the chain layer, naming the fee as well as the
+    /// amount — so a front end cannot ask for a yes without showing what the
+    /// yes costs.
+    pub fn prompt(&self) -> String {
+        self.prepared.prompt()
     }
 
     /// How to render this transfer's fee, which is not always the unit the
     /// transfer itself is counted in.
     pub fn fee_units(&self) -> chain::Amount {
-        self.prepared
-            .fee_unit
-            .unwrap_or_else(|| self.network.units())
+        self.prepared.fee_units()
     }
 }
 
@@ -380,7 +387,10 @@ impl App {
                     created.len(),
                     if created.len() == 1 { "" } else { "s" }
                 );
-                Ok(self.render_created(&created, Some(seed.phrase()), false, &heading))
+                let mut output =
+                    self.render_created(&created, Some(seed.phrase()), false, &heading);
+                output.human.push_str(REMEMBERED_NOTE);
+                Ok(output)
             }
 
             AccountCommand::ImportKey { private_key, label } => {
@@ -408,7 +418,7 @@ impl App {
                 Ok(CommandOutput::new(
                     account.public_view(),
                     format!(
-                        "Imported {} ({}) on {}",
+                        "Imported {} ({}) on {}{REMEMBERED_NOTE}",
                         account.label, account.address, account.chain
                     ),
                 ))
@@ -420,7 +430,7 @@ impl App {
                 secret,
             } => {
                 let accounts = self.store.accounts()?;
-                let active = self.store.active_account().ok().map(|a| a.id);
+                let active = self.store.active_account().ok().map(|a| a.id.clone());
 
                 // `--format` turns this into an export; without it the command
                 // behaves exactly as it always has.
@@ -1043,10 +1053,32 @@ impl App {
                 }
                 rows.push(("Explorer", n.explorer.to_string()));
 
+                // The ceiling in force, and whether it is one the user set —
+                // a number the wallet will refuse a send over belongs where
+                // the wallet's settings are read, not only in the refusal.
+                let fee_units = self.chain().fee_units(&n);
+                let stored = self.fee_ceiling(None)?;
+                let ceiling = stored.unwrap_or(n.max_fee);
+                // Named as the verb it is. "Max fee" is what every other
+                // wallet calls the price you are willing to pay, and a
+                // user who reads it that way sets it low and gets
+                // refusals instead of cheap sends.
+                rows.push((
+                    "Refuse a fee over",
+                    match stored {
+                        Some(_) => format!("{} (set)", fee_units.format_with_symbol(ceiling)),
+                        None => format!("{} (built in)", fee_units.format_with_symbol(ceiling)),
+                    },
+                ));
+
                 Ok(CommandOutput::new(
                     json!({
                         "key": n.key, "chain": n.chain.as_str(), "name": n.name,
                         "chain_id": n.chain_id, "symbol": n.symbol, "decimals": n.decimals,
+                        "max_fee": fee_units.format(ceiling),
+                        "max_fee_raw": ceiling.to_string(),
+                        "max_fee_symbol": fee_units.symbol,
+                        "max_fee_is_default": stored.is_none(),
                         "endpoint": endpoint,
                         // `rpc` is the name SPEC.md and the Python CLI use, and
                         // callers branch on it; `endpoint` is the same value
@@ -1111,6 +1143,63 @@ impl App {
                 Ok(CommandOutput::new(
                     json!({"key": target.key, "endpoint": effective, "rpc": effective}),
                     format!("The endpoint for {} is now {effective}", target.key),
+                ))
+            }
+
+            NetworkCommand::SetMaxFee { network, amount } => {
+                let target =
+                    network::find_for(self.chain, &network).or_else(|_| network::find(&network))?;
+                let units = chain::chain(target.chain).fee_units(&target);
+                let wanted = parse_fee_amount(&amount, units, &target)?;
+                // Stored with its denomination, always, whatever the user
+                // typed. A bare `2` in `config.jsonl` means nothing on its
+                // own: fees are paid in a different token on every chain, and
+                // on Midnight in a different token from the one the same
+                // wallet's balances are counted in. A reader that guesses
+                // wrong there is wrong by a factor of a billion, so the record
+                // says which token it means and the reader checks rather than
+                // assumes.
+                self.store.config_set(
+                    &target.max_fee_config_key(),
+                    &units.format_with_symbol(wanted),
+                )?;
+
+                let effective = if wanted == 0 { target.max_fee } else { wanted };
+                let human = if wanted == 0 {
+                    format!(
+                        "{} is back to its built-in fee ceiling of {}",
+                        target.key,
+                        units.format_with_symbol(effective)
+                    )
+                } else if wanted > target.max_fee {
+                    // Not refused — it is the user's wallet — but not passed
+                    // over in silence either: a ceiling raised here stays
+                    // raised for every send on this network, which is a larger
+                    // thing than `--max-fee` on one command.
+                    format!(
+                        "The fee ceiling for {} is now {}, above the built-in {}. \
+                         Every send on this network is held to the higher number \
+                         until you set it back to 0",
+                        target.key,
+                        units.format_with_symbol(effective),
+                        units.format_with_symbol(target.max_fee),
+                    )
+                } else {
+                    format!(
+                        "The fee ceiling for {} is now {}",
+                        target.key,
+                        units.format_with_symbol(effective)
+                    )
+                };
+                Ok(CommandOutput::new(
+                    json!({
+                        "key": target.key,
+                        "max_fee": units.format(effective),
+                        "max_fee_raw": effective.to_string(),
+                        "symbol": units.symbol,
+                        "automatic": wanted == 0,
+                    }),
+                    human,
                 ))
             }
         }
@@ -1363,7 +1452,7 @@ impl App {
             // transfer is signed — it simply never leaves the machine.
             return Ok(self.render_dry_run(&plan));
         }
-        self.confirm(plan.prompt())?;
+        self.confirm(&plan.prompt())?;
         self.execute_send(plan, args.wait)
     }
 
@@ -1389,6 +1478,7 @@ impl App {
         if let Some(data) = &args.data {
             request.data = wallet::parse_hex(data)?;
         }
+        request.max_fee = self.fee_ceiling(args.max_fee.as_deref())?;
         if !request.data.is_empty() && self.chain != ChainId::Evm {
             return Err(error::usage(format!(
                 "--data attaches EVM call data, and this transfer is on {}",
@@ -1404,6 +1494,44 @@ impl App {
             network: self.network,
             client,
         })
+    }
+
+    /// The fee ceiling this send should be held to, if not the built-in one.
+    ///
+    /// Three places can name it, and they are tried in the order of how
+    /// deliberate they are: the flag on this one command, then a ceiling
+    /// stored for this network, then nothing — which leaves the chain layer to
+    /// use [`Network::max_fee`].
+    ///
+    /// `0` is how a stored setting says "automatic". The store has no way to
+    /// hold a number that is absent, and a user who has set a ceiling and
+    /// wants it back the way it was needs something to type; `0` is that, and
+    /// it cannot be confused with a real ceiling because a transfer that may
+    /// pay no fee at all is not a thing any of these chains has.
+    ///
+    /// Read in the fee's own unit, which on Midnight is not the transfer's: a
+    /// NIGHT transfer pays its fee in DUST.
+    fn fee_ceiling(&self, flag: Option<&str>) -> Result<Option<u128>> {
+        let units = self.chain().fee_units(&self.network);
+        if let Some(ceiling) = flag {
+            return Ok(Some(units.parse(ceiling)?));
+        }
+        let Some(stored) = self.store.config_get(&self.network.max_fee_config_key())? else {
+            return Ok(None);
+        };
+        let stored = stored.trim();
+        if stored.is_empty() {
+            return Ok(None);
+        }
+        // A stored value that no longer parses is not worth failing a send
+        // over, but it must not silently mean "no ceiling" either — the
+        // built-in one is the safe reading of a setting nobody can read.
+        // Parsed the same way it was written, so a hand-edited `2 DUST` in
+        // `config.jsonl` reads as the two DUST it plainly says.
+        let Ok(parsed) = parse_fee_amount(stored, units, &self.network) else {
+            return Ok(None);
+        };
+        Ok((parsed > 0).then_some(parsed))
     }
 
     /// Show a signed transfer without broadcasting it.
@@ -1570,7 +1698,14 @@ impl App {
             rows.push(("Block", block.to_string()));
         }
         if let Some(secondary) = &secondary_id {
-            rows.push(("Extrinsic", secondary.clone()));
+            // Midnight's second identifier is a real one — Substrate's hash for
+            // the extrinsic, not the ledger's for the transfer. Everywhere else
+            // it means the endpoint disagreed with the id computed here, and
+            // the locally computed one is the one that was signed.
+            rows.push(match record.chain {
+                ChainId::Midnight => ("Extrinsic", secondary.clone()),
+                _ => ("Endpoint reported", secondary.clone()),
+            });
         }
         rows.push(("Explorer", explorer.clone()));
 
@@ -1616,7 +1751,7 @@ impl App {
                 self.chain().check_address(&self.network, raw)?;
                 raw.trim().to_string()
             }
-            None => self.pick_account(None)?.address,
+            None => self.pick_account(None)?.address.clone(),
         };
         let client = self.client()?;
         let id = runtime::block_on(client.faucet(&target, requested))??;
@@ -1777,7 +1912,7 @@ impl App {
                 match account {
                     // These chains verify with key material, so the account's
                     // secret is what goes through, not its address.
-                    Some(account) => Some(account.private_key),
+                    Some(account) => Some(account.private_key.clone()),
                     None if given.is_some() => Some(given.unwrap().to_string()),
                     None => None,
                 }
@@ -1789,7 +1924,7 @@ impl App {
                 .store
                 .active_account_on(self.chain)
                 .ok()
-                .map(|account| account.address),
+                .map(|account| account.address.clone()),
         };
 
         let recovered =
@@ -1950,12 +2085,21 @@ impl App {
                     )
                 })??;
 
+                // The same guard a native send gets: the gas price is the
+                // node's number, and an ERC-20 transfer pays it too.
+                let gas_cost = gas_price * U256::from(gas_limit);
+                let fee = chain::evm::to_u128(gas_cost, "the gas cost")?;
+                let units = self.units();
+                chain::check_fee(&self.network, self.network.max_fee, fee, units)?;
+
                 self.confirm(&format!(
-                    "Transfer {amount} of token {} from {} to {} on {}",
+                    "Transfer {amount} of token {} from {} to {} on {}, paying a \
+                     fee of up to {}",
                     token.to_checksum(None),
                     account.label,
                     recipient.to_checksum(None),
-                    self.network.name
+                    self.network.name,
+                    units.format_with_symbol(fee),
                 ))?;
 
                 let transaction = LegacyTransaction {
@@ -2202,6 +2346,17 @@ impl App {
             ),
             ("Endpoint".into(), endpoint.clone()),
         ];
+        // The fee this wallet will refuse a send over, in the token that pays
+        // it. Named with its denomination every time it is shown: on Midnight
+        // the fee comes out of DUST while the balance beside it is NIGHT, and
+        // a number without its unit there is wrong by a factor of a billion.
+        let fee_units = self.chain().fee_units(&self.network);
+        let stored_ceiling = self.fee_ceiling(None)?;
+        let ceiling = stored_ceiling.unwrap_or(self.network.max_fee);
+        rows.push((
+            "Refuse a fee over".into(),
+            fee_units.format_with_symbol(ceiling),
+        ));
         for entry in &by_chain {
             let count = entry["accounts"].as_u64().unwrap_or(0);
             if count > 0 {
@@ -2238,6 +2393,10 @@ impl App {
                 "chains": by_chain,
                 "network": self.network.key,
                 "chain_id": self.network.chain_id,
+                "max_fee": fee_units.format(ceiling),
+                "max_fee_raw": ceiling.to_string(),
+                "max_fee_symbol": fee_units.symbol,
+                "max_fee_is_default": stored_ceiling.is_none(),
                 "rpc": endpoint.clone(),
                 "endpoint": endpoint,
             }),
@@ -2291,6 +2450,44 @@ fn resolve_chain_and_network(
         }
     };
     Ok((network.chain, network))
+}
+
+/// Parse a fee amount, accepting — and checking — a unit written after it.
+///
+/// A fee ceiling is counted in the token that pays the fee, and on three of
+/// the four chains that is the token everything else on screen is counted in
+/// too. Midnight is the exception: a transfer moves NIGHT and the fee comes
+/// out of DUST, which is a different token at a different scale. So a bare
+/// `2` on a Midnight network is nine orders of magnitude away from what
+/// someone reading their NIGHT balance is likely to have meant.
+///
+/// Writing the unit is therefore allowed — `2 DUST`, `2dust` — and a unit that
+/// is not the fee's is refused rather than quietly taken as the fee's. Bare
+/// numbers still work everywhere; this only catches the reading that is wrong.
+fn parse_fee_amount(text: &str, units: chain::Amount, network: &Network) -> Result<u128> {
+    let trimmed = text.trim();
+    let split = trimmed
+        .find(|c: char| c.is_ascii_alphabetic())
+        .unwrap_or(trimmed.len());
+    let (number, suffix) = trimmed.split_at(split);
+    let suffix = suffix.trim();
+    if !suffix.is_empty() && !suffix.eq_ignore_ascii_case(units.symbol) {
+        return Err(error::invalid_amount(format!(
+            "fees on {} are paid in {}, not {suffix}{}",
+            network.key,
+            units.symbol,
+            if network.symbol.eq_ignore_ascii_case(suffix) {
+                format!(
+                    " — {} is what a transfer moves there, and the fee comes out \
+                     of a different token",
+                    network.symbol
+                )
+            } else {
+                String::new()
+            }
+        )));
+    }
+    units.parse(number)
 }
 
 /// Turn a JSON key into a table label: `gas_price_gwei` → `Gas price gwei`.

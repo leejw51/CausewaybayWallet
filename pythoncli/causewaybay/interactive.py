@@ -273,8 +273,14 @@ def run(
     if read is None:
 
         def read() -> str | None:  # pragma: no cover - real terminal input
-            line = out and input()
-            return line
+            # `None` is end of input, which the loop below treats as a quit.
+            # `input()` says the same thing by raising, and the two ways out of
+            # a real terminal — Ctrl-D and Ctrl-C — both used to escape as a
+            # traceback over what is an ordinary way to leave a prompt.
+            try:
+                return input()
+            except (EOFError, KeyboardInterrupt):
+                return None
 
     session = Session(wallet, out, err, read)
 

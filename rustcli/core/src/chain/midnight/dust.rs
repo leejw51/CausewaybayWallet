@@ -225,6 +225,12 @@ fn save_cache(
     }
 }
 
+/// The unit fees are counted in: DUST, at 15 decimal places ("specks").
+///
+/// Not the unit a transfer moves — that is NIGHT, at six — which is why a
+/// prepared Midnight transfer carries its fee unit explicitly.
+pub const DUST: crate::chain::Amount = crate::chain::Amount::new(15, "DUST");
+
 /// DUST is quoted with 15 decimal places ("specks").
 pub fn format_dust(specks: u128) -> String {
     crate::chain::amount::format_units(specks, 15)

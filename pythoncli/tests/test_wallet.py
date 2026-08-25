@@ -42,6 +42,24 @@ def test_a_missing_library_is_an_io_error(tmp_path):
     assert "looked in" in caught.value.message
 
 
+def test_the_library_is_never_looked_for_relative_to_the_cwd():
+    """A slash-less name reaches ``dlopen`` as "search for this".
+
+    That search includes the working directory on macOS, and ``LoadLibrary``'s
+    default order includes it on Windows — so a bare candidate means running
+    ``cwbwallet`` from Downloads, or from a cloned untrusted repo, can load a
+    planted ``libcausewaybay_ffi.dylib`` and hand it every mnemonic that
+    crosses ``cwb_execute``. The ABI check is no defence: a planted library
+    exports ``cwb_abi_version`` returning whatever it likes.
+    """
+    from pathlib import Path
+
+    from causewaybay import ffi
+
+    for candidate in ffi.search_paths(Path("/checkout/pythoncli/causewaybay")):
+        assert Path(candidate).is_absolute(), f"relative candidate: {candidate}"
+
+
 def test_a_fresh_home_starts_empty(wallet: Wallet):
     assert wallet.accounts() == []
     assert wallet.info()["accounts"] == 0

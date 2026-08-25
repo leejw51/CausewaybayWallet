@@ -409,6 +409,16 @@ function Wallet:set_rpc(network, url)
   return self:call({ "network", "set-rpc", network, url or "" })
 end
 
+--- Refuse any fee above `amount` on `network`. `"0"` restores the built-in one.
+---
+--- Counted in the token that pays the fee, which is the native token
+--- everywhere except Midnight — a Midnight transfer moves NIGHT and pays in
+--- DUST. Write the unit to have it checked: `"2 DUST"` is accepted, `"2 NIGHT"`
+--- is refused rather than read as DUST.
+function Wallet:set_max_fee(network, amount)
+  return self:call({ "network", "set-max-fee", network, tostring(amount) })
+end
+
 -- ------------------------------------------------------------------- the chains
 
 --- The chains this wallet supports, through the command surface.
@@ -457,11 +467,13 @@ end
 --- Send native CRO/TCRO. Requires `opts.to` and `opts.amount`; needs `yes`.
 ---
 --- Everything else has a sensible default: the gas limit is estimated, the gas
---- price comes from the node, and the nonce is the account's pending one.
+--- price comes from the node, the nonce is the account's pending one, and the
+--- fee is held to the network's ceiling unless `max_fee` raises it.
 function Wallet:send(opts)
   opts = opts or {}
   return self:call(with_flags({ "send" }, opts,
-    { "to", "amount", "gas_limit", "gas_price_gwei", "nonce", "data", "wait", "account" }), opts)
+    { "to", "amount", "gas_limit", "gas_price_gwei", "nonce", "data", "max_fee", "wait", "account" }),
+    opts)
 end
 
 --- Look a transaction up on chain.
@@ -666,6 +678,7 @@ M.COMMANDS = {
   ["network current"] = "current_network",
   ["network use"] = "use_network",
   ["network set-rpc"] = "set_rpc",
+  ["network set-max-fee"] = "set_max_fee",
 
   ["balance"] = "balance",
   ["nonce"] = "nonce",

@@ -264,7 +264,7 @@ local function send_amount(ctx)
   end
   if err.code ~= "confirmation_required" then return report(ctx, err) end
 
-  say(plan_summary(err.message))
+  say(ctx, plan_summary(err.message))
   local go = confirm(ctx, "send it")
   if go == nil then return end
   if not go then

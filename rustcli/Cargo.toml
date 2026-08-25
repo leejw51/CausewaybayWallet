@@ -34,6 +34,9 @@ hmac = "0.12"
 pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
 rand = "0.8"
 hex = "0.4"
+# Secrets are wiped when they go out of scope rather than left in freed memory,
+# where a realloc, a swap file or a core dump can still carry them.
+zeroize = { version = "1", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 clap = { version = "4", features = ["derive", "env"] }

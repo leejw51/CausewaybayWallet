@@ -27,7 +27,9 @@ use ratatui::{Frame, Terminal};
 use serde_json::json;
 
 use causewaybay_core::app::{App, SendPlan};
-use causewaybay_core::command::{AccountCommand, SendArgs, TargetArgs};
+use causewaybay_core::command::{
+    AccountCommand, Command as WalletCommand, NetworkCommand, SendArgs, TargetArgs,
+};
 use causewaybay_core::error::{self, Result};
 use causewaybay_core::export::{self, Format};
 use causewaybay_core::host::Headless;
@@ -60,6 +62,8 @@ enum Action {
     /// Switch to the network with this key. Only the current chain's networks
     /// are offered, so the list stays short as chains are added.
     SelectNetwork(&'static str),
+    /// Change the fee this network's sends will be refused over.
+    SetMaxFee,
     Remove,
     Reload,
     Help,
@@ -241,6 +245,12 @@ fn build_commands() -> Vec<Command> {
 
     commands.extend([
         Command::new(
+            Action::SetMaxFee,
+            "Fee ceiling",
+            None,
+            "Refuse a fee over this here (0 = the built-in one)",
+        ),
+        Command::new(
             Action::Remove,
             "Remove wallet",
             Some('x'),
@@ -335,8 +345,8 @@ struct Job {
 }
 
 /// The [`Host`] a background thread runs under: progress goes to the event
-/// channel, questions are already answered — the TUI shows its own confirm
-/// screen after planning, and secrets are typed into its prompts, never read
+/// channel, and nothing can be asked — the TUI shows its own confirm screen
+/// after planning, and secrets are typed into its prompts, never read
 /// mid-command.
 struct JobHost {
     events: std::sync::mpsc::Sender<JobEvent>,
@@ -346,8 +356,20 @@ impl causewaybay_core::host::Host for JobHost {
     fn read_input(&self, what: &str) -> causewaybay_core::error::Result<String> {
         Err(error::usage(format!("no {what} can be read mid-plan")))
     }
-    fn confirm(&self, _prompt: &str) -> causewaybay_core::error::Result<()> {
-        Ok(())
+
+    /// Refused, rather than answered yes.
+    ///
+    /// Nothing this host runs asks anything today — `plan_send` and a balance
+    /// read are all of it, and the confirm screen comes afterwards on the UI
+    /// thread. It returned `Ok(())` on that reasoning, which made it an
+    /// auto-yes waiting for the first core change to add a question behind it:
+    /// there is no screen here to show one on, and a background thread that
+    /// answers for the user is the one thing a wallet's confirm step exists to
+    /// prevent. A refusal surfaces as an error the TUI can show.
+    fn confirm(&self, prompt: &str) -> causewaybay_core::error::Result<()> {
+        Err(causewaybay_core::error::confirmation_required(format!(
+            "{prompt} — this ran on a background thread, which cannot ask"
+        )))
     }
     fn progress(&self, message: &str) {
         let _ = self.events.send(JobEvent::Progress(message.to_string()));
@@ -368,6 +390,8 @@ enum InputKind {
     DeriveIndex,
     SendTo,
     SendAmount,
+    /// A fee ceiling for the network in view, in that network's fee token.
+    MaxFee,
     SignMessage,
     ExportPath(Format),
 }
@@ -409,11 +433,13 @@ struct State {
     detail: Vec<(String, String)>,
     /// The work running in the background, if any is.
     job: Option<Job>,
-    /// An address from the clipboard is sitting in the prompt, unaccepted.
+    /// The clipboard holds an address this prompt would accept.
     ///
-    /// While set, the hint line asks the question; any edit or answer clears
-    /// it, so the hint never claims an offer the user has already overridden.
-    clipboard_offer: bool,
+    /// A note, not a value: while set, the hint line says Ctrl-V would paste
+    /// it, and the field stays empty until the user does. Any edit or answer
+    /// clears the flag, so the hint never describes a clipboard the prompt has
+    /// moved past.
+    clipboard_has_address: bool,
     /// Staged transfer, filled in across the two input steps.
     pending_to: String,
     pending_amount: String,
@@ -461,7 +487,7 @@ impl State {
             current_chain,
             current_index: 0,
             job: None,
-            clipboard_offer: false,
+            clipboard_has_address: false,
             focus: Focus::Commands,
             mode: Mode::Browse,
             input: String::new(),
@@ -677,7 +703,7 @@ fn event_loop<B: ratatui::backend::Backend>(
     mut app: App,
     terminal: &mut Terminal<B>,
 ) -> Result<()> {
-    let active = app.store.active_account().ok().map(|a| a.id);
+    let active = app.store.active_account().ok().map(|a| a.id.clone());
     // Seeded from the store, not from DEFAULT_NETWORK: starting on the wrong
     // one would mark the wrong row as current and make `select_network` refuse
     // a real switch as a no-op.
@@ -894,7 +920,7 @@ fn run_action(app: &App, state: &mut State, action: Action) {
                 InputKind::BalanceAddress,
                 "Address to check (blank = this wallet)",
             );
-            offer_clipboard_address(app, state);
+            note_clipboard_address(app, state);
         }
         Action::NewWallet => new_wallet(app, state),
         Action::NewSeed => start_input(
@@ -920,6 +946,7 @@ fn run_action(app: &App, state: &mut State, action: Action) {
             });
         }
         Action::SelectNetwork(key) => select_network(app, state, key),
+        Action::SetMaxFee => start_max_fee(app, state),
         Action::ExportWallets => start_export_wallets(state),
         Action::Save(format) => start_export(state, format),
         Action::Derive => {
@@ -941,7 +968,7 @@ fn run_action(app: &App, state: &mut State, action: Action) {
                 state.pending_to.clear();
                 state.pending_amount.clear();
                 start_input(state, InputKind::SendTo, "Recipient address");
-                offer_clipboard_address(app, state);
+                note_clipboard_address(app, state);
             } else {
                 state.fail("No wallet selected — create one first");
             }
@@ -1114,14 +1141,17 @@ fn input_key(
     // too, but what it delivers depends on bracketed-paste support and every
     // multiplexer in between; this key works no matter what sits between the
     // wallet and the clipboard.
-    // Ctrl-U clears the line — the standard chord, and the "no thanks" to an
-    // offered clipboard address without cancelling the prompt itself.
+    // Ctrl-U clears the line — the standard chord, and the way to start the
+    // field over without cancelling the prompt itself.
     if modifiers.contains(KeyModifiers::CONTROL) && matches!(code, KeyCode::Char('u' | 'U')) {
         clear_input(state);
-        state.clipboard_offer = false;
+        state.clipboard_has_address = false;
         return;
     }
     if modifiers.contains(KeyModifiers::CONTROL) && matches!(code, KeyCode::Char('v' | 'V')) {
+        // The note has served its purpose either way; the hint goes back to
+        // naming the ordinary keys.
+        state.clipboard_has_address = false;
         match crate::clipboard::paste() {
             Ok(text) if text.trim().is_empty() => {
                 state.info("The clipboard is empty");
@@ -1135,22 +1165,22 @@ fn input_key(
         KeyCode::Esc => {
             state.mode = Mode::Browse;
             clear_input(state);
-            state.clipboard_offer = false;
+            state.clipboard_has_address = false;
             state.info("Cancelled");
         }
         KeyCode::Backspace => {
             state.input.pop();
-            state.clipboard_offer = false;
+            state.clipboard_has_address = false;
         }
         KeyCode::Char(c) => {
             state.input.push(c);
-            state.clipboard_offer = false;
+            state.clipboard_has_address = false;
         }
         KeyCode::Enter => {
             let value = state.input.trim().to_string();
             clear_input(state);
             state.mode = Mode::Browse;
-            state.clipboard_offer = false;
+            state.clipboard_has_address = false;
             submit(app, state, kind, value);
         }
         _ => {}
@@ -1256,6 +1286,21 @@ fn submit(app: &App, state: &mut State, kind: InputKind, value: String) {
             state.pending_amount = value;
             stage_send(app, state);
         }
+        InputKind::MaxFee => {
+            // Straight through the same command the CLI runs, so the parsing,
+            // the denomination check and the wording of the answer are the
+            // core's and not a second copy living here.
+            let network = state.current_network.clone();
+            match app.run(WalletCommand::Network {
+                command: NetworkCommand::SetMaxFee {
+                    network,
+                    amount: value,
+                },
+            }) {
+                Ok(output) => state.info(output.human),
+                Err(e) => state.fail(e.message),
+            }
+        }
         InputKind::SignMessage => match sign(app, state, &value) {
             Ok(signature) => {
                 state.detail = vec![("Message".into(), value), ("Signature".into(), signature)];
@@ -1318,7 +1363,7 @@ fn export_accounts_with_keys(app: &App, state: &State, path: &str) -> Result<Str
     if state.accounts.is_empty() {
         return Err(error::usage("there are no wallets to export"));
     }
-    let active = app.store.active_account().ok().map(|a| a.id);
+    let active = app.store.active_account().ok().map(|a| a.id.clone());
     let rendered = export::render(&state.accounts, Format::Jsonl, active.as_deref(), true);
 
     let target = std::path::Path::new(path);
@@ -1338,7 +1383,7 @@ fn export_accounts(app: &App, state: &State, format: Format, path: &str) -> Resu
     if state.accounts.is_empty() {
         return Err(error::usage("there are no wallets to save"));
     }
-    let active = app.store.active_account().ok().map(|a| a.id);
+    let active = app.store.active_account().ok().map(|a| a.id.clone());
     // Secrets follow whatever the detail pane is currently showing, so saving a
     // file can never reveal more than what is already on screen.
     let rendered = export::render(
@@ -1518,19 +1563,21 @@ fn remove_wallet(app: &App, state: &mut State) {
     ));
 }
 
-/// Offer the clipboard's content as the prompt's starting value, and say so.
+/// Note that the clipboard holds an address this prompt would accept.
 ///
-/// The offer is a question, not an assumption: the address appears in the
-/// prompt with its provenance named, and the user answers with Enter (use it)
-/// or Ctrl-U (clear it and type another). Nothing is queried or sent until
-/// they do.
+/// It used to put that address *in* the prompt. Clipboard-substitution
+/// malware — which watches for a copied address and swaps in its own — is a
+/// live attack against wallets, and pre-filling the recipient field hands it
+/// the field: the address was named on the confirm screen, but a user who
+/// copied an address, saw an address, and pressed Enter twice has checked
+/// nothing. So the paste is the user's move now. Ctrl-V is one keystroke and
+/// the hint line says so.
 ///
-/// Offered only when the clipboard is a plausible answer: one line, a valid
+/// Noted only when the clipboard is a plausible answer: one line, a valid
 /// address on the selected account's chain, and not that account's own.
-/// Anything else — a mnemonic, a number, prose — is left alone, so the prompt
-/// never opens holding junk, and never echoes a secret that happened to be
-/// copied.
-fn offer_clipboard_address(app: &App, state: &mut State) {
+/// Anything else — a mnemonic, a number, prose — says nothing at all, so the
+/// hint never advertises a secret that happened to be copied.
+fn note_clipboard_address(app: &App, state: &mut State) {
     let Some(account) = state.current().cloned() else {
         return;
     };
@@ -1552,8 +1599,7 @@ fn offer_clipboard_address(app: &App, state: &mut State) {
         // Blank already means this wallet, and a send to it is refused anyway.
         return;
     }
-    state.input = candidate.to_string();
-    state.clipboard_offer = true;
+    state.clipboard_has_address = true;
 }
 
 /// The wallet scoped to one account's chain.
@@ -1656,6 +1702,7 @@ fn stage_send(app: &App, state: &mut State) {
         gas_price_gwei: None,
         nonce: None,
         data: None,
+        max_fee: None,
         wait: false,
         dry_run: false,
         account: Some(account.id.clone()),
@@ -1890,6 +1937,39 @@ fn new_wallet(app: &App, state: &mut State) {
         }
         Err(e) => state.fail(e.message),
     }
+}
+
+/// Ask for the fee ceiling on the network in view.
+///
+/// The prompt names the denomination, because the number means nothing
+/// without it: fees are paid in a different token on every chain, and on
+/// Midnight in a different token from the one that wallet's balances are
+/// counted in. A bare "2" read as NIGHT rather than DUST is wrong by a factor
+/// of a billion, and the prompt is the only place to say so before it is typed.
+fn start_max_fee(app: &App, state: &mut State) {
+    let network = match network::find(&state.current_network) {
+        Ok(found) => found,
+        Err(e) => {
+            state.fail(e.message);
+            return;
+        }
+    };
+    let units = causewaybay_core::chain::chain(network.chain).fee_units(&network);
+    let current = app
+        .store
+        .config_get(&network.max_fee_config_key())
+        .ok()
+        .flatten()
+        .filter(|stored| !stored.trim().is_empty())
+        .unwrap_or_else(|| format!("{} (built in)", units.format_with_symbol(network.max_fee)));
+    start_input(
+        state,
+        InputKind::MaxFee,
+        &format!(
+            "Refuse a fee over, in {} on {} — now {current} (0 = built in)",
+            units.symbol, network.key
+        ),
+    );
 }
 
 fn select_network(app: &App, state: &mut State, key: &'static str) {
@@ -2428,8 +2508,8 @@ fn tail_fit(text: &str, width: usize) -> String {
 /// open the reference to find out which.
 fn hint_for(state: &State) -> &'static str {
     match state.mode {
-        Mode::Input(_) if state.clipboard_offer => {
-            "Clipboard address in the prompt — Enter uses it · Ctrl-U clears it · or just type"
+        Mode::Input(_) if state.clipboard_has_address => {
+            "Clipboard holds an address for this chain — Ctrl-V pastes it · or just type"
         }
         Mode::Input(_) => "Enter confirm · Esc cancel · Ctrl-V paste · Ctrl-U clear",
         Mode::Confirm(_) => "y confirm · any other key cancels",
@@ -2742,6 +2822,9 @@ mod tests {
             match action {
                 // Networks are menu-only: the list grows, letters would collide.
                 Action::SelectNetwork(_) => None,
+                // Menu-only too. A single key on the fee ceiling would put a
+                // safety setting one mis-keystroke away.
+                Action::SetMaxFee => None,
                 Action::Balance => Some('b'),
                 Action::Send => Some('s'),
                 Action::NewWallet => Some('n'),
@@ -2784,6 +2867,7 @@ mod tests {
             Action::Save(Format::Markdown),
             Action::ToggleSecrets,
             Action::ExportWallets,
+            Action::SetMaxFee,
             Action::Remove,
             Action::Reload,
             Action::Help,
@@ -4005,6 +4089,68 @@ mod tests {
         }
     }
 
+    /// The fee ceiling is settable from the keyboard, and the prompt names the
+    /// unit it wants — which is the whole difficulty on Midnight, where the
+    /// fee is paid in DUST while every balance on the same screen is NIGHT.
+    #[test]
+    fn the_fee_ceiling_is_set_from_the_pane_and_the_prompt_names_its_unit() {
+        let (dir, app) = wallet_app();
+        let mut state = State::with_network(Vec::new(), None, network::DEFAULT_NETWORK);
+
+        start_max_fee(&app, &mut state);
+        assert!(matches!(state.mode, Mode::Input(InputKind::MaxFee)));
+        // Cronos pays its fees in its own token, and the prompt says so along
+        // with the ceiling in force and how to get back to it.
+        assert!(state.status.contains("TCRO"), "{}", state.status);
+        assert!(state.status.contains("cronos-testnet"), "{}", state.status);
+        assert!(
+            state.status.contains("25 TCRO (built in)"),
+            "{}",
+            state.status
+        );
+        assert!(state.status.contains("0 = built in"), "{}", state.status);
+
+        typed(&app, &mut state, "3");
+        press(&app, &mut state, KeyCode::Enter);
+        assert!(state.status.contains("3 TCRO"), "{}", state.status);
+
+        // Stored with its denomination, so the record says what it means.
+        let config = std::fs::read_to_string(dir.path().join("config.jsonl")).unwrap();
+        assert!(config.contains(r#""max_fee.cronos-testnet""#), "{config}");
+        assert!(config.contains(r#""3 TCRO""#), "{config}");
+
+        // Asking again offers the value that is now in force, not the default.
+        start_max_fee(&app, &mut state);
+        assert!(state.status.contains("now 3 TCRO"), "{}", state.status);
+
+        // And 0 hands it back to the built-in ceiling.
+        typed(&app, &mut state, "0");
+        press(&app, &mut state, KeyCode::Enter);
+        assert!(state.status.contains("built-in"), "{}", state.status);
+    }
+
+    /// The prompt follows the network, and on Midnight the fee's token is not
+    /// the token the transfer moves.
+    #[test]
+    fn the_fee_prompt_asks_for_dust_on_midnight() {
+        let (_dir, app) = wallet_app();
+        let mut state = State::with_network(Vec::new(), None, "midnight-preview");
+
+        start_max_fee(&app, &mut state);
+        assert!(state.status.contains("DUST"), "{}", state.status);
+        assert!(
+            !state.status.contains("NIGHT"),
+            "the fee is not counted in what the transfer moves: {}",
+            state.status
+        );
+
+        // A number written in the transfer's token is refused rather than
+        // taken as the fee's — a factor of a billion apart.
+        typed(&app, &mut state, "2 NIGHT");
+        press(&app, &mut state, KeyCode::Enter);
+        assert!(state.status.contains("paid in DUST"), "{}", state.status);
+    }
+
     #[test]
     fn a_cancelled_confirmation_drops_the_staged_transfer() {
         let mut state = State::new(vec![account("a", "a")], None);
@@ -4248,7 +4394,7 @@ mod tests {
     /// question rather than silently assumed.
     #[test]
     #[cfg(target_os = "macos")]
-    fn a_copied_address_is_offered_and_junk_is_not() {
+    fn a_copied_address_is_mentioned_but_never_pre_filled() {
         let _guard = crate::clipboard::CLIPBOARD
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -4271,37 +4417,40 @@ mod tests {
             );
         };
 
-        // A valid Solana address, offered to a Solana account's prompt.
+        // A valid Solana address, mentioned to a Solana account's prompt —
+        // and mentioned only. Clipboard-substitution malware swaps its own
+        // address in for a copied one, and a pre-filled recipient field is
+        // exactly what it wants: the user copies an address, sees an address,
+        // and presses Enter twice having checked nothing.
         let mut state = State::new(vec![account_on("a", "sol", ChainId::Solana)], Some("a"));
         if crate::clipboard::copy(SOLANA_ADDRESS).is_err() {
             return; // no clipboard helper on this machine
         }
         open_prompt(&mut state);
-        offer_clipboard_address(&app, &mut state);
-        assert_eq!(state.input, SOLANA_ADDRESS);
-        assert!(state.clipboard_offer, "the offer must be marked as one");
-        // The question lives on the hint line, where a long address cannot
-        // scroll it away; both answers are named.
+        note_clipboard_address(&app, &mut state);
+        assert!(state.input.is_empty(), "the paste must be the user's move");
+        assert!(state.clipboard_has_address);
+        // The offer lives on the hint line, and names the key that takes it.
         let hint = hint_for(&state);
-        assert!(hint.contains("Enter"), "{hint}");
-        assert!(hint.contains("Ctrl-U"), "{hint}");
+        assert!(hint.contains("Ctrl-V"), "{hint}");
 
-        // Junk is not offered, and the prompt says nothing about a clipboard.
+        // Junk is not mentioned, and the prompt says nothing about a clipboard.
         let mut state = State::new(vec![account_on("a", "sol", ChainId::Solana)], Some("a"));
         crate::clipboard::copy("not an address at all").unwrap();
         open_prompt(&mut state);
-        offer_clipboard_address(&app, &mut state);
+        note_clipboard_address(&app, &mut state);
         assert!(state.input.is_empty());
-        assert!(!state.clipboard_offer);
+        assert!(!state.clipboard_has_address);
 
-        // A copied mnemonic is a secret; it must never be echoed as an offer.
+        // A copied mnemonic is a secret; the hint must not advertise it either.
         let mut state = State::new(vec![account_on("a", "sol", ChainId::Solana)], Some("a"));
         crate::clipboard::copy(PHRASE).unwrap();
         open_prompt(&mut state);
-        offer_clipboard_address(&app, &mut state);
+        note_clipboard_address(&app, &mut state);
+        assert!(state.input.is_empty());
         assert!(
-            state.input.is_empty(),
-            "a mnemonic was offered as an address"
+            !state.clipboard_has_address,
+            "a mnemonic was announced as an address"
         );
 
         // The account's own address is pointless for balance and refused for
@@ -4312,8 +4461,11 @@ mod tests {
         state.accounts[0].address = SOLANA_ADDRESS.into();
         crate::clipboard::copy(SOLANA_ADDRESS).unwrap();
         open_prompt(&mut state);
-        offer_clipboard_address(&app, &mut state);
-        assert!(state.input.is_empty(), "its own address was offered back");
+        note_clipboard_address(&app, &mut state);
+        assert!(
+            !state.clipboard_has_address,
+            "its own address was offered back"
+        );
         let _ = own;
 
         if let Some(text) = previous {
@@ -4563,7 +4715,14 @@ mod tests {
             Ok(JobEvent::Progress(line)) if line.contains("proving")
         ));
         assert!(host.read_input("mnemonic").is_err());
-        assert!(host.confirm("send?").is_ok(), "the TUI confirms on screen");
+        // A background thread has no screen to ask on, so it refuses rather
+        // than answering yes for the user. Nothing it runs asks today; this is
+        // what keeps that from becoming an auto-yes the day something does.
+        let refused = host.confirm("send 1 CRO?").unwrap_err();
+        assert_eq!(
+            refused.code,
+            causewaybay_core::error::Code::ConfirmationRequired
+        );
     }
 
     #[test]

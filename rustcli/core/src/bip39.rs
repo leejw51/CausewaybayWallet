@@ -3,6 +3,7 @@
 use hmac::Hmac;
 use sha2::{Digest, Sha256, Sha512};
 use unicode_normalization::UnicodeNormalization;
+use zeroize::Zeroizing;
 
 use crate::error::{self, Result};
 
@@ -81,17 +82,25 @@ pub fn entropy_to_mnemonic(entropy: &[u8]) -> Result<String> {
 }
 
 /// Recover the entropy behind a mnemonic, verifying its checksum.
-pub fn mnemonic_to_entropy(phrase: &str) -> Result<Vec<u8>> {
-    let normalized = normalize(phrase);
+pub fn mnemonic_to_entropy(phrase: &str) -> Result<Zeroizing<Vec<u8>>> {
+    let normalized = Zeroizing::new(normalize(phrase));
     let tokens: Vec<&str> = normalized.split(' ').filter(|t| !t.is_empty()).collect();
     entropy_bits_for_words(tokens.len())?;
 
     let words = wordlist();
-    let mut bits: Vec<bool> = Vec::with_capacity(tokens.len() * 11);
-    for token in &tokens {
-        let idx = words
-            .binary_search(token)
-            .map_err(|_| error::invalid_mnemonic(format!("'{token}' is not a BIP-39 word")))?;
+    let mut bits: Zeroizing<Vec<bool>> = Zeroizing::new(Vec::with_capacity(tokens.len() * 11));
+    for (position, token) in tokens.iter().enumerate() {
+        // The word itself stays out of the message. It is a twelfth of
+        // somebody's wallet, and an error string goes to stderr, into
+        // scrollback, and into whatever the host that called this logs. The
+        // position is what the user needs to find it anyway.
+        let idx = words.binary_search(token).map_err(|_| {
+            error::invalid_mnemonic(format!(
+                "word {} of {} is not in the BIP-39 word list",
+                position + 1,
+                tokens.len()
+            ))
+        })?;
         for i in (0..11).rev() {
             bits.push((idx >> i) & 1 == 1);
         }
@@ -99,14 +108,14 @@ pub fn mnemonic_to_entropy(phrase: &str) -> Result<Vec<u8>> {
 
     let entropy_bits = bits.len() * 32 / 33;
     let checksum_bits = bits.len() - entropy_bits;
-    let mut entropy = vec![0u8; entropy_bits / 8];
+    let mut entropy = Zeroizing::new(vec![0u8; entropy_bits / 8]);
     for (i, bit) in bits[..entropy_bits].iter().enumerate() {
         if *bit {
             entropy[i / 8] |= 1 << (7 - (i % 8));
         }
     }
 
-    let expected = Sha256::digest(&entropy);
+    let expected = Sha256::digest(&entropy[..]);
     for i in 0..checksum_bits {
         let want = (expected[i / 8] >> (7 - (i % 8))) & 1 == 1;
         if bits[entropy_bits + i] != want {
@@ -122,11 +131,12 @@ pub fn validate(phrase: &str) -> bool {
 }
 
 /// Derive the 64-byte BIP-39 seed (PBKDF2-HMAC-SHA512, 2048 rounds).
-pub fn to_seed(phrase: &str, passphrase: &str) -> [u8; 64] {
-    let normalized = normalize(phrase);
-    let salt = format!("mnemonic{}", passphrase.nfkd().collect::<String>());
-    let mut seed = [0u8; 64];
-    pbkdf2::pbkdf2::<Hmac<Sha512>>(normalized.as_bytes(), salt.as_bytes(), 2048, &mut seed)
+pub fn to_seed(phrase: &str, passphrase: &str) -> Zeroizing<[u8; 64]> {
+    let normalized = Zeroizing::new(normalize(phrase));
+    // The salt carries the passphrase, so it is key material too.
+    let salt = Zeroizing::new(format!("mnemonic{}", passphrase.nfkd().collect::<String>()));
+    let mut seed = Zeroizing::new([0u8; 64]);
+    pbkdf2::pbkdf2::<Hmac<Sha512>>(normalized.as_bytes(), salt.as_bytes(), 2048, &mut seed[..])
         .expect("PBKDF2 output length is valid");
     seed
 }
@@ -217,8 +227,8 @@ mod tests {
                 "entropy {hex_entropy}"
             );
             assert_eq!(
-                &mnemonic_to_entropy(phrase).unwrap(),
-                &entropy,
+                &mnemonic_to_entropy(phrase).unwrap()[..],
+                &entropy[..],
                 "phrase {phrase}"
             );
             assert_eq!(
@@ -238,7 +248,7 @@ mod tests {
             phrase,
             "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
         );
-        assert_eq!(mnemonic_to_entropy(&phrase).unwrap(), entropy.to_vec());
+        assert_eq!(mnemonic_to_entropy(&phrase).unwrap()[..], entropy[..]);
         assert_eq!(
             hex::encode(to_seed(&phrase, "TREZOR")),
             "c55257c360c07c72029aebc1b53c05ed0362ada38ead3e3e9efa3708e53495531f09a6987599d18264c1e1c92f2cf141630c7a3c4ab7c81b2f001698e7463b04"
@@ -250,7 +260,7 @@ mod tests {
         let entropy = [0x80u8; 32];
         let phrase = entropy_to_mnemonic(&entropy).unwrap();
         assert_eq!(phrase.split(' ').count(), 24);
-        assert_eq!(mnemonic_to_entropy(&phrase).unwrap(), entropy.to_vec());
+        assert_eq!(mnemonic_to_entropy(&phrase).unwrap()[..], entropy[..]);
     }
 
     #[test]
@@ -316,6 +326,18 @@ mod tests {
     fn passphrase_changes_the_seed() {
         let phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
         assert_ne!(to_seed(phrase, ""), to_seed(phrase, "TREZOR"));
+    }
+
+    /// The word a user typed is a twelfth of their wallet, and an error string
+    /// travels: stderr, scrollback, and whatever the host that called this logs.
+    #[test]
+    fn a_bad_word_is_reported_by_position_rather_than_quoted() {
+        let phrase = "abandon abandon zzzzzz abandon abandon abandon \
+                      abandon abandon abandon abandon abandon about";
+        let err = mnemonic_to_entropy(phrase).unwrap_err();
+        assert_eq!(err.code, error::Code::InvalidMnemonic);
+        assert!(!err.message.contains("zzzzzz"), "{}", err.message);
+        assert!(err.message.contains("word 3 of 12"), "{}", err.message);
     }
 
     #[test]

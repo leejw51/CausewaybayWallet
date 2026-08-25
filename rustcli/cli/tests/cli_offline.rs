@@ -560,23 +560,66 @@ fn history_starts_empty() {
 }
 
 #[test]
-fn the_store_is_append_only_and_well_formed() {
+fn the_store_appends_and_is_well_formed() {
     let wallet = Wallet::new();
     let account = wallet.json(&["account", "new", "-l", "one"]);
     let id = account["id"].as_str().unwrap().to_string();
     wallet.json(&["account", "rename", "one", "two"]);
-    wallet.json(&["--yes", "account", "remove", "two"]);
 
     let lines = wallet.read_log("accounts.jsonl");
     let types: Vec<_> = lines.iter().map(|l| l["type"].as_str().unwrap()).collect();
-    assert_eq!(
-        types,
-        ["account.create", "account.rename", "account.delete"]
-    );
+    assert_eq!(types, ["account.create", "account.rename"]);
     for line in &lines {
         assert_eq!(line["schema"], 1);
         assert_eq!(line["id"], id);
     }
+}
+
+/// Removing an account takes its key material out of the file.
+///
+/// It used to append an `account.delete` tombstone and stop there, so the
+/// replay stopped showing the account while its plaintext private key and
+/// mnemonic sat in `accounts.jsonl` for good — one `cat` away from anyone who
+/// could read the file at all.
+#[test]
+fn removing_an_account_takes_its_key_material_with_it() {
+    let wallet = Wallet::new();
+    wallet.json(&[
+        "account",
+        "import-mnemonic",
+        "-m",
+        TEST_MNEMONIC,
+        "-l",
+        "one",
+    ]);
+    // A second account from unrelated key material, so what survives the
+    // removal can be told apart from what should not.
+    wallet.json(&[
+        "account",
+        "import-key",
+        "-k",
+        "0x4c0883a69102937d6231471b5dbb6204fe5129617082792ae468d01a3f362318",
+        "-l",
+        "two",
+    ]);
+    let secret = wallet.json(&["account", "export", "one"])["private_key"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    wallet.json(&["--yes", "account", "remove", "one"]);
+
+    let raw = std::fs::read_to_string(wallet.home.path().join("accounts.jsonl")).unwrap();
+    assert!(
+        !raw.contains(&secret),
+        "the private key survived the removal"
+    );
+    assert!(!raw.contains(TEST_MNEMONIC), "the mnemonic survived it too");
+    // The account that was not removed is untouched.
+    let left = wallet.json(&["account", "list"]);
+    let left = left.as_array().unwrap();
+    assert_eq!(left.len(), 1);
+    assert_eq!(left[0]["label"], "two");
 }
 
 #[test]
@@ -1025,7 +1068,7 @@ fn clearing_forgets_everything() {
 }
 
 #[test]
-fn the_recall_log_is_append_only_and_well_formed() {
+fn the_recall_log_is_well_formed() {
     let wallet = Wallet::new();
     wallet.json(&[
         "account",
@@ -1035,15 +1078,65 @@ fn the_recall_log_is_append_only_and_well_formed() {
         "-l",
         "main",
     ]);
-    wallet.json(&["--yes", "recent", "forget", "1"]);
 
     let lines = wallet.read_log("recent.jsonl");
     let types: Vec<_> = lines.iter().map(|l| l["type"].as_str().unwrap()).collect();
-    assert_eq!(types, ["secret.remember", "secret.forget"]);
+    assert_eq!(types, ["secret.remember"]);
     for line in &lines {
         assert_eq!(line["schema"], 1);
         assert!(line["id"].as_str().unwrap().starts_with("sec_"));
     }
+}
+
+/// "Forget" has to mean it. A tombstone only stops the replay showing the
+/// entry; the phrase itself stayed in `recent.jsonl`.
+#[test]
+fn forgetting_a_secret_takes_the_phrase_out_of_the_file() {
+    let wallet = Wallet::new();
+    wallet.json(&[
+        "account",
+        "import-mnemonic",
+        "-m",
+        TEST_MNEMONIC,
+        "-l",
+        "main",
+    ]);
+    let path = wallet.home.path().join("recent.jsonl");
+    assert!(std::fs::read_to_string(&path)
+        .unwrap()
+        .contains(TEST_MNEMONIC));
+
+    wallet.json(&["--yes", "recent", "forget", "1"]);
+    let raw = std::fs::read_to_string(&path).unwrap();
+    assert!(!raw.contains(TEST_MNEMONIC), "the phrase survived `forget`");
+    assert_eq!(
+        wallet.json(&["recent", "list"]).as_array().unwrap().len(),
+        0
+    );
+}
+
+/// And so does "clear", which is the one a user reaches for after trying a
+/// phrase they did not mean to keep.
+#[test]
+fn clearing_the_recall_list_leaves_nothing_behind() {
+    let wallet = Wallet::new();
+    wallet.json(&[
+        "account",
+        "import-mnemonic",
+        "-m",
+        TEST_MNEMONIC,
+        "-l",
+        "main",
+    ]);
+    assert_eq!(wallet.json(&["--yes", "recent", "clear"])["forgotten"], 1);
+
+    let path = wallet.home.path().join("recent.jsonl");
+    let raw = std::fs::read_to_string(&path).unwrap_or_default();
+    assert!(!raw.contains(TEST_MNEMONIC), "the phrase survived `clear`");
+    assert_eq!(
+        wallet.json(&["recent", "list"]).as_array().unwrap().len(),
+        0
+    );
 }
 
 #[cfg(unix)]
