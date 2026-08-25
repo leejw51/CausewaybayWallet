@@ -14,7 +14,7 @@
  *             "yes": false,                 // answer confirmations with yes
  *             "stdin": null}                // what an argument of "-" means
  *
- * `chain` is one of evm, solana, cardano, midnight. Like `network` it is a
+ * `chain` is one of evm, solana, cardano, midnight, ecash. Like `network` it is a
  * default: a --chain inside `argv` wins. Naming a network settles the chain
  * too, because every network belongs to exactly one — so a host that already
  * has a network picker never needs to set this.

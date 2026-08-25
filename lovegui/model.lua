@@ -802,9 +802,9 @@ end
 function Model:create(label)
   -- Every chain at once: a wallet is one mnemonic and one index, and each
   -- chain derives its own account there. Creating only the chain in view made
-  -- "+ NEW" produce a quarter of a wallet — the other three chains showed
+  -- "+ NEW" produce one chain's worth of a wallet — the other chains showed
   -- nothing until the CLI filled them in. One press, one whole wallet, and the
-  -- chain in view just decides which of its four faces the list shows.
+  -- chain in view just decides which of its faces the list shows.
   local created, err = self.wallet:new_account({
     label = label ~= "" and label or nil,
     every_chain = true,

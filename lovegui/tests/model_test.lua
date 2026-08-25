@@ -328,8 +328,10 @@ t.suite("model / the session", function()
     model:create("stranger")
     model:login(model:offer_mnemonic(12))
     t.equal(#model.wallets, 1, "the session sees one")
-    -- Two wallets, four chains each: the stranger's and the session's.
-    t.equal(#model.all_wallets, 8, "the store still holds both, whole")
+    -- Two wallets, one account per chain each: the stranger's and the
+    -- session's.
+    t.equal(#model.all_wallets, 2 * #model:chains(),
+      "the store still holds both, whole")
   end)
 
   t.case("a phrase sees every wallet it controls", function()
@@ -355,7 +357,7 @@ t.suite("model / the session", function()
 
     local seen = {}
     for _, entry in ipairs(fresh.wallets) do seen[entry.label] = true end
-    -- A named wallet spans four chains, so each face carries the chain's
+    -- A named wallet spans every chain, so each face carries the chain's
     -- name; the list shows the chain in view's.
     t.ok(seen["second-evm"] and seen["third-evm"], "including the ones made last time")
     t.ok(not seen["stranger-evm"], "and not the one it does not own")
@@ -939,7 +941,7 @@ t.suite("model / networks", function()
 
     local chains = {}
     for _, n in ipairs(networks) do chains[n.chain] = true end
-    for _, chain in ipairs({ "evm", "solana", "cardano", "midnight" }) do
+    for _, chain in ipairs({ "evm", "solana", "cardano", "midnight", "ecash" }) do
       t.ok(chains[chain], chain .. " has no network to switch to")
     end
 
@@ -1081,13 +1083,14 @@ t.suite("model / chains", function()
   t.case("lists the chains the library has, not a list kept here", function()
     local model = model_over()
     local chains = model:chains()
-    t.equal(#chains, 4)
+    t.equal(#chains, 5)
 
     local by_name = {}
     for _, c in ipairs(chains) do by_name[c.chain] = c end
     t.ok(by_name.solana, "solana is missing")
     t.ok(by_name.cardano, "cardano is missing")
     t.ok(by_name.midnight, "midnight is missing")
+    t.ok(by_name.ecash, "ecash is missing")
     t.equal(by_name.solana.derivation_path, "m/44'/501'/0'/0'")
   end)
 
@@ -1125,6 +1128,107 @@ t.suite("model / chains", function()
   end)
 
   t.case("a chain this build does not have is an error, not a crash", function()
+    local model = model_over()
+    t.equal(model:switch_chain("bitcoin"), false)
+    t.equal(model.status.code, "unknown_chain")
+    t.equal(model:chain(), "evm", "the chain in view did not move")
+  end)
+end)
+
+t.suite("model / ecash", function()
+  --- The eCash faces of the shared test phrase, at index 0. Both, because the
+  --- prefix is inside a CashAddr's checksum: these are two different strings
+  --- for one key, and neither decodes as the other.
+  local TESTNET = "ectest:qrwzys2q6xq98vwz0kjn6ulu5m6yljr5fy7w393sue"
+  local MAINNET = "ecash:qrwzys2q6xq98vwz0kjn6ulu5m6yljr5fyc909kalg"
+
+  t.case("the chain is reachable and lands on an eCash network", function()
+    local model = model_over()
+    t.ok(model:switch_chain("ecash"), model.status and model.status.message)
+    t.equal(model:chain(), "ecash")
+    t.ok(model.info.network:match("^ecash%-"), model.info.network)
+  end)
+
+  --- The number the GUI draws largest, and the one this chain is easiest to
+  --- get wrong: XEC has two decimal places where Bitcoin has eight. A balance
+  --- read with eight is out by a factor of a million, in the direction that
+  --- makes a large holding look like nothing.
+  t.case("the asset is counted in two places, not Bitcoin's eight", function()
+    local model = model_over()
+    t.ok(model:switch_chain("ecash"))
+
+    local asset = model:asset()
+    t.equal(asset.is_token, false)
+    t.equal(asset.symbol, "tXEC")
+    t.equal(model:symbol(), "tXEC")
+    t.equal(model.info.decimals, 2, "XEC is quoted in two places")
+
+    -- And mainnet is the same chain under its own ticker.
+    t.ok(model:switch_network("ecash-mainnet"))
+    t.equal(model:symbol(), "XEC")
+    t.equal(model.info.decimals, 2)
+  end)
+
+  --- The failure the wallet list exists to prevent, in the words of the
+  --- comment in `Model:refresh`: an address drawn under the wrong chain's
+  --- heading is an address offered for a deposit that cannot arrive there.
+  t.case("a wallet shows its CashAddr face under the eCash heading", function()
+    local model = model_over()
+    model:create("mine")
+    t.ok(model:switch_chain("ecash"), model.status and model.status.message)
+
+    t.equal(#model.wallets, 1, "the wallet has an eCash face")
+    local shown = model.wallets[1].address
+    t.equal(model.wallets[1].chain, "ecash")
+    t.ok(shown:match("^ectest:"), "not a CashAddr under eCash: " .. tostring(shown))
+    t.equal(shown:match("^0[xX]"), nil, "an EVM address is drawn under eCash")
+
+    -- Switching away and back must not leave the other chain's face behind.
+    t.ok(model:switch_chain("evm"))
+    t.ok(model.wallets[1].address:match("^0[xX]"), model.wallets[1].address)
+    t.ok(model:switch_chain("ecash"))
+    t.equal(model.wallets[1].address, shown, "the face came back unchanged")
+  end)
+
+  t.case("the derived faces are the ones the vectors pin down", function()
+    -- Through the same C ABI the GUI uses, against the shared file rather
+    -- than a string typed into this test.
+    local model = model_over()
+    local derived = model.wallet:derive({ mnemonic = support.MNEMONIC, index = 0, chain = "ecash" })
+    t.ok(derived, "nothing derived")
+    t.equal(derived.address, TESTNET)
+    t.equal(derived.address_mainnet, MAINNET)
+  end)
+
+  --- A session is the set of addresses one phrase controls, and a chain whose
+  --- addresses it failed to derive would make that phrase's own wallets
+  --- invisible after a login.
+  t.case("a login sees the wallets it owns on eCash too", function()
+    local model = model_over()
+    local phrase = support.MNEMONIC
+    model.wallet:import_mnemonic(phrase, { label = "mine", every_chain = true })
+    model:refresh()
+
+    t.ok(model:login(phrase), model.status and model.status.message)
+    t.ok(model:switch_chain("ecash"), model.status and model.status.message)
+    t.equal(#model.wallets, 1, "the phrase cannot see its own eCash wallet")
+    t.ok(model.wallets[1].address:match("^ectest:"), model.wallets[1].address)
+  end)
+
+  --- The fee ceiling is drawn on the network screen, and a bare number there
+  --- means nothing: every chain pays in a different token.
+  t.case("the fee ceiling arrives in XEC", function()
+    local model = model_over()
+    t.ok(model:switch_network("ecash-mainnet"))
+    t.ok(model.info.max_fee, "no ceiling reported at all")
+    t.equal(model.info.max_fee_symbol, "XEC")
+  end)
+
+  --- `switch_chain` takes the name the library uses. `bitcoin` is not it, and
+  --- must not become it: eCash shares Bitcoin's transaction format and none of
+  --- its chain, so a Bitcoin address accepted under that name would name an
+  --- eCash account nobody holds the key to.
+  t.case("bitcoin is not a name for this chain", function()
     local model = model_over()
     t.equal(model:switch_chain("bitcoin"), false)
     t.equal(model.status.code, "unknown_chain")

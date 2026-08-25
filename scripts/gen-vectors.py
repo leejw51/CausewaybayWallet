@@ -4,18 +4,22 @@
 Values come from reference implementations (the Trezor `mnemonic` library,
 `eth_account`, `eth_utils`) rather than being typed in by hand, and every
 published constant this project claims to match is asserted here before it is
-written out. Run it with the Python virtualenv:
+written out. The one encoding with no Python library behind it — eCash's
+CashAddr — is written out longhand and pinned to the vector published with its
+own specification. Run it with the Python virtualenv:
 
     pythoncli/.venv/bin/python scripts/gen-vectors.py
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
 from eth_account import Account
 from eth_account.messages import encode_defunct
+from eth_keys.datatypes import PrivateKey
 from eth_utils import keccak, to_checksum_address
 from mnemonic import Mnemonic
 
@@ -54,13 +58,19 @@ TREZOR_ENTROPY = [
     "f585c11aec520db57dd353c69554b21a89b20fb0650966fa0a9d6f74fd989d8f",
 ]
 
+# The phrase every multi-chain vector in this project derives from, so that a
+# reader can compare one wallet across five chains rather than five wallets.
+CANONICAL_PHRASE = (
+    "abandon abandon abandon abandon abandon abandon abandon abandon "
+    "abandon abandon abandon about"
+)
+
 # Mnemonics anyone working with Ethereum tooling will recognise.
 KNOWN_MNEMONICS = [
     {
         "name": "bip39-canonical",
         "note": "The all-zero-entropy phrase from the BIP-39 test vectors.",
-        "phrase": "abandon abandon abandon abandon abandon abandon abandon abandon "
-        "abandon abandon abandon about",
+        "phrase": CANONICAL_PHRASE,
     },
     {
         "name": "foundry-anvil-default",
@@ -539,6 +549,164 @@ def unit_vectors() -> dict:
     }
 
 
+# ================================================================== eCash
+
+# The base32 alphabet CashAddr writes an address with, and the generator of
+# the 40-bit BCH code that guards it. Both are from the CashAddr
+# specification; eCash adopted it whole and changed only the prefix.
+CASHADDR_CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
+CASHADDR_GENERATOR = [0x98F2BC8E61, 0x79B76D99E2, 0xF33E5FB3C4, 0xAE2EABE2A8, 0x1E4F43E470]
+
+# The version byte's type nibble: 0 for a public key hash, 1 for a script hash.
+CASHADDR_TYPE = {"p2pkh": 0x00, "p2sh": 0x08}
+
+# eCash's SLIP-0044 coin type. It is not Bitcoin's 0 and not the testnet 1:
+# a wallet that reached for either would derive real, funded-looking, wrong
+# addresses.
+ECASH_COIN_TYPE = 1899
+
+
+def cashaddr_polymod(values) -> int:
+    checksum = 1
+    for value in values:
+        top = checksum >> 35
+        checksum = ((checksum & 0x07FFFFFFFF) << 5) ^ value
+        for bit, generator in enumerate(CASHADDR_GENERATOR):
+            if top & (1 << bit):
+                checksum ^= generator
+    return checksum ^ 1
+
+
+def cashaddr_regroup(data, from_bits: int, to_bits: int):
+    """Regroup bit-widths, which is how 21 bytes become 34 base32 digits."""
+    accumulator = 0
+    bits = 0
+    out = []
+    for value in data:
+        accumulator = (accumulator << from_bits) | value
+        bits += from_bits
+        while bits >= to_bits:
+            bits -= to_bits
+            out.append((accumulator >> bits) & ((1 << to_bits) - 1))
+    if bits:
+        out.append((accumulator << (to_bits - bits)) & ((1 << to_bits) - 1))
+    return out
+
+
+def cashaddr(prefix: str, kind: str, payload: bytes) -> str:
+    body = cashaddr_regroup([CASHADDR_TYPE[kind]] + list(payload), 8, 5)
+    # The prefix is inside the checksum, which is what makes a mainnet address
+    # fail as a testnet one instead of silently decoding to the same bytes.
+    checksum = cashaddr_polymod([ord(c) & 0x1F for c in prefix] + [0] + body + [0] * 8)
+    digits = body + [(checksum >> (5 * (7 - i))) & 0x1F for i in range(8)]
+    return prefix + ":" + "".join(CASHADDR_CHARSET[d] for d in digits)
+
+
+def hash160(data: bytes) -> bytes:
+    return hashlib.new("ripemd160", hashlib.sha256(data).digest()).digest()
+
+
+def base58check(payload: bytes) -> str:
+    alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+    full = payload + hashlib.sha256(hashlib.sha256(payload).digest()).digest()[:4]
+    number = int.from_bytes(full, "big")
+    out = ""
+    while number:
+        number, remainder = divmod(number, 58)
+        out = alphabet[remainder] + out
+    for byte in full:
+        if byte != 0:
+            break
+        out = "1" + out
+    return out
+
+
+def ecash_vectors() -> dict:
+    """eCash derivation and addresses, from two independent halves.
+
+    The private key comes from `eth_account`'s BIP-32, the same code that
+    produces `derivation.json` — eCash is plain secp256k1 over BIP-44, so
+    nothing about the key is eCash-specific except the coin type.
+
+    The address comes from the CashAddr encoder above, which is checked
+    against the vector published *with the specification* before any of this
+    is written out. So each row is one library's key run through one
+    document's encoding, and neither can drift without the other noticing.
+    """
+    # The specification's own worked example: 20 bytes, and the three
+    # renderings of them it prints.
+    spec_payload = bytes.fromhex("f5bf48b397dae70be82b3cca4793f8eb2b6cdac9")
+    check(
+        "the CashAddr specification's public-key-hash vector",
+        "bitcoincash:qr6m7j9njldwwzlg9v7v53unlr4jkmx6eylep8ekg2",
+        cashaddr("bitcoincash", "p2pkh", spec_payload),
+    )
+    # And a script-hash address read off the live eCash chain, which pins the
+    # other type nibble and the `ecash` prefix at the same time.
+    check(
+        "a script-hash address observed on eCash mainnet",
+        "ecash:pquc59839pv8fga4h8eayy5fty0s00aj5czp4d547x",
+        cashaddr("ecash", "p2sh", bytes.fromhex("398a14f1285874a3b5b9f3d21289591f07bfb2a6")),
+    )
+
+    accounts = []
+    for index in range(5):
+        path = f"m/44'/{ECASH_COIN_TYPE}'/0'/0/{index}"
+        account = Account.from_mnemonic(CANONICAL_PHRASE, account_path=path)
+        private_key = bytes(account.key)
+        compressed = PrivateKey(private_key).public_key.to_compressed_bytes()
+        key_hash = hash160(compressed)
+        accounts.append(
+            {
+                "index": index,
+                "path": path,
+                "private_key": "0x" + private_key.hex(),
+                "public_key_compressed": compressed.hex(),
+                "public_key_hash": key_hash.hex(),
+                # Testnet first, because it is the address the wallet stores:
+                # eCash's default network here is its testnet.
+                "address": cashaddr("ectest", "p2pkh", key_hash),
+                "address_mainnet": cashaddr("ecash", "p2pkh", key_hash),
+                # What Electrum ABC exports and imports. The trailing 0x01 is
+                # what says the address hashes the *compressed* key; without
+                # it the same scalar names a different address.
+                "wif": base58check(b"\xef" + private_key + b"\x01"),
+                "wif_mainnet": base58check(b"\x80" + private_key + b"\x01"),
+            }
+        )
+
+    return {
+        "source": "eth-account BIP-44 derivation; CashAddr per its specification",
+        "purpose": f"m/44'/{ECASH_COIN_TYPE}'/0'/0/<index>",
+        "mnemonic": CANONICAL_PHRASE,
+        "coin_type": ECASH_COIN_TYPE,
+        "dust_limit_sats": 546,
+        "decimals": 2,
+        "$note": (
+            "XEC has two decimal places, not Bitcoin's eight: eCash "
+            "redenominated at the 2021 rebrand, so one XEC is 100 satoshis."
+        ),
+        "spec_vectors": [
+            {
+                "$source": "the CashAddr specification",
+                "prefix": "bitcoincash",
+                "kind": "p2pkh",
+                "payload": spec_payload.hex(),
+                "address": cashaddr("bitcoincash", "p2pkh", spec_payload),
+            },
+            {
+                "$source": "observed on eCash mainnet",
+                "prefix": "ecash",
+                "kind": "p2sh",
+                "payload": "398a14f1285874a3b5b9f3d21289591f07bfb2a6",
+                "address": "ecash:pquc59839pv8fga4h8eayy5fty0s00aj5czp4d547x",
+                "script_pubkey": "a914398a14f1285874a3b5b9f3d21289591f07bfb2a687",
+            },
+        ],
+        "accounts": accounts,
+    }
+
+
 def write(name: str, payload: dict) -> None:
     header = {
         "$comment": "Generated by scripts/gen-vectors.py — do not edit by hand.",
@@ -563,6 +731,7 @@ def main() -> None:
     write("eip191.json", eip191_vectors())
     write("transactions.json", transaction_vectors())
     write("units.json", unit_vectors())
+    write("ecash.json", ecash_vectors())
     print("All published constants matched their computed values.")
 
 

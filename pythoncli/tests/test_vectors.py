@@ -40,6 +40,7 @@ KECCAK = load("keccak.json")
 EIP191 = load("eip191.json")
 UNITS = load("units.json")
 MULTICHAIN = load("multichain.json")
+ECASH = load("ecash.json")
 
 # The files this suite reads. Two are left out on purpose:
 #
@@ -56,6 +57,7 @@ CONSUMED = {
     "keccak.json",
     "keys.json",
     "keys-invalid.json",
+    "ecash.json",
     "multichain.json",
     "units.json",
 }
@@ -204,10 +206,36 @@ def test_midnight_addresses_match_the_sdk(wallet: Wallet, index):
     assert got["private_key"].startswith(expected["night_sk_hex"])
 
 
-def test_one_phrase_four_chains_four_different_addresses(wallet: Wallet):
+@pytest.mark.parametrize("index", range(3))
+def test_ecash_addresses_match_the_reference_generator(wallet: Wallet, index):
+    expected = ECASH["accounts"][index]
+    got = wallet.derive(mnemonic=ECASH["mnemonic"], index=index, chain="ecash")
+    # A CashAddr prefix is inside the checksum, so these are two different
+    # strings rather than one string with two labels.
+    assert got["address"] == expected["address"]
+    assert got["address_mainnet"] == expected["address_mainnet"]
+    assert got["derivation_path"] == expected["path"]
+    assert got["public_key"] == expected["public_key_compressed"]
+    assert got["public_key_hash"] == expected["public_key_hash"]
+    # Wallet Import Format, which is what eCash's own wallets read and write.
+    assert got["wif"] == expected["wif"]
+    assert got["wif_mainnet"] == expected["wif_mainnet"]
+
+
+@pytest.mark.parametrize("form", ["wif", "wif_mainnet", "private_key"])
+def test_an_ecash_key_imports_back_from_every_encoding_it_exports(wallet: Wallet, form):
+    """A key exported in any of its three spellings must come back as one account."""
+    expected = ECASH["accounts"][0]
+    got = wallet.derive(private_key=expected[form], chain="ecash")
+    assert got["address"] == expected["address"]
+    # And whichever went in, hex is what the store holds.
+    assert got["private_key"] == expected["private_key"]
+
+
+def test_one_phrase_every_chain_a_different_address_on_each(wallet: Wallet):
     """The whole claim of the wallet, in one assertion."""
     seen = {}
-    for chain in ("evm", "solana", "cardano", "midnight"):
+    for chain in ("evm", "solana", "cardano", "midnight", "ecash"):
         account = wallet.derive(mnemonic=MULTICHAIN["mnemonic"], index=0, chain=chain)
         assert account["address"] not in seen, f"{chain} repeats {seen.get(account['address'])}"
         seen[account["address"]] = chain

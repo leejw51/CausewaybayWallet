@@ -1,11 +1,11 @@
 //! The async HTTP the chain clients share.
 //!
-//! Four chains, four protocols: Solana speaks JSON-RPC 2.0, Koios speaks plain
-//! REST, the Midnight indexer speaks GraphQL over both HTTP and WebSocket, and
-//! the EVM nodes speak JSON-RPC too. What they have in common is one reqwest
-//! client, one set of timeouts, and one rule for turning a transport failure
-//! into an [`Error`] a user can act on — so that lives here and the protocol
-//! differences live in the chains.
+//! Five chains, five protocols: Solana speaks JSON-RPC 2.0, Koios speaks plain
+//! REST, the Midnight indexer speaks GraphQL over both HTTP and WebSocket, the
+//! EVM nodes speak JSON-RPC too, and eCash's Chronik answers in protobuf.
+//! What they have in common is one reqwest client, one set of timeouts, and
+//! one rule for turning a transport failure into an [`Error`] a user can act
+//! on — so that lives here and the protocol differences live in the chains.
 //!
 //! [`Error`]: crate::error::Error
 
@@ -81,6 +81,45 @@ pub async fn post_bytes(url: &str, content_type: &str, bytes: Vec<u8>) -> Result
     Ok(text)
 }
 
+/// A reply whose body this layer does not try to interpret.
+///
+/// Chronik is why this exists: it answers in protobuf, and it puts the reason
+/// a broadcast was rejected in the *body* of a 400. Turning that into
+/// "HTTP 400" here would throw away the only useful half, so the status and
+/// the bytes both go back to the caller, which knows how to read them.
+pub struct BinaryReply {
+    pub status: u16,
+    pub body: Vec<u8>,
+}
+
+impl BinaryReply {
+    pub fn is_success(&self) -> bool {
+        (200..300).contains(&self.status)
+    }
+}
+
+/// GET a body of bytes, whatever they turn out to mean.
+pub async fn get_binary(url: &str) -> Result<BinaryReply> {
+    let response = client()?
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| error::rpc_error(format!("request to {url} failed: {e}")))?;
+    read_binary(url, response).await
+}
+
+/// POST a body of bytes and read one back.
+pub async fn post_binary(url: &str, content_type: &str, body: Vec<u8>) -> Result<BinaryReply> {
+    let response = client()?
+        .post(url)
+        .header("content-type", content_type)
+        .body(body)
+        .send()
+        .await
+        .map_err(|e| error::rpc_error(format!("request to {url} failed: {e}")))?;
+    read_binary(url, response).await
+}
+
 /// GET a JSON document.
 pub async fn get_json(url: &str) -> Result<Value> {
     let response = client()?
@@ -153,13 +192,28 @@ async fn read_json(url: &str, response: reqwest::Response) -> Result<Value> {
     })
 }
 
+async fn read_binary(url: &str, response: reqwest::Response) -> Result<BinaryReply> {
+    let status = response.status().as_u16();
+    Ok(BinaryReply {
+        status,
+        body: read_capped_bytes(url, response).await?,
+    })
+}
+
 /// Read a reply body, refusing one past [`MAX_RESPONSE_BYTES`].
 ///
 /// Chunk by chunk rather than `Response::text()`, which reads whatever the
 /// endpoint chooses to send. The `content-length` header is checked first
 /// where there is one, so an oversized reply is refused before a byte of it is
 /// held; a chunked reply is cut off as soon as it crosses the line.
-async fn read_capped(url: &str, mut response: reqwest::Response) -> Result<String> {
+async fn read_capped(url: &str, response: reqwest::Response) -> Result<String> {
+    let body = read_capped_bytes(url, response).await?;
+    String::from_utf8(body)
+        .map_err(|_| error::rpc_error(format!("reply from {url} is not valid UTF-8")))
+}
+
+/// The same cap, for a body that is not text.
+async fn read_capped_bytes(url: &str, mut response: reqwest::Response) -> Result<Vec<u8>> {
     let too_big = || {
         error::rpc_error(format!(
             "reply from {url} is larger than the {} MiB this wallet will read",
@@ -182,8 +236,7 @@ async fn read_capped(url: &str, mut response: reqwest::Response) -> Result<Strin
         }
         body.extend_from_slice(&chunk);
     }
-    String::from_utf8(body)
-        .map_err(|_| error::rpc_error(format!("reply from {url} is not valid UTF-8")))
+    Ok(body)
 }
 
 fn status_error(url: &str, status: u16, body: &str) -> crate::error::Error {

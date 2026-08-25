@@ -523,6 +523,382 @@ fn cardano_chain_info_reports_the_tip() {
     assert_eq!(info["abs_slot"], 100_000);
 }
 
+// ======================================================================= eCash
+
+/// The eCash testnet address the shared phrase derives at index 0, and the
+/// twenty bytes Chronik indexes it under.
+const ECASH_ADDRESS: &str = "ectest:qrwzys2q6xq98vwz0kjn6ulu5m6yljr5fy7w393sue";
+const ECASH_HASH160: &str = "dc224140d18053b1c27da53d73fca6f44fc87449";
+/// Index 1, used as a recipient.
+const ECASH_RECIPIENT: &str = "ectest:qz3w32n8ptaw37ens807egvx7ymvxcelwymtatxs5g";
+
+/// Just enough protobuf to script Chronik. The wire format is
+/// `(field << 3) | type`, and these are the only two types it uses.
+mod pb {
+    pub fn varint(out: &mut Vec<u8>, mut value: u64) {
+        while value >= 0x80 {
+            out.push((value as u8) | 0x80);
+            value >>= 7;
+        }
+        out.push(value as u8);
+    }
+
+    pub fn number(number: u32, value: u64) -> Vec<u8> {
+        let mut out = Vec::new();
+        varint(&mut out, u64::from(number) << 3);
+        varint(&mut out, value);
+        out
+    }
+
+    pub fn bytes(number: u32, value: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        varint(&mut out, u64::from(number) << 3 | 2);
+        varint(&mut out, value.len() as u64);
+        out.extend_from_slice(value);
+        out
+    }
+
+    pub fn message(parts: &[Vec<u8>]) -> Vec<u8> {
+        parts.concat()
+    }
+}
+
+/// One `Utxo`: an outpoint, a height, a value, and optionally an eToken.
+fn utxo(txid_byte: u8, out_idx: u64, sats: u64, token: bool) -> Vec<u8> {
+    let outpoint = pb::message(&[pb::bytes(1, &[txid_byte; 32]), pb::number(2, out_idx)]);
+    let mut parts = vec![
+        pb::bytes(1, &outpoint),
+        pb::number(2, 800_000), // block height
+        pb::number(5, sats),
+        pb::number(10, 1), // is_final
+    ];
+    if token {
+        parts.push(pb::bytes(11, &pb::message(&[pb::bytes(1, b"a-token-id")])));
+    }
+    pb::message(&parts)
+}
+
+/// A `ScriptUtxos` reply holding `utxos`.
+fn script_utxos(utxos: &[Vec<u8>]) -> Vec<u8> {
+    let mut parts = vec![pb::bytes(1, b"the locking script")];
+    parts.extend(utxos.iter().map(|u| pb::bytes(2, u)));
+    pb::message(&parts)
+}
+
+/// A Chronik instance answering every read a transfer makes.
+fn chronik() -> MockHttp {
+    let api = MockHttp::start();
+    api.on_bytes(
+        "blockchain-info",
+        200,
+        pb::message(&[pb::bytes(1, &[0xab; 32]), pb::number(2, 800_100)]),
+    )
+    // 10,000 XEC in one output.
+    .on_bytes(
+        "utxos",
+        200,
+        script_utxos(&[utxo(0xaa, 0, 1_000_000, false)]),
+    )
+    .on_bytes(
+        "broadcast-tx",
+        200,
+        pb::message(&[pb::bytes(1, &[0xcc; 32])]),
+    );
+    api
+}
+
+fn ecash_wallet(api: &MockHttp) -> Wallet {
+    let wallet = Wallet::new().endpoint("ecash-testnet", &api.url);
+    wallet.json(&[
+        "--chain",
+        "ecash",
+        "account",
+        "import-mnemonic",
+        "-m",
+        TEST_MNEMONIC,
+        "--label",
+        "xec",
+    ]);
+    wallet
+}
+
+/// The decimal count is the thing to get wrong here: XEC has two places, not
+/// Bitcoin's eight, so a million satoshis is ten thousand XEC.
+#[test]
+fn ecash_reports_a_balance_in_xec_and_satoshis() {
+    let api = chronik();
+    let wallet = ecash_wallet(&api);
+
+    let balance = wallet.json(&["--chain", "ecash", "balance"]);
+    assert_eq!(balance["balance"], "10000");
+    assert_eq!(balance["balance_raw"], "1000000");
+    assert_eq!(balance["symbol"], "tXEC");
+    assert_eq!(balance["decimals"], 2);
+    assert_eq!(balance["address"], ECASH_ADDRESS);
+    assert_eq!(balance["chain"], "ecash");
+
+    // Chronik indexes by script, so the request names the key hash rather
+    // than the address — and it must be the hash of the account it holds.
+    let asked = api.paths().join(" ");
+    assert!(
+        asked.contains(&format!("/script/p2pkh/{ECASH_HASH160}/utxos")),
+        "{asked}"
+    );
+}
+
+/// An address the chain has never seen is a 404, and that means zero.
+#[test]
+fn an_unseen_ecash_address_reads_as_zero_rather_than_failing() {
+    let api = chronik();
+    api.on_bytes("utxos", 404, b"nothing here".to_vec());
+    let wallet = ecash_wallet(&api);
+    assert_eq!(
+        wallet.json(&["--chain", "ecash", "balance"])["balance"],
+        "0"
+    );
+}
+
+#[test]
+fn ecash_builds_signs_and_submits_a_transfer() {
+    let api = chronik();
+    let wallet = ecash_wallet(&api);
+
+    let sent = wallet.json(&[
+        "--chain",
+        "ecash",
+        "send",
+        "--to",
+        ECASH_RECIPIENT,
+        "--amount",
+        "100",
+        "--yes",
+    ]);
+    assert_eq!(sent["status"], "submitted");
+    assert_eq!(sent["to"], ECASH_RECIPIENT);
+    assert_eq!(sent["from"], ECASH_ADDRESS);
+    // 100 XEC is 10,000 satoshis, and the fee is counted in the same units.
+    assert_eq!(sent["value_wei"], "10000");
+    assert_eq!(sent["hash"].as_str().unwrap().len(), 64);
+
+    // The broadcast carries the raw transaction inside a protobuf field, and
+    // the transaction itself has to be the one that was described.
+    let body = &api.bodies_for("broadcast-tx")[0];
+    assert_eq!(body[0], 0x0a, "field 1, length-delimited");
+    // Past the tag and the length varint, which is two bytes at this size.
+    let raw = &body[1 + body[1..].iter().take_while(|b| **b & 0x80 != 0).count() + 1..];
+    assert_eq!(&raw[..4], &2u32.to_le_bytes(), "version 2");
+    assert_eq!(raw[4], 1, "one input, since one output funds it");
+    // The recipient's amount is in there, little-endian, and so is the change.
+    let hex_raw = hex::encode(raw);
+    assert!(
+        hex_raw.contains(&hex::encode(10_000u64.to_le_bytes())),
+        "{hex_raw}"
+    );
+    // The whole thing is signed: two pushes in the script sig, and the
+    // sighash byte the chain is forked on.
+    assert!(hex_raw.contains("41"), "a SIGHASH_ALL|SIGHASH_FORKID byte");
+}
+
+/// The id the wallet computed is the id it reports, because it is the hash of
+/// the bytes that were signed and the endpoint cannot change what those hash
+/// to.
+#[test]
+fn ecash_keeps_the_id_it_computed_rather_than_the_endpoints() {
+    let api = chronik();
+    let wallet = ecash_wallet(&api);
+    let sent = wallet.json(&[
+        "--chain",
+        "ecash",
+        "send",
+        "--to",
+        ECASH_RECIPIENT,
+        "--amount",
+        "100",
+        "--yes",
+    ]);
+    // Chronik was scripted to answer with 0xcc… and it is not what came back.
+    assert_ne!(sent["hash"], "cc".repeat(32));
+    assert_eq!(sent["secondary_id"], "cc".repeat(32));
+}
+
+#[test]
+fn an_ecash_dry_run_shows_the_coin_selection_without_submitting() {
+    let api = chronik();
+    let wallet = ecash_wallet(&api);
+
+    let planned = wallet.json(&[
+        "--chain",
+        "ecash",
+        "send",
+        "--to",
+        ECASH_RECIPIENT,
+        "--amount",
+        "100",
+        "--dry-run",
+    ]);
+    assert_eq!(planned["dry_run"], true);
+    assert_eq!(planned["detail"]["inputs"], 1);
+    assert_eq!(planned["detail"]["outputs"], 2, "one payment, one change");
+    assert_eq!(planned["detail"]["fee_per_byte"], 1);
+    // The fee is a satoshi a byte, so it and the size agree.
+    let size = planned["detail"]["size_bytes"].as_u64().unwrap();
+    let fee = planned["detail"]["fee_sats"].as_u64().unwrap();
+    assert!(fee >= size && fee < size + 8, "fee {fee} for {size} bytes");
+    assert!(
+        api.bodies_for("broadcast-tx").is_empty(),
+        "nothing was sent"
+    );
+}
+
+/// An output carrying an eToken is part of the balance and is never spent:
+/// the token rides on the output, so spending it as plain XEC destroys it.
+#[test]
+fn ecash_holds_back_outputs_carrying_etokens() {
+    let api = chronik();
+    api.on_bytes(
+        "utxos",
+        200,
+        script_utxos(&[utxo(0xaa, 0, 1_000_000, false), utxo(0xbb, 1, 546, true)]),
+    );
+    let wallet = ecash_wallet(&api);
+
+    // Counted, because it is genuinely there.
+    assert_eq!(
+        wallet.json(&["--chain", "ecash", "balance"])["balance_raw"],
+        "1000546"
+    );
+
+    // Not spent, and the plan says so rather than leaving it unexplained.
+    let planned = wallet.json(&[
+        "--chain",
+        "ecash",
+        "send",
+        "--to",
+        ECASH_RECIPIENT,
+        "--amount",
+        "100",
+        "--dry-run",
+    ]);
+    assert_eq!(planned["detail"]["inputs"], 1);
+    assert_eq!(planned["detail"]["unspent_outputs_held_back"], 1);
+}
+
+/// The reading that looks like a contradiction: `balance` says the address
+/// holds something and `send` says there is nothing to spend. Both are true
+/// when every output is carrying an eToken, and saying only the second is how
+/// a user concludes the wallet has lost their money.
+#[test]
+fn an_address_holding_only_token_outputs_says_why_none_of_it_can_be_spent() {
+    let api = chronik();
+    api.on_bytes("utxos", 200, script_utxos(&[utxo(0xbb, 1, 546, true)]));
+    let wallet = ecash_wallet(&api);
+
+    assert_eq!(
+        wallet.json(&["--chain", "ecash", "balance"])["balance"],
+        "5.46"
+    );
+    let failure = wallet.json_failure(&[
+        "--chain",
+        "ecash",
+        "send",
+        "--to",
+        ECASH_RECIPIENT,
+        "--amount",
+        "1",
+        "--yes",
+    ]);
+    assert_eq!(failure["code"], "insufficient_funds");
+    let message = failure["message"].as_str().unwrap();
+    // It names the balance it is refusing to move, and why.
+    assert!(message.contains("5.46 tXEC"), "{message}");
+    assert!(message.contains("eToken"), "{message}");
+    // And it agrees with itself: one output, singular throughout.
+    assert!(
+        message.contains("its one unspent output carries"),
+        "{message}"
+    );
+}
+
+/// 546 satoshis is the network's own floor; below it the output is not
+/// relayed at all, so it is refused here rather than signed and dropped.
+#[test]
+fn ecash_refuses_an_output_below_the_dust_limit() {
+    let api = chronik();
+    let wallet = ecash_wallet(&api);
+    let error = wallet.json_error(&[
+        "--chain",
+        "ecash",
+        "send",
+        "--to",
+        ECASH_RECIPIENT,
+        "--amount",
+        "1",
+        "--yes",
+    ]);
+    assert_eq!(error, "invalid_amount");
+    assert!(api.bodies_for("broadcast-tx").is_empty());
+}
+
+#[test]
+fn ecash_refuses_a_transfer_it_cannot_fund() {
+    let api = chronik();
+    let wallet = ecash_wallet(&api);
+    assert_eq!(
+        wallet.json_error(&[
+            "--chain",
+            "ecash",
+            "send",
+            "--to",
+            ECASH_RECIPIENT,
+            "--amount",
+            "99999",
+            "--yes",
+        ]),
+        "insufficient_funds"
+    );
+    assert!(api.bodies_for("broadcast-tx").is_empty());
+}
+
+/// A rejected broadcast has its reason inside the body of a 400, and losing
+/// it would turn "dust" into "HTTP 400".
+#[test]
+fn a_rejected_ecash_broadcast_keeps_the_reason_chronik_gave() {
+    let api = chronik();
+    api.on_bytes(
+        "broadcast-tx",
+        400,
+        pb::bytes(2, b"400: Broadcast failed: txn-mempool-conflict"),
+    );
+    let wallet = ecash_wallet(&api);
+    let failure = wallet.json_failure(&[
+        "--chain",
+        "ecash",
+        "send",
+        "--to",
+        ECASH_RECIPIENT,
+        "--amount",
+        "100",
+        "--yes",
+    ]);
+    assert_eq!(failure["code"], "rpc_error");
+    assert!(
+        failure["message"]
+            .as_str()
+            .unwrap()
+            .contains("txn-mempool-conflict"),
+        "the reason was dropped: {failure}"
+    );
+}
+
+#[test]
+fn ecash_chain_info_reports_the_tip() {
+    let api = chronik();
+    let wallet = ecash_wallet(&api);
+    let info = wallet.json(&["--chain", "ecash", "chain-info"]);
+    assert_eq!(info["block_height"], 800_100);
+    assert_eq!(info["tip_hash"], "ab".repeat(32));
+}
+
 // ============================================================ across the board
 
 /// Every chain must refuse a transfer to the account it leaves from, and must

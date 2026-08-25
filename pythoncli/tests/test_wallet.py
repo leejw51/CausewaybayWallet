@@ -14,7 +14,7 @@ from constants import TEST_MNEMONIC, TEST_PRIVATE_KEY
 from causewaybay import COMMANDS, Wallet, open_wallet
 from causewaybay.errors import WalletError
 
-CHAINS = ("evm", "solana", "cardano", "midnight")
+CHAINS = ("evm", "solana", "cardano", "midnight", "ecash")
 
 
 # ------------------------------------------------------------------- opening
@@ -110,8 +110,8 @@ def test_one_wallet_is_one_index_on_every_chain(wallet: Wallet):
     accounts = wallet.accounts()
     assert [a["chain"] for a in accounts] == list(CHAINS)
     assert {a["index"] for a in accounts} == {0}
-    # One mnemonic, four addresses, each in its chain's own encoding.
-    assert len({a["address"] for a in accounts}) == 4
+    # One mnemonic, an address per chain, each in its chain's own encoding.
+    assert len({a["address"] for a in accounts}) == len(CHAINS)
     assert [a["label"] for a in accounts] == [f"account0-{chain}" for chain in CHAINS]
 
 

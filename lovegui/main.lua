@@ -1547,6 +1547,7 @@ local function draw_send(model, state, x)
   -- whose addresses are bech32 would teach exactly the wrong thing.
   local shapes = {
     evm = "0x…", solana = "base58…", cardano = "addr…", midnight = "mn_addr…",
+    ecash = "ecash:…",
   }
   local to = { x = form.x, y = form.y + 42, w = form.w - 108, h = field_h }
   widgets.field(game.springs, "to", to, model.form.to, "RECIPIENT",

@@ -1,9 +1,9 @@
 # Causewaybay Wallet
 
-An educational multi-chain wallet — Cronos EVM, Solana, Cardano and Midnight —
-with a command line interface and a terminal UI.
+An educational multi-chain wallet — Cronos EVM, Solana, Cardano, Midnight and
+eCash — with a command line interface and a terminal UI.
 
-The wallet is one implementation, in Rust: the key derivation for all four
+The wallet is one implementation, in Rust: the key derivation for all five
 chains, the append-only JSONL store, the RPC and the command surface. Everything
 else is a front end over that core's C ABI — Python and Lua load the shared
 library at run time, C links the static one in, and a
@@ -51,17 +51,19 @@ luacli/bin/cwbwallet-lua interactive   # a menu instead of flags
 | `solana` | devnet, testnet, mainnet | ed25519, SLIP-0010 hardened-only · `m/44'/501'/i'/0'` | base58 of the public key |
 | `cardano` | preprod, preview, mainnet | extended ed25519, Icarus + BIP32-Ed25519 · `m/1852'/1815'/0'/0/i` | bech32 of blake2b-224 hashes |
 | `midnight` | preview, devnet | secp256k1 → BIP-340 Schnorr, BIP-32 · `m/44'/2400'/0'/0/i` | bech32m of SHA-256(x-only pubkey) |
+| `ecash` | testnet, mainnet | secp256k1, BIP-32 · `m/44'/1899'/0'/0/i` | CashAddr of ripemd160(sha256(pubkey)) |
 
 Every network belongs to one chain, so naming a network settles the chain:
 `-n solana-devnet` and `--chain solana` reach the same place. `--chain` alone
 uses whichever of that chain's networks the wallet was last on.
 
 A bare network name that several chains share — `devnet` is Solana's *and*
-Midnight's — is refused rather than guessed, because guessing sends funds to the
-wrong chain. `testnet` and `mainnet` are the exceptions: they meant Cronos
-before the wallet had other chains, and still do.
+Midnight's, `testnet` names a row on three chains — is refused rather than
+guessed, because guessing sends funds to the wrong chain. `testnet` and
+`mainnet` are the exceptions: they meant Cronos before the wallet had other
+chains, and still do.
 
-Three things worth knowing, because each otherwise produces a plausible, wrong,
+Four things worth knowing, because each otherwise produces a plausible, wrong,
 unfunded address rather than an error:
 
 * **Cardano hashes the mnemonic's entropy, not its seed**, and passes the
@@ -71,9 +73,34 @@ unfunded address rather than an error:
   short — is refused rather than silently hardened.
 * **BIP-340 negates about half of all secret keys**, so Midnight stores the
   scalar BIP-32 derived rather than the one the signing key reports.
+* **eCash hashes the compressed public key**, and uses coin type `1899` —
+  neither Bitcoin's `0` nor the generic testnet `1`. The uncompressed key is an
+  equally valid encoding of the same key and hashes to a different address.
 
 Each chain's derivation, addresses and transaction encoding are checked against
-that chain's own SDK, through the vectors in `testvectors/multichain.json`.
+that chain's own SDK, through the vectors in `testvectors/multichain.json` —
+and, for eCash, against `testvectors/ecash.json`, whose addresses come from an
+encoder pinned to the vector published with the CashAddr specification.
+
+### eCash amounts
+
+**XEC has two decimal places, not Bitcoin's eight.** eCash redenominated at its
+2021 rebrand, so one XEC is a hundred satoshis where one BCH was a hundred
+million. A balance read with Bitcoin's decimals is out by a factor of a million,
+in the direction that makes a large transfer look like a rounding error.
+
+Two other numbers come with the format. The **dust limit** is 546 satoshis
+(5.46 XEC): below it an output is not relayed at all, so a smaller transfer is
+refused here rather than signed and dropped. And the **fee** is a flat satoshi
+per byte — there is no fee market to estimate against — which means the cost of
+a send is really the cost of its *inputs*, about 148 bytes each. `send
+--dry-run` shows the coin selection and the size the fee was derived from.
+
+eCash carries eTokens as annotations on ordinary outputs, so an output holding
+one is spendable in the plain sense and spending it as XEC burns the token.
+This wallet moves XEC only: it counts those outputs in a balance, because they
+are genuinely there, and never selects one to spend. A transfer that had to
+leave some behind says so in the sentence it asks you to agree to.
 
 ### Midnight fees
 
@@ -221,7 +248,7 @@ The signing secrets the release needs: `MACOS_CERTIFICATE_P12_BASE64`,
 
 **Accounts** — a wallet holds one BIP-39 mnemonic and many addresses derived
 from it, so `account new` walks the sequence 0, 1, 2, 3, … on the chain in play.
-`--every-chain` derives the same mnemonic on all four at once; `--new-seed`
+`--every-chain` derives the same mnemonic on every one at once; `--new-seed`
 starts a separate mnemonic when you want one. Import a phrase or a raw private
 key in the chain's own format, label accounts, and switch between them. Index
 sequences are per chain, so a new Solana address does not push Cardano's along.
@@ -247,7 +274,8 @@ and shows exactly what would go out without broadcasting it — which is the onl
 way to see a Midnight fee, or a Cardano coin selection, before committing.
 
 **Crypto** — message signing and verification in each chain's own scheme
-(EIP-191 on EVM, ed25519 on Solana and Cardano, BIP-340 Schnorr on Midnight),
+(EIP-191 on EVM, ed25519 on Solana and Cardano, BIP-340 Schnorr on Midnight,
+Bitcoin's signed-message scheme on eCash),
 keccak256, EIP-55 checksumming, and unit conversions that never touch floating
 point.
 
@@ -256,9 +284,9 @@ table, from the CLI (`account list --format md -o wallets.md`) or the TUI. The
 list is flattened wallet by wallet, chain by chain, network by network, and each
 row names itself accordingly — `account0-cronos-testnet`,
 `account0-cronos-mainnet`, `account0-solana`, `account0-cardano`,
-`account0-midnight`, then index 1's. A chain whose address carries the network
-(Cardano, Midnight) renders the right address for each row rather than repeating
-one. Every format carries the address and both public key encodings (33- and
+`account0-midnight`, `account0-ecash`, then index 1's. A chain whose address
+carries the network (Cardano, Midnight, eCash) renders the right address for
+each row rather than repeating one. Every format carries the address and both public key encodings (33- and
 64-byte); `--secret` adds the private key and mnemonic and writes the file
 owner-only.
 
@@ -274,13 +302,13 @@ The TUI is chain-first. Every network is a row of its own in one flat list —
 press from anywhere, and the rows never move. Each wears its chain's colour, a ●
 marks the network in use, and `←→` steps between chains without leaving the
 wallet list. The wallet list is one row per wallet — `index 0`,
-`index 1` — and the four accounts of the highlighted one are laid out in the
+`index 1` — and the accounts of the highlighted one are laid out in the
 detail pane beside it, each named for the wallet and the chain it belongs to
 (`account0-evm`, `account0-solana`, …), with the chain in view marked. Choosing
 a chain re-points balance, send and the rest at that chain's account without the
 list moving; a row says nothing but its index unless the wallet is missing a
 chain, and the header tallies what is held on each — so a wallet spread over
-four chains never looks like a wallet that lost three of them. Anything that
+every chain never looks like a wallet that lost most of them. Anything that
 waits on a node — a balance, a transfer being prepared — runs on a thread with a
 clock in the status line and Esc to stop waiting, so the screen never freezes.
 
@@ -336,6 +364,8 @@ what each chain can do. The default is `cronos-testnet`.
 | `cardano-mainnet` | cardano | — | ADA | utxo native-assets | `https://api.koios.rest/api/v1` |
 | `midnight-preview` | midnight | — | NIGHT | privacy testnet shielded zk | `https://indexer.preview.midnight.network/api/v4/graphql` |
 | `midnight-devnet` | midnight | — | NIGHT | privacy testnet shielded zk | `https://indexer.devnet.midnight.network/api/v4/graphql` |
+| `ecash-testnet` | ecash | — | tXEC | utxo testnet bitcoin-fork | `https://chronik-testnet.fabien.cash` |
+| `ecash-mainnet` | ecash | — | XEC | utxo bitcoin-fork | `https://chronik.e.cash` |
 
 Only EVM networks have a chain id — it is the EIP-155 replay-protection number,
 omitted rather than faked for the rest.

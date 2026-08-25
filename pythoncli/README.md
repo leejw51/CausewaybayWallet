@@ -1,7 +1,7 @@
 # Causewaybay Wallet — Python
 
 A Python binding over the Rust core described in [`../SPEC.md`](../SPEC.md).
-The wallet itself — key derivation for all four chains, the append-only store,
+The wallet itself — key derivation for all five chains, the append-only store,
 the RPC — is in [`../rustcli/`](../rustcli); this package loads it through its C
 ABI and gives Python a wallet object over it.
 
@@ -22,7 +22,7 @@ make package    # standalone binary into ../dist/cwbwallet-python
 from causewaybay import open_wallet
 
 wallet = open_wallet()                    # or open_wallet(home=…, chain="solana")
-wallet.new_account(every_chain=True)      # one wallet, four chains
+wallet.new_account(every_chain=True)      # one wallet, every chain
 
 for account in wallet.accounts():
     print(account["label"], account["chain"], account["address"])

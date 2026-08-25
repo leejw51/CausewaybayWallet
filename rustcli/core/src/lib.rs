@@ -77,5 +77,8 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// the shared library at runtime — Lua, LÖVE — check this before trusting it.
 ///
 /// Version 2 added the request's `chain` field and the `chain` key on account
-/// records, alongside the Solana, Cardano and Midnight chains.
+/// records, alongside the Solana, Cardano and Midnight chains. eCash arrived
+/// later and did not bump it: a new value for a field that already exists is
+/// additive, and a caller compiled against the version 2 header reads an
+/// eCash account correctly without knowing what `ecash` is.
 pub const ABI_VERSION: u32 = 2;

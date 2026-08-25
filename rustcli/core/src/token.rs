@@ -492,6 +492,7 @@ mod tests {
                 ChainId::Solana => Standard::SplToken,
                 ChainId::Cardano => Standard::CardanoAsset,
                 ChainId::Midnight => unreachable!("no Midnight token rows yet"),
+                ChainId::Ecash => unreachable!("no eCash token rows yet"),
             };
             assert_eq!(t.standard, expected, "{}", t.key);
         }

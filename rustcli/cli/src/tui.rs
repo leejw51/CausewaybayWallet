@@ -375,6 +375,7 @@ fn chain_colour(chain: ChainId) -> Color {
         ChainId::Solana => Color::Green,
         ChainId::Cardano => Color::Blue,
         ChainId::Midnight => Color::Yellow,
+        ChainId::Ecash => Color::Cyan,
     }
 }
 
@@ -3471,6 +3472,8 @@ mod tests {
                 "cardano mainnet",
                 "midnight preview",
                 "midnight devnet",
+                "ecash testnet",
+                "ecash mainnet",
             ]
         );
         // Nothing is nested, and nothing is a chain-without-a-network row.
@@ -3702,6 +3705,7 @@ mod tests {
             account_at("b", "evm", ChainId::Evm, 0),
             account_at("c", "ada", ChainId::Cardano, 0),
             account_at("d", "sol", ChainId::Solana, 0),
+            account_at("e", "xec", ChainId::Ecash, 0),
         ];
         let state = State::new(accounts, None);
         let order: Vec<ChainId> = state.accounts_at(0).iter().map(|a| a.chain).collect();
@@ -3747,7 +3751,10 @@ mod tests {
             .copied()
             .filter(|id| !held.contains(id))
             .collect();
-        assert_eq!(missing, vec![ChainId::Cardano, ChainId::Midnight]);
+        assert_eq!(
+            missing,
+            vec![ChainId::Cardano, ChainId::Midnight, ChainId::Ecash]
+        );
         // An index with nothing on it holds nothing.
         assert!(state.accounts_at(7).is_empty());
     }
@@ -3931,7 +3938,7 @@ mod tests {
         assert_eq!(state.current_chain, ChainId::Evm);
         // And they wrap, so neither end is a dead key.
         press(&app, &mut state, KeyCode::Left);
-        assert_eq!(state.current_chain, ChainId::Midnight);
+        assert_eq!(state.current_chain, ChainId::Ecash);
     }
 
     /// The bottom line is the manual: it says what the keys do *here*, so the
@@ -4142,10 +4149,10 @@ mod tests {
         assert_eq!(state.focus, Focus::Accounts, "the target pane lights up");
         assert!(state.status.contains("index 1"), "{}", state.status);
         assert!(state.status.contains("account1-evm"), "{}", state.status);
-        assert!(state.status.contains("4 account(s)"), "{}", state.status);
+        assert!(state.status.contains("5 account(s)"), "{}", state.status);
         // Any key but y keeps it.
         press(&app, &mut state, KeyCode::Esc);
-        assert_eq!(state.accounts.len(), 8);
+        assert_eq!(state.accounts.len(), 10);
     }
 
     /// Removing the middle wallet takes the middle wallet: the one the cursor
@@ -4169,10 +4176,10 @@ mod tests {
             state.accounts.iter().all(|a| a.index != Some(1)),
             "index 1 is gone whole"
         );
-        assert_eq!(state.accounts.len(), 8);
+        assert_eq!(state.accounts.len(), 10);
     }
 
-    /// The row is a wallet, so x removes the wallet — all four accounts —
+    /// The row is a wallet, so x removes the wallet — every chain's account —
     /// rather than one facet of it, which would leave the pane showing a
     /// wallet that is no longer one.
     #[test]
@@ -4186,18 +4193,18 @@ mod tests {
         press(&app, &mut state, KeyCode::Char('x'));
         assert_eq!(state.mode, Mode::Confirm(ConfirmKind::Remove));
         assert!(
-            state.status.contains("index 1") && state.status.contains("4 account"),
+            state.status.contains("index 1") && state.status.contains("5 account"),
             "the question says what goes: {}",
             state.status
         );
         // n keeps it, as the [y/N] promises.
         press(&app, &mut state, KeyCode::Char('n'));
-        assert_eq!(state.accounts.len(), 8, "{}", state.status);
+        assert_eq!(state.accounts.len(), 10, "{}", state.status);
 
         press(&app, &mut state, KeyCode::Char('x'));
         press(&app, &mut state, KeyCode::Char('y'));
         assert_eq!(state.indices(), vec![0], "the wallet went as a whole");
-        assert_eq!(state.accounts.len(), 4);
+        assert_eq!(state.accounts.len(), 5);
         assert_eq!(state.current_index, 0, "the cursor landed on what is left");
         assert!(state.status.contains("Recall"), "{}", state.status);
 
@@ -4327,6 +4334,7 @@ mod tests {
                 "account0-solana",
                 "account0-cardano",
                 "account0-midnight",
+                "account0-ecash",
             ]
         );
         assert!(!written.contains("private_key"), "secrets stay hidden");
@@ -4346,7 +4354,7 @@ mod tests {
     const COMMAND_PANE_WIDTH: usize = 26;
     const WALLET_PANE: (usize, usize) = (COMMAND_PANE_WIDTH, 26);
 
-    fn four_chains_and_a_second_wallet() -> Vec<Account> {
+    fn every_chain_and_a_second_wallet() -> Vec<Account> {
         vec![
             // The names the wallet used to give itself, so the screen has to
             // re-render them.
@@ -4354,17 +4362,18 @@ mod tests {
             account_at("b", "account-2", ChainId::Solana, 0),
             account_at("c", "account-3", ChainId::Cardano, 0),
             account_at("d", "account-4", ChainId::Midnight, 0),
-            account_at("e", "account-5", ChainId::Evm, 1),
-            account_at("f", "account-6", ChainId::Solana, 1),
+            account_at("e", "account-5", ChainId::Ecash, 0),
+            account_at("f", "account-6", ChainId::Evm, 1),
+            account_at("g", "account-7", ChainId::Solana, 1),
         ]
     }
 
     /// The wallet pane is one row per wallet — `index 0`, `index 1` — and the
-    /// four accounts of the highlighted one are laid out in the detail pane,
+    /// accounts of the highlighted one are laid out in the detail pane,
     /// named for the wallet and the chain they belong to.
     #[test]
     fn the_screen_lists_wallets_by_index_and_names_accounts_by_chain() {
-        let mut state = State::new(four_chains_and_a_second_wallet(), Some("a"));
+        let mut state = State::new(every_chain_and_a_second_wallet(), Some("a"));
         let lines = screen(&mut state, 110, 26);
         let joined = lines.join("\n");
 
@@ -4393,7 +4402,7 @@ mod tests {
     /// is cut off mid-word, which is how a pane starts lying about its state.
     #[test]
     fn no_pane_content_is_cut_off_by_its_border() {
-        let mut state = State::new(four_chains_and_a_second_wallet(), Some("a"));
+        let mut state = State::new(every_chain_and_a_second_wallet(), Some("a"));
         let lines = screen(&mut state, 110, 26);
         let wallets = lines
             .iter()
@@ -4417,7 +4426,7 @@ mod tests {
             "index 0 is complete"
         );
         let partial = row_for("index 1");
-        assert!(partial.contains("index 1   2/4 chains"), "{partial}");
+        assert!(partial.contains("index 1   2/5 chains"), "{partial}");
         assert!(
             partial.ends_with(" │"),
             "the row runs past its border: {partial}"
@@ -4428,7 +4437,7 @@ mod tests {
     /// cut off by the border would read as a different command.
     #[test]
     fn the_command_pane_draws_its_widest_row_in_full() {
-        let mut state = State::new(four_chains_and_a_second_wallet(), Some("a"));
+        let mut state = State::new(every_chain_and_a_second_wallet(), Some("a"));
         // Tall enough to hold every row, so "missing" means missing rather
         // than scrolled off the bottom.
         let lines = screen(&mut state, 110, 40);
@@ -4484,17 +4493,21 @@ mod tests {
     /// addresses are all there.
     #[test]
     fn the_screen_holds_together_in_an_eighty_column_terminal() {
-        let mut state = State::new(four_chains_and_a_second_wallet(), Some("a"));
+        let mut state = State::new(every_chain_and_a_second_wallet(), Some("a"));
         let lines = screen(&mut state, 80, 24);
         let joined = lines.join("\n");
         // The shortcut keys survive the squeeze — they are the affordance.
         assert!(joined.contains(" b Get balance"), "{joined}");
-        // Four chain rows, four addresses, one line each.
+        // One row and one address per chain, one line each.
         let address_lines = lines
             .iter()
             .filter(|line| line.contains("0x9858Ef…aEda94"))
             .count();
-        assert_eq!(address_lines, 4, "one line per chain:\n{joined}");
+        assert_eq!(
+            address_lines,
+            ChainId::ALL.len(),
+            "one line per chain:\n{joined}"
+        );
         for chain in ChainId::ALL {
             assert!(joined.contains(chain.as_str()), "{chain} missing");
         }
@@ -4504,7 +4517,7 @@ mod tests {
     /// working with, so the detail pane's marker follows it.
     #[test]
     fn the_detail_pane_marks_the_chain_in_view() {
-        let mut state = State::new(four_chains_and_a_second_wallet(), Some("a"));
+        let mut state = State::new(every_chain_and_a_second_wallet(), Some("a"));
         let evm = screen(&mut state, 110, 26).join("\n");
         assert!(evm.contains("▸ evm"), "{evm}");
 
@@ -4518,7 +4531,7 @@ mod tests {
     /// rather than leaving a gap the eye has to work out.
     #[test]
     fn a_chain_a_wallet_is_not_on_says_so() {
-        let mut state = State::new(four_chains_and_a_second_wallet(), None);
+        let mut state = State::new(every_chain_and_a_second_wallet(), None);
         state.select_index(1);
         let lines = screen(&mut state, 110, 26).join("\n");
         assert!(lines.contains("account1-evm"), "{lines}");

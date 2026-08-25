@@ -213,7 +213,7 @@ t.suite("wallet / networks", function()
       chains[n.chain] = (chains[n.chain] or 0) + 1
     end
 
-    -- The EVM pair keeps its chain ids; the other three chains have none, and
+    -- The EVM pair keeps its chain ids; the other chains have none, and
     -- say so with null rather than with a number that would mean something.
     t.equal(by_key["cronos-testnet"].chain_id, 338)
     t.equal(by_key["cronos-mainnet"].chain_id, 25)
@@ -233,7 +233,7 @@ t.suite("wallet / networks", function()
 
     local by_name = {}
     for _, c in ipairs(chains) do by_name[c.chain] = c end
-    for _, name in ipairs({ "evm", "solana", "cardano", "midnight" }) do
+    for _, name in ipairs({ "evm", "solana", "cardano", "midnight", "ecash" }) do
       local chain = by_name[name]
       t.ok(chain, name .. " is missing from the chain list")
       -- Cardano derives on CIP-1852, not BIP-44 — a chain describes its own

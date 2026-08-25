@@ -176,6 +176,52 @@ t.suite("card / number", function()
   end)
 end)
 
+t.suite("card / cashaddr", function()
+  --- An eCash face of the shared test phrase. Fifty characters with a colon
+  --- in the middle, where every other chain here is hex or bech32.
+  local ECASH = "ecash:qrwzys2q6xq98vwz0kjn6ulu5m6yljr5fyc909kalg"
+  local ECTEST = "ectest:qrwzys2q6xq98vwz0kjn6ulu5m6yljr5fy7w393sue"
+
+  t.case("a CashAddr gets a face like any other address", function()
+    local design = card.design(ECASH)
+    t.ok(design.scheme and design.scheme.name, "no scheme")
+    t.ok(design.emblem, "no emblem")
+    t.ok(design.tier and design.tier.name, "no tier")
+    t.ok(design.sigil and #design.sigil == 5, "no sigil")
+    -- And it is stably itself, which is the whole promise of a face.
+    t.equal(card.design(ECASH).emblem, design.emblem)
+    t.equal(card.design(ECASH).member, design.member)
+  end)
+
+  t.case("the number keeps every character of the address", function()
+    -- A card number that dropped a character would be a card number for a
+    -- different wallet, printed convincingly — and a CashAddr is long enough
+    -- to take the elided path, where dropping one is easiest.
+    local top, bottom = card.number(ECASH)
+    t.ok(top ~= "" and bottom ~= "", "nothing was printed")
+    if bottom:match("^…") then
+      -- Elided: the head and the tail must both be the address's own.
+      local head = (top:gsub(" ", ""))
+      local tail = (bottom:gsub("… ", ""):gsub(" ", ""))
+      t.equal(ECASH:sub(1, #head), head, "the head is not the address's")
+      t.equal(ECASH:sub(-#tail), tail, "the tail is not the address's")
+    else
+      t.equal((top .. bottom):gsub(" ", ""), ECASH, "the halves are not the whole")
+    end
+  end)
+
+  --- The `0x` a card prints belongs only to the addresses that start with one.
+  --- Printing it in front of a CashAddr would make the card lie about what
+  --- kind of address it is showing.
+  t.case("no hex prefix is invented for an address that has none", function()
+    t.equal(tostring(ECASH):match("^0[xX]"), nil)
+    t.equal(tostring(ECTEST):match("^0[xX]"), nil)
+    -- The card's own rule, which the draw call reads.
+    t.equal(tostring(support.ADDRESS_0):match("^0[xX]") and "0x " or "", "0x ")
+    t.equal(tostring(ECASH):match("^0[xX]") and "0x " or "", "")
+  end)
+end)
+
 t.suite("card / swipe", function()
   -- The real geometry, because the visibility question depends on it: the card
   -- is a little narrower than the column it lives in, and it travels its own

@@ -29,6 +29,7 @@ one that two independent sources already agreed on.
 | `eip191.json` | `personal_sign` prefixed hashes and signatures | `eth-account` |
 | `transactions.json` | signed legacy transactions on chain ids 1, 25 and 338 | `eth-account` |
 | `units.json` | decimal ↔ smallest-unit conversions, valid and invalid | this project's rules |
+| `ecash.json` | eCash derivation, CashAddr addresses on both networks, and WIF | `eth-account` + the CashAddr specification |
 
 ## The well-known material
 
@@ -56,7 +57,7 @@ Nothing here is secret, and none of it should ever hold value.
 
 ## The anchors
 
-Three of these are worth calling out, because they are checkable against a
+Four of these are worth calling out, because they are checkable against a
 document rather than against a library:
 
 * **The BIP-39 canonical seed.** `abandon … about` with the `TREZOR` passphrase
@@ -67,6 +68,13 @@ document rather than against a library:
 * **The Anvil accounts.** `test … junk` must derive
   `0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266` at index 0 with private key
   `0xac0974be…f4f2ff80`. Anyone who has run a local node has seen these.
+* **The CashAddr vector.** The specification prints
+  `bitcoincash:qr6m7j9njldwwzlg9v7v53unlr4jkmx6eylep8ekg2` for the twenty bytes
+  `f5bf48b3…6cdac9`. eCash changed the prefix and nothing else, so that one
+  string pins the base32 regrouping, the version byte and the BCH checksum —
+  and the generator refuses to write `ecash.json` unless it reproduces it. A
+  second row beside it is a script-hash address read off eCash's mainnet, which
+  pins the other address type and the `ecash` prefix together.
 
 ## Who reads them
 

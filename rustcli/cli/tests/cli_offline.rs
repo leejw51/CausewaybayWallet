@@ -354,6 +354,8 @@ fn networks_can_be_listed_and_switched() {
             "cardano-mainnet",
             "midnight-preview",
             "midnight-devnet",
+            "ecash-testnet",
+            "ecash-mainnet",
         ]
     );
 
@@ -1615,6 +1617,8 @@ fn the_network_table_drives_what_can_be_selected() {
             "Cardano Mainnet",
             "Midnight Preview",
             "Midnight Devnet",
+            "eCash Testnet",
+            "eCash Mainnet",
         ]
     );
 

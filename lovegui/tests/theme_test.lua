@@ -11,7 +11,7 @@ local theme = require("ui.theme")
 t.suite("theme / chain colours", function()
   t.case("every chain has a colour of its own", function()
     local seen = {}
-    for _, chain in ipairs({ "evm", "solana", "cardano", "midnight" }) do
+    for _, chain in ipairs({ "evm", "solana", "cardano", "midnight", "ecash" }) do
       local colour = theme.chain_colour(chain)
       t.ok(colour, chain .. " has no colour")
       t.equal(#colour, 3, chain .. "'s colour is not an RGB triple")

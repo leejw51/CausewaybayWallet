@@ -1,6 +1,6 @@
 //! The networks every chain ships, and how an endpoint is resolved for one.
 //!
-//! One flat table across all four chains, because that is what the front ends
+//! One flat table across every chain, because that is what the front ends
 //! want: the TUI builds a menu entry per row, `network list` prints the rows,
 //! and picking a row settles both the chain and the endpoint at once. A
 //! network knows which chain it belongs to, so selecting `solana-devnet` is
@@ -226,8 +226,45 @@ pub const MIDNIGHT_DEVNET: Network = Network {
     max_fee: 100_000_000_000_000_000,
 };
 
+pub const ECASH_TESTNET: Network = Network {
+    key: "ecash-testnet",
+    chain: ChainId::Ecash,
+    name: "eCash Testnet",
+    symbol: "tXEC",
+    // Two, not Bitcoin's eight: eCash redenominated at the 2021 rebrand, so
+    // one XEC is a hundred satoshis. Reading a balance with eight places is
+    // out by a factor of a million, in the direction that makes a large
+    // transfer look like a rounding error.
+    decimals: 2,
+    chain_id: None,
+    default_endpoint: "https://chronik-testnet.fabien.cash",
+    default_submit_endpoint: None,
+    explorer: "https://texplorer.e.cash",
+    testnet: true,
+    tags: &["utxo", "testnet", "bitcoin-fork"],
+    // A plain transfer is about 226 bytes at eCash's flat 1 satoshi a byte.
+    // This is room for a sweep of some four hundred unspent outputs, and it
+    // is 1,000 XEC.
+    max_fee: 100_000,
+};
+
+pub const ECASH_MAINNET: Network = Network {
+    key: "ecash-mainnet",
+    chain: ChainId::Ecash,
+    name: "eCash Mainnet",
+    symbol: "XEC",
+    decimals: 2,
+    chain_id: None,
+    default_endpoint: "https://chronik.e.cash",
+    default_submit_endpoint: None,
+    explorer: "https://explorer.e.cash",
+    testnet: false,
+    tags: &["utxo", "bitcoin-fork"],
+    max_fee: 100_000,
+};
+
 /// Every network, grouped by chain, each chain's default first.
-pub const ALL: [Network; 10] = [
+pub const ALL: [Network; 12] = [
     CRONOS_TESTNET,
     CRONOS_MAINNET,
     SOLANA_DEVNET,
@@ -238,6 +275,8 @@ pub const ALL: [Network; 10] = [
     CARDANO_MAINNET,
     MIDNIGHT_PREVIEW,
     MIDNIGHT_DEVNET,
+    ECASH_TESTNET,
+    ECASH_MAINNET,
 ];
 
 /// The network a wallet with no stored preference uses.
@@ -252,7 +291,7 @@ pub fn for_chain(chain: ChainId) -> Vec<Network> {
 
 /// The networks a query keeps, in table order.
 ///
-/// An empty query keeps all ten, which is the state the picker opens in: the
+/// An empty query keeps every row, which is the state the picker opens in: the
 /// search box narrows a list that is already there rather than summoning one.
 pub fn search(query: &str) -> Vec<Network> {
     let terms = crate::search::terms(query);
@@ -281,7 +320,8 @@ pub fn default_for(chain: ChainId) -> Network {
 /// Look a network up by key, accepting a few friendly aliases.
 ///
 /// Unqualified names are ambiguous now that four chains ship networks —
-/// `devnet` is a Solana cluster *and* a Midnight network — so a bare name only
+/// `devnet` is a Solana cluster *and* a Midnight network, `testnet` names a row
+/// on three chains — so a bare name only
 /// resolves when exactly one chain uses it. Otherwise the error names the
 /// candidates rather than guessing, because guessing here sends funds to the
 /// wrong chain.

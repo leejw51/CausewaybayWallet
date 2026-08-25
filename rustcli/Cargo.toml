@@ -30,6 +30,9 @@ causewaybay-core = { path = "core", version = "1.0.0" }
 alloy-primitives = "1.6"
 k256 = { version = "0.13", features = ["ecdsa", "schnorr", "arithmetic"] }
 sha2 = "0.10"
+# eCash addresses are hash160 — sha256 then ripemd160 — as every Bitcoin
+# derivative's are. It is the one hash in this workspace nothing else needs.
+ripemd = "0.1"
 hmac = "0.12"
 pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
 rand = "0.8"

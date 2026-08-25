@@ -2965,6 +2965,7 @@ fn signing_scheme(chain: ChainId) -> &'static str {
         ChainId::Solana => "ed25519",
         ChainId::Cardano => "ed25519 (BIP32-Ed25519 payment key)",
         ChainId::Midnight => "BIP-340 Schnorr (secp256k1)",
+        ChainId::Ecash => "Bitcoin signed message (secp256k1)",
     }
 }
 

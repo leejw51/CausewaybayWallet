@@ -294,14 +294,24 @@ impl Drop for MockRpc {
 /// Path, then the raw body posted to it.
 type RecordedRequest = (String, Vec<u8>);
 
+/// What a scripted route answers with.
+enum Route {
+    /// A JSON body with a 200, which is what Koios speaks.
+    Json(Value),
+    /// A status and raw bytes, which is what Chronik speaks — protobuf, and
+    /// a 404 that means "nothing here" rather than "something broke".
+    Bytes(u16, Vec<u8>),
+}
+
 /// A tiny HTTP server that answers by URL path rather than by JSON-RPC method.
 ///
-/// Koios (Cardano) is plain REST, so the JSON-RPC mock above cannot stand in
-/// for it. Same idea, different key: script a path, get the body back, and
-/// every request is recorded so a test can assert what was actually asked.
+/// Koios (Cardano) and Chronik (eCash) are both plain REST, so the JSON-RPC
+/// mock above cannot stand in for either. Same idea, different key: script a
+/// path, get the body back, and every request is recorded so a test can assert
+/// what was actually asked.
 pub struct MockHttp {
     pub url: String,
-    routes: Arc<Mutex<HashMap<String, Value>>>,
+    routes: Arc<Mutex<HashMap<String, Route>>>,
     /// Path and raw body. Raw, because Cardano submits binary CBOR and
     /// reading that as a string mangles it into replacement characters —
     /// which would make an assertion about the bytes meaningless.
@@ -314,7 +324,7 @@ impl MockHttp {
     pub fn start() -> Self {
         let server = Arc::new(tiny_http::Server::http("127.0.0.1:0").unwrap());
         let url = format!("http://{}", server.server_addr());
-        let routes: Arc<Mutex<HashMap<String, Value>>> = Arc::new(Mutex::new(HashMap::new()));
+        let routes: Arc<Mutex<HashMap<String, Route>>> = Arc::new(Mutex::new(HashMap::new()));
         let requests: Arc<Mutex<Vec<RecordedRequest>>> = Arc::new(Mutex::new(Vec::new()));
 
         let worker_server = Arc::clone(&server);
@@ -333,19 +343,34 @@ impl MockHttp {
                 // Match on the last path segment, so a test scripts
                 // "address_info" rather than the whole prefix.
                 let key = path.rsplit('/').next().unwrap_or("").to_string();
-                let scripted = worker_routes.lock().unwrap().get(&key).cloned();
-                let response = match scripted {
-                    Some(Value::String(text)) => tiny_http::Response::from_string(text),
-                    Some(value) => tiny_http::Response::from_string(value.to_string()),
-                    None => tiny_http::Response::from_string(format!(
-                        "{{\"error\":\"{key} is not scripted\"}}"
-                    ))
-                    .with_status_code(404),
+                let (status, content_type, payload) = {
+                    let routes = worker_routes.lock().unwrap();
+                    match routes.get(&key) {
+                        Some(Route::Json(Value::String(text))) => {
+                            (200, "application/json", text.clone().into_bytes())
+                        }
+                        Some(Route::Json(value)) => {
+                            (200, "application/json", value.to_string().into_bytes())
+                        }
+                        Some(Route::Bytes(status, body)) => {
+                            (*status, "application/x-protobuf", body.clone())
+                        }
+                        None => (
+                            404,
+                            "application/json",
+                            format!("{{\"error\":\"{key} is not scripted\"}}").into_bytes(),
+                        ),
+                    }
                 };
-                let response = response.with_header(
-                    tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
+                let response = tiny_http::Response::from_data(payload)
+                    .with_status_code(status)
+                    .with_header(
+                        tiny_http::Header::from_bytes(
+                            &b"Content-Type"[..],
+                            content_type.as_bytes(),
+                        )
                         .unwrap(),
-                );
+                    );
                 let _ = request.respond(response);
             }
         });
@@ -361,8 +386,25 @@ impl MockHttp {
 
     /// Script the JSON body returned for a path's last segment.
     pub fn on(&self, path: &str, body: Value) -> &Self {
-        self.routes.lock().unwrap().insert(path.to_string(), body);
+        self.routes
+            .lock()
+            .unwrap()
+            .insert(path.to_string(), Route::Json(body));
         self
+    }
+
+    /// Script raw bytes and a status, for an endpoint that does not speak JSON.
+    pub fn on_bytes(&self, path: &str, status: u16, body: Vec<u8>) -> &Self {
+        self.routes
+            .lock()
+            .unwrap()
+            .insert(path.to_string(), Route::Bytes(status, body));
+        self
+    }
+
+    /// Every path the server was asked for, in order.
+    pub fn paths(&self) -> Vec<String> {
+        self.requests().into_iter().map(|(path, _)| path).collect()
     }
 
     /// Every (path, raw body) pair the server was sent.

@@ -18,7 +18,7 @@ use common::Wallet;
 const PHRASE: &str =
     "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 
-const CHAINS: [&str; 4] = ["evm", "solana", "cardano", "midnight"];
+const CHAINS: [&str; 5] = ["evm", "solana", "cardano", "midnight", "ecash"];
 
 fn vectors() -> Value {
     let path =
@@ -119,6 +119,7 @@ fn each_chain_reports_its_own_derivation_path() {
         ("solana", "m/44'/501'/0'/0'"),
         ("cardano", "m/1852'/1815'/0'/0/0"),
         ("midnight", "m/44'/2400'/0'/0/0"),
+        ("ecash", "m/44'/1899'/0'/0/0"),
     ];
     for (chain, path) in paths {
         let shown = wallet.json(&["--chain", chain, "account", "show", chain]);
@@ -126,13 +127,13 @@ fn each_chain_reports_its_own_derivation_path() {
     }
 }
 
-/// One phrase, four addresses, one command.
+/// One phrase, an address on every chain, one command.
 #[test]
 fn every_chain_can_be_seeded_from_a_single_mnemonic_at_once() {
     let wallet = Wallet::new();
     let created = wallet.json(&["account", "new", "--every-chain", "--label", "me"]);
     let accounts = created.as_array().expect("one entry per chain");
-    assert_eq!(accounts.len(), 4);
+    assert_eq!(accounts.len(), CHAINS.len());
 
     let chains: Vec<&str> = accounts
         .iter()
@@ -145,7 +146,7 @@ fn every_chain_can_be_seeded_from_a_single_mnemonic_at_once() {
         assert_eq!(account["label"], format!("me-{chain}"));
     }
 
-    // All four came from the one phrase, so they share a single recall entry.
+    // They all came from the one phrase, so they share a single recall entry.
     let recalled = wallet.json(&["recent", "list"]);
     assert_eq!(recalled.as_array().unwrap().len(), 1);
     assert_eq!(recalled[0]["kind"], "mnemonic");
@@ -166,11 +167,15 @@ fn making_a_wallet_derives_every_chain_at_one_index() {
             &expected_index.to_string(),
         ]);
         let accounts = created.as_array().expect("one entry per chain");
-        assert_eq!(accounts.len(), 4, "wallet {expected_index} is incomplete");
+        assert_eq!(
+            accounts.len(),
+            CHAINS.len(),
+            "wallet {expected_index} is incomplete"
+        );
         for account in accounts {
             assert_eq!(account["index"], expected_index);
         }
-        // All four chains, every time.
+        // Every chain, every time.
         let chains: Vec<&str> = accounts
             .iter()
             .map(|a| a["chain"].as_str().unwrap())
@@ -178,19 +183,18 @@ fn making_a_wallet_derives_every_chain_at_one_index() {
         assert_eq!(chains, CHAINS);
     }
 
-    // Three wallets, twelve accounts, one mnemonic.
+    // Three wallets, one account per chain in each, one mnemonic.
     let listed = wallet.json(&["account", "list"]);
-    assert_eq!(listed.as_array().unwrap().len(), 12);
+    assert_eq!(listed.as_array().unwrap().len(), 3 * CHAINS.len());
     assert_eq!(
         wallet.json(&["recent", "list"]).as_array().unwrap().len(),
         1
     );
 }
 
-/// Importing a mnemonic makes the whole wallet, not a quarter of it. The bug
-/// this pins: an import produced an EVM account and silently left Solana,
-/// Cardano and Midnight behind, so the wallet looked like it had lost three
-/// chains it never had.
+/// Importing a mnemonic makes the whole wallet, not one chain of it. The bug
+/// this pins: an import produced an EVM account and silently left every other
+/// chain behind, so the wallet looked like it had lost chains it never had.
 #[test]
 fn importing_a_mnemonic_can_restore_every_chain_at_once() {
     let wallet = Wallet::new();
@@ -204,7 +208,7 @@ fn importing_a_mnemonic_can_restore_every_chain_at_once() {
         "restored",
     ]);
     let accounts = imported.as_array().expect("one entry per chain");
-    assert_eq!(accounts.len(), 4);
+    assert_eq!(accounts.len(), CHAINS.len());
     assert_eq!(
         accounts
             .iter()
@@ -308,13 +312,13 @@ fn deriving_an_index_can_cover_every_chain() {
         "w1",
     ]);
     let accounts = derived.as_array().unwrap();
-    assert_eq!(accounts.len(), 4);
+    assert_eq!(accounts.len(), CHAINS.len());
     for account in accounts {
         assert_eq!(account["index"], 1);
     }
     assert_eq!(
         wallet.json(&["account", "list"]).as_array().unwrap().len(),
-        8
+        2 * CHAINS.len()
     );
 }
 
@@ -592,7 +596,7 @@ fn the_chains_command_lists_every_chain_and_its_capabilities() {
     let wallet = Wallet::new();
     let listed = wallet.json(&["chains"]);
     let rows = listed.as_array().unwrap();
-    assert_eq!(rows.len(), 4);
+    assert_eq!(rows.len(), CHAINS.len());
 
     let names: Vec<&str> = rows.iter().map(|c| c["chain"].as_str().unwrap()).collect();
     assert_eq!(names, CHAINS);
@@ -660,7 +664,7 @@ fn accounts_carry_their_chain_through_the_store() {
     let wallet = seeded();
     let listed = wallet.json(&["account", "list"]);
     let rows = listed.as_array().unwrap();
-    assert_eq!(rows.len(), 4);
+    assert_eq!(rows.len(), CHAINS.len());
     for (row, chain) in rows.iter().zip(CHAINS) {
         assert_eq!(row["chain"], chain);
     }
@@ -693,10 +697,10 @@ fn each_chain_resolves_its_own_active_account() {
 fn info_summarises_every_chain_the_wallet_holds() {
     let wallet = seeded();
     let info = wallet.json(&["info"]);
-    assert_eq!(info["accounts"], 4);
+    assert_eq!(info["accounts"], CHAINS.len());
 
     let chains = info["chains"].as_array().unwrap();
-    assert_eq!(chains.len(), 4);
+    assert_eq!(chains.len(), CHAINS.len());
     for row in chains {
         assert_eq!(row["accounts"], 1, "{row}");
         assert!(row["network"].as_str().unwrap().starts_with(

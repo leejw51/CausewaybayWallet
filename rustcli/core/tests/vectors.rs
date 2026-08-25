@@ -75,7 +75,7 @@ fn big(value: &Value, key: &str) -> U256 {
 /// thing, so a new file has to be adopted by both before the build goes green.
 #[test]
 fn every_vector_file_is_consumed_by_this_suite() {
-    const CONSUMED: [&str; 11] = [
+    const CONSUMED: [&str; 12] = [
         "bip39.json",
         "bip39-invalid.json",
         "derivation.json",
@@ -87,6 +87,7 @@ fn every_vector_file_is_consumed_by_this_suite() {
         "transactions.json",
         "units.json",
         "multichain.json",
+        "ecash.json",
     ];
 
     let dir = vectors_dir();
@@ -170,6 +171,90 @@ fn every_chain_derives_what_its_official_sdk_derives() {
             text(expected, "verifying_key_hex"),
             "midnight {index}"
         );
+    }
+}
+
+/// eCash against `ecash.json`, which is its own file.
+///
+/// It is not in `multichain.json` because that file comes from the three
+/// chains' TypeScript SDKs and eCash has none there; its vectors are generated
+/// alongside the EVM ones instead, from `eth_account`'s BIP-32 and an encoder
+/// pinned to the CashAddr specification. Same contract, different provenance.
+#[test]
+fn ecash_derives_what_the_reference_generator_derived() {
+    use causewaybay_core::chain::{self, ChainId, Seed};
+
+    let file = load("ecash.json");
+    let seed = Seed::new(text(&file, "mnemonic"), "").unwrap();
+    let chain = chain::chain(ChainId::Ecash);
+
+    for expected in array(&file, "accounts") {
+        let index = number(expected, "index") as u32;
+        let derived = chain.derive(&seed, index).unwrap();
+        assert_eq!(derived.address, text(expected, "address"), "ecash {index}");
+        assert_eq!(
+            derived.extra["address_mainnet"].as_str().unwrap(),
+            text(expected, "address_mainnet"),
+            "ecash {index}"
+        );
+        assert_eq!(
+            derived.public_key,
+            text(expected, "public_key_compressed"),
+            "ecash {index}"
+        );
+        assert_eq!(
+            derived.secret,
+            text(expected, "private_key"),
+            "ecash {index}"
+        );
+        assert_eq!(
+            derived.derivation_path.as_deref(),
+            Some(text(expected, "path"))
+        );
+        // The Wallet Import Format halves, which are what an eCash wallet
+        // outside this project reads. Both must import back to the same key.
+        for wif in ["wif", "wif_mainnet"] {
+            assert_eq!(
+                derived.extra[wif].as_str().unwrap(),
+                text(expected, wif),
+                "ecash {index} {wif}"
+            );
+            let reimported = chain.account_from_secret(text(expected, wif)).unwrap();
+            assert_eq!(reimported.secret, derived.secret, "ecash {index} {wif}");
+        }
+    }
+}
+
+/// The two addresses in the file that come from outside this project: the one
+/// printed in the CashAddr specification, and one read off eCash's mainnet.
+///
+/// Neither is a key this wallet derives, so they are checked through the
+/// address layer rather than through `Chain::derive` — which is the point.
+/// They pin the encoding itself, independently of any key.
+#[test]
+fn the_published_cashaddr_vectors_decode_to_their_own_bytes() {
+    use causewaybay_core::chain::ecash::address::Address;
+
+    let file = load("ecash.json");
+    for expected in array(&file, "spec_vectors") {
+        let rendered = text(expected, "address");
+        let payload = text(expected, "payload");
+        if text(expected, "prefix") == "ecash" {
+            let parsed = Address::parse(rendered).unwrap();
+            assert_eq!(hex::encode(parsed.hash), payload);
+            assert_eq!(parsed.to_cashaddr(), rendered);
+            assert_eq!(
+                hex::encode(parsed.script_pubkey()),
+                text(expected, "script_pubkey")
+            );
+        } else {
+            // A `bitcoincash:` address is the same encoding under another
+            // prefix, and this wallet refuses it by name rather than
+            // decoding it onto a chain it does not belong to.
+            let err = Address::parse(rendered).unwrap_err();
+            assert_eq!(err.code, Code::InvalidAddress);
+            assert!(err.message.contains("ecash:"), "{}", err.message);
+        }
     }
 }
 

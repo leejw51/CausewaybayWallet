@@ -122,8 +122,11 @@ pub fn seed_id(account: &Account) -> String {
 /// The networks a wallet's addresses are written out for.
 ///
 /// One key serves both Cronos networks and both are in use, so both are worth
-/// writing down. The other three chains are testnet-only in this wallet for
-/// now; when their mainnets are supported, this is the one place that changes.
+/// writing down. Every other chain writes its default network only, even where
+/// it renders a different address per network — Cardano, Midnight and eCash all
+/// do — because an export is a record of where funds are, and this wallet is
+/// pointed at those chains' test networks by default. When a second network on
+/// one of them is worth writing down, this is the one place that changes.
 fn exported_networks(chain: ChainId) -> Vec<Network> {
     match chain {
         ChainId::Evm => crate::network::for_chain(chain),
@@ -265,7 +268,8 @@ fn headers(secrets: bool) -> Vec<&'static str> {
 /// The order every export is written in: wallet by wallet, chain by chain.
 ///
 /// `account0-evm`, `account0-solana`, `account0-cardano`, `account0-midnight`,
-/// then index 1's four — so the file reads as a list of wallets rather than as
+/// `account0-ecash`, then index 1's — so the file reads as a list of wallets
+/// rather than as
 /// whatever order the accounts happened to be created in. An imported private
 /// key has no wallet index, so those sit at the end rather than being folded
 /// into index 0. `created_at` breaks the remaining ties, which is what keeps
@@ -556,12 +560,7 @@ mod tests {
     /// chain, network by network, with a name that says which is which.
     #[test]
     fn a_multichain_wallet_is_written_out_wallet_by_wallet() {
-        let chains = [
-            ChainId::Evm,
-            ChainId::Solana,
-            ChainId::Cardano,
-            ChainId::Midnight,
-        ];
+        let chains = ChainId::ALL;
         let mut accounts = Vec::new();
         for index in [0u32, 1] {
             for chain in chains {
@@ -590,11 +589,13 @@ mod tests {
                 "account0-solana",
                 "account0-cardano",
                 "account0-midnight",
+                "account0-ecash",
                 "account1-cronos-testnet",
                 "account1-cronos-mainnet",
                 "account1-solana",
                 "account1-cardano",
                 "account1-midnight",
+                "account1-ecash",
             ]
         );
     }

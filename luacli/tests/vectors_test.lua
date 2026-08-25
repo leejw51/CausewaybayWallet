@@ -246,7 +246,7 @@ t.suite("vectors / eip191", function()
 end)
 
 t.suite("vectors / multichain", function()
-  -- The three chains that are not EVM, checked through the same C ABI the
+  -- The three SDK-backed chains, checked through the same C ABI the
   -- LÖVE GUI uses. The vectors come from each chain's own SDK, so agreement
   -- here means the Lua path agrees with @solana/web3.js,
   -- cardano-serialization-lib and the Midnight wallet SDK — not merely with
@@ -306,18 +306,54 @@ t.suite("vectors / multichain", function()
     end
   end)
 
-  t.case("one phrase, four chains, four different addresses", function()
+  t.case("one phrase, every chain, a different address on each", function()
     -- The whole claim of the wallet, in one assertion: the same mnemonic and
     -- the same index give a distinct account per chain, each in its chain's
     -- own encoding.
     local seen = {}
-    for _, chain in ipairs({ "evm", "solana", "cardano", "midnight" }) do
+    for _, chain in ipairs({ "evm", "solana", "cardano", "midnight", "ecash" }) do
       local account = assert(derive(chain, 0))
       t.equal(seen[account.address], nil, chain .. " repeats another chain's address")
       seen[account.address] = chain
     end
     t.equal(seen[vectors.solana.accounts[1].address], "solana")
     t.equal(seen[vectors.cardano.accounts[1].base_addr_testnet], "cardano")
+  end)
+end)
+
+t.suite("vectors / ecash", function()
+  -- eCash has its own file rather than a section of `multichain.json`,
+  -- because it has no TypeScript SDK in that generator: its keys come from
+  -- `eth_account`'s BIP-32 and its addresses from a CashAddr encoder pinned
+  -- to the vector published with the CashAddr specification.
+  local vectors = support.vectors("ecash.json")
+
+  t.case("addresses match the reference generator, on both networks", function()
+    for _, expected in ipairs(vectors.accounts) do
+      local got, err = wallet:derive({
+        mnemonic = vectors.mnemonic, index = expected.index, chain = "ecash",
+      })
+      t.ok(got, err and err.message)
+      -- A CashAddr prefix sits inside the checksum, so these are two
+      -- different strings and not one string wearing two labels.
+      t.equal(got.address, expected.address, "ecash address at " .. expected.index)
+      t.equal(got.address_mainnet, expected.address_mainnet)
+      t.equal(got.derivation_path, expected.path)
+      t.equal(got.public_key, expected.public_key_compressed)
+      t.equal(got.public_key_hash, expected.public_key_hash)
+    end
+  end)
+
+  t.case("a key imports back from every encoding it exports", function()
+    -- WIF is what eCash's own wallets read and write, and both of its
+    -- network forms carry the same scalar. Whichever goes in, hex comes out.
+    local expected = vectors.accounts[1]
+    for _, form in ipairs({ "wif", "wif_mainnet", "private_key" }) do
+      local got, err = wallet:derive({ private_key = expected[form], chain = "ecash" })
+      t.ok(got, err and err.message)
+      t.equal(got.address, expected.address, "imported from " .. form)
+      t.equal(got.private_key, expected.private_key, "stored as hex, from " .. form)
+    end
   end)
 end)
 
@@ -333,6 +369,7 @@ t.suite("vectors / coverage", function()
     "keccak.json",
     "keys-invalid.json",
     "keys.json",
+    "ecash.json",
     "multichain.json",
     "transactions.json",
     "units.json",

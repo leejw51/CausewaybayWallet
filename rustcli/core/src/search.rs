@@ -1,7 +1,7 @@
 //! One way to narrow a long list, shared by the network table and the token
 //! registry.
 //!
-//! Both tables outgrew the eye. Ten networks was a list you could read; four
+//! Both tables outgrew the eye. Ten networks was a list you could read; five
 //! chains' worth of networks and every stablecoin on each is a list you scan.
 //! So both are searched the same way, by the same code, and a front end that
 //! learns the rule for one has learned it for the other.
