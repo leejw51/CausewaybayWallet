@@ -1096,8 +1096,13 @@ local function draw_card(model, entry, face, place)
         -- Up beside the sigil rather than down by the holder — the bottom
         -- right belongs to the second line of the card number, and a badge
         -- printed over an address is a badge that makes the address wrong.
+        --
+        -- Measured rather than guessed at 56: the chip is its label plus ten,
+        -- which is 58, so the badge hung two pixels out through the card's own
+        -- edge.
         local pulse = anim.pulse(game.time, 1.6, 0.55, 1.0)
-        widgets.chip(box.x + box.w - 56, box.y + 36, "ACTIVE",
+        local chip_w = theme.width("ACTIVE", theme.font.small) + 10
+        widgets.chip(box.x + box.w - 10 - chip_w, box.y + 36, "ACTIVE",
           theme.colour.green, { alpha = alpha * pulse })
       end
     end,
@@ -1570,16 +1575,22 @@ local function draw_write(model, state)
   -- and however many the warning does. A fixed height would leave the
   -- four-file save gaping and push a long path through the buttons — and a
   -- home is as long as somebody's home directory is.
-  local inner = theme.WIDTH - 68 - 24
+  -- As wide as the canvas allows, up to the width it has always been. The 68
+  -- taken off either side is a wide canvas's margin: on a phone's it left a
+  -- 202-pixel dialog with 24 pixels of margin to spare, the title crammed
+  -- into the sprite beside it and the warning wrapped to four lines.
+  local w = math.min(theme.WIDTH - 24, 412)
+  local inner = w - 24
   -- `~/.causewaybaywallet` rather than `/Users/somebody/.causewaybaywallet`:
   -- the same directory, said the way a person says it, and short enough to
   -- read in one line. There is only ever this one directory — the wallet's own
   -- home — and every file this window writes goes into it.
   local where = wrap(Model.tilde(pending.dir), inner)
   local note = wrap(pending.note or "", inner)
-  local h = 90 + (#where + #files) * 11 + #note * 10
-  local box = widgets.dialog({ x = 34, y = math.floor((theme.HEIGHT - h) / 2),
-    w = theme.WIDTH - 68, h = h }, game.write_t, pending.title)
+  local h = 90 + (#where + #files + #note) * 11
+  local box = widgets.dialog({ x = math.floor((theme.WIDTH - w) / 2),
+    y = math.floor((theme.HEIGHT - h) / 2), w = w, h = h },
+    game.write_t, pending.title)
 
   local alpha = box.eased
   sprite.draw_glowing(pending.secret and "key" or "wallet",
@@ -1610,16 +1621,24 @@ local function draw_write(model, state)
   y = y + 4
   theme.rule(box.x + 12, y, box.w - 24, theme.colour.raised, 0.6 * alpha)
   y = y + 6
+  -- 11 to the line, like the rows above it. At 10 the descenders of one line
+  -- landed inside the caps of the next — the "y" of "keys." read as a stray
+  -- mark after "owns" — and this is the paragraph that says who owns the money.
   for _, line in ipairs(note) do
     theme.text(line, box.x + 12, y, accent, theme.font.small, alpha)
-    y = y + 10
+    y = y + 11
   end
 
   theme.text_right(("%d wallets"):format(pending.count or 0),
     box.x + box.w - 12, box.y + 26, theme.colour.faint, theme.font.small, alpha)
 
+  -- Wide enough for the verb it is showing: WRITE KEYS is 82 pixels of text in
+  -- a button that was 80 wide, so the one button that writes secrets to disk
+  -- had its label crossing its own border at both ends.
   local no = { x = box.x + 16, y = box.y + box.h - 24, w = 70, h = 16 }
-  local yes = { x = box.x + box.w - 96, y = box.y + box.h - 24, w = 80, h = 16 }
+  local yes_w = math.max(80, theme.width(pending.verb, theme.font.body) + 16)
+  local yes = { x = box.x + box.w - 16 - yes_w, y = box.y + box.h - 24,
+    w = yes_w, h = 16 }
   if widgets.button(game.springs, "write_no", no, "CANCEL", state,
       { colour = theme.colour.red }) then
     model:cancel_write()
@@ -1634,7 +1653,9 @@ local function draw_confirm(model, state)
   if game.confirm_t < 0.01 then return end
   local plan = model.confirm
   local network = model.info and model.info.network
-  local line = 10
+  -- 11 to the line: at 10 an address's descenders sat in the next line's
+  -- digits, and every line in this dialog is somebody's money.
+  local line = 11
 
   -- Measured before it is drawn, because what it has to say is not the same
   -- width everywhere. An address is 42 characters: on a wide canvas that is
