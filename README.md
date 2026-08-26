@@ -179,7 +179,7 @@ and `make version` prints it only when the two agree — a mismatch is an error,
 not a warning, and packaging refuses to run:
 
 ```bash
-make version          # 1.0.3
+make version          # 1.0.4
 ```
 
 Nothing repeats that number anywhere else. The Rust crates report
@@ -190,7 +190,10 @@ actually prints — `cwbwallet --version` and the `version` field of
 `cwbwallet info` — matches the manifests. So a version a release claims is one
 that was verified.
 
-To cut a release, bump both manifests, then tag `main`:
+What each release changed is written down in
+[`CHANGELOG.md`](CHANGELOG.md), newest first.
+
+To cut a release, bump both manifests, write the entry, then tag `main`:
 
 ```bash
 git tag v0.2.0 && git push origin v0.2.0
@@ -235,6 +238,7 @@ The signing secrets the release needs: `MACOS_CERTIFICATE_P12_BASE64`,
 | path | what it is |
 | ---- | ---------- |
 | `SPEC.md` | the specification the core implements and every front end relies on |
+| `CHANGELOG.md` | what changed in each release, newest first |
 | `.github/workflows/` | CI on every push, and the tagged macOS release |
 | `rustcli/` | the Rust workspace: `core/` the wallet, `ffi/` the C ABI, `cli/` the `cwbwallet` binary and TUI |
 | `pythoncli/` | the Python binding over the C ABI, its CLI and menu (`cwbwallet`) |
