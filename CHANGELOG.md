@@ -64,7 +64,7 @@ tag says what a row's *name does not* — `cronos-mainnet` needs no `cronos` tag
 it needs `evm`.
 
 ```sh
-cwbwallet network list testnet          # all six, however each is named
+cwbwallet network list testnet          # 8 of 12, however each is named
 cwbwallet token list stablecoin cronos
 cwbwallet token list --tags             # what there is to search by
 ```
