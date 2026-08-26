@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "causewaybay-wallet"
-version = "1.0.3"
+version = "1.0.4"
 description = "Educational multi-chain wallet: a Python binding over the Rust core's C ABI"
 readme = "README.md"
 requires-python = ">=3.10"
