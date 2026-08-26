@@ -219,10 +219,20 @@ local function tier_of(roll)
   return card.TIERS[1]
 end
 
+--- Designs already dealt, by the address they were dealt from.
+---
+--- A design is pure — same address, same card — and the draw asks for it
+--- every frame, so hashing the address sixty times a second bought nothing.
+--- The set of addresses is the wallet list, so this never grows past a
+--- handful of small tables.
+local dealt = {}
+
 --- Everything about one card, from one address. No `love.*` anywhere below.
 function card.design(address)
+  local key = tostring(address)
+  if dealt[key] then return dealt[key] end
   local b = bytes_of(address)
-  return {
+  dealt[key] = {
     address = address,
     scheme  = card.SCHEMES[b[1] % #card.SCHEMES + 1],
     pattern = card.PATTERNS[b[2] % #card.PATTERNS + 1],
@@ -231,6 +241,7 @@ function card.design(address)
     tier    = tier_of(b[6]),
     member  = ("%04d"):format((b[19] * 256 + b[20]) % 10000),
   }
+  return dealt[key]
 end
 
 --- The address as a card number: groups of four, the way one is printed.

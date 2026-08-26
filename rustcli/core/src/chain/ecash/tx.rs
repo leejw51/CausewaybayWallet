@@ -131,12 +131,66 @@ impl Transaction {
     }
 }
 
-/// The BIP-143 digest for one input of a transaction.
+/// The three hashes BIP-143 shares between every input of one transaction:
+/// the prevouts, the sequences, and the outputs.
 ///
-/// `prevout_script` is the script the input being spent is locked by, and
-/// `prevout_value` is what it holds. Committing to the value is the whole
-/// point of the algorithm: an offline signer that is lied to about it signs
-/// away the difference as fee, and BIP-143 makes that lie fail verification.
+/// Computed once per transaction. They cover the whole input and output
+/// sets, so re-deriving them for each input's digest — as signing used to —
+/// hashed the same bytes over again for every signature.
+struct Midstates {
+    prevouts: [u8; 32],
+    sequences: [u8; 32],
+    outputs: [u8; 32],
+}
+
+impl Midstates {
+    fn new(inputs: &[Utxo], outputs: &[TxOutput]) -> Self {
+        let mut prevouts = Vec::with_capacity(inputs.len() * 36);
+        let mut sequences = Vec::with_capacity(inputs.len() * 4);
+        for input in inputs {
+            prevouts.extend_from_slice(&input.txid);
+            prevouts.extend_from_slice(&input.index.to_le_bytes());
+            sequences.extend_from_slice(&SEQUENCE_FINAL.to_le_bytes());
+        }
+        let mut serialized_outputs = Vec::new();
+        for output in outputs {
+            output.serialize(&mut serialized_outputs);
+        }
+        Midstates {
+            prevouts: sha256d(&prevouts),
+            sequences: sha256d(&sequences),
+            outputs: sha256d(&serialized_outputs),
+        }
+    }
+
+    /// The BIP-143 digest for one input.
+    ///
+    /// `prevout_script` is the script the input being spent is locked by,
+    /// and `prevout_value` is what it holds. Committing to the value is the
+    /// whole point of the algorithm: an offline signer that is lied to about
+    /// it signs away the difference as fee, and BIP-143 makes that lie fail
+    /// verification.
+    fn sighash(&self, input: &Utxo, prevout_script: &[u8], prevout_value: u64) -> [u8; 32] {
+        let mut preimage = Vec::with_capacity(prevout_script.len() + 160);
+        preimage.extend_from_slice(&TX_VERSION.to_le_bytes());
+        preimage.extend_from_slice(&self.prevouts);
+        preimage.extend_from_slice(&self.sequences);
+        preimage.extend_from_slice(&input.txid);
+        preimage.extend_from_slice(&input.index.to_le_bytes());
+        write_varint(&mut preimage, prevout_script.len() as u64);
+        preimage.extend_from_slice(prevout_script);
+        preimage.extend_from_slice(&prevout_value.to_le_bytes());
+        preimage.extend_from_slice(&SEQUENCE_FINAL.to_le_bytes());
+        preimage.extend_from_slice(&self.outputs);
+        preimage.extend_from_slice(&0u32.to_le_bytes()); // locktime
+        preimage.extend_from_slice(&SIGHASH_ALL_FORKID.to_le_bytes());
+        sha256d(&preimage)
+    }
+}
+
+/// The BIP-143 digest for one input of a transaction — see
+/// [`Midstates::sighash`], which this builds fresh midstates for. Signing
+/// many inputs goes through [`sign`], which shares one set.
 pub fn sighash(
     inputs: &[Utxo],
     outputs: &[TxOutput],
@@ -144,32 +198,7 @@ pub fn sighash(
     prevout_script: &[u8],
     prevout_value: u64,
 ) -> [u8; 32] {
-    let mut prevouts = Vec::with_capacity(inputs.len() * 36);
-    let mut sequences = Vec::with_capacity(inputs.len() * 4);
-    for input in inputs {
-        prevouts.extend_from_slice(&input.txid);
-        prevouts.extend_from_slice(&input.index.to_le_bytes());
-        sequences.extend_from_slice(&SEQUENCE_FINAL.to_le_bytes());
-    }
-    let mut serialized_outputs = Vec::new();
-    for output in outputs {
-        output.serialize(&mut serialized_outputs);
-    }
-
-    let mut preimage = Vec::with_capacity(prevout_script.len() + 160);
-    preimage.extend_from_slice(&TX_VERSION.to_le_bytes());
-    preimage.extend_from_slice(&sha256d(&prevouts));
-    preimage.extend_from_slice(&sha256d(&sequences));
-    preimage.extend_from_slice(&inputs[index].txid);
-    preimage.extend_from_slice(&inputs[index].index.to_le_bytes());
-    write_varint(&mut preimage, prevout_script.len() as u64);
-    preimage.extend_from_slice(prevout_script);
-    preimage.extend_from_slice(&prevout_value.to_le_bytes());
-    preimage.extend_from_slice(&SEQUENCE_FINAL.to_le_bytes());
-    preimage.extend_from_slice(&sha256d(&serialized_outputs));
-    preimage.extend_from_slice(&0u32.to_le_bytes()); // locktime
-    preimage.extend_from_slice(&SIGHASH_ALL_FORKID.to_le_bytes());
-    sha256d(&preimage)
+    Midstates::new(inputs, outputs).sighash(&inputs[index], prevout_script, prevout_value)
 }
 
 /// Sign every input, all of which this wallet's one key controls.
@@ -181,9 +210,10 @@ pub fn sign(
 ) -> Result<Transaction> {
     let script_code = source.script_pubkey();
     let public_key = signer.public_key();
+    let midstates = Midstates::new(inputs, outputs);
     let mut script_sigs = Vec::with_capacity(inputs.len());
-    for (index, input) in inputs.iter().enumerate() {
-        let digest = sighash(inputs, outputs, index, &script_code, input.sats);
+    for input in inputs {
+        let digest = midstates.sighash(input, &script_code, input.sats);
         let mut signature = signer.sign_der(&digest)?;
         signature.push(SIGHASH_ALL_FORKID as u8);
 
