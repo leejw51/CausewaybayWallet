@@ -18,7 +18,7 @@ use common::Wallet;
 const PHRASE: &str =
     "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 
-const CHAINS: [&str; 4] = ["evm", "solana", "cardano", "midnight"];
+const CHAINS: [&str; 5] = ["evm", "solana", "cardano", "midnight", "ecash"];
 
 fn vectors() -> Value {
     let path =
@@ -119,6 +119,7 @@ fn each_chain_reports_its_own_derivation_path() {
         ("solana", "m/44'/501'/0'/0'"),
         ("cardano", "m/1852'/1815'/0'/0/0"),
         ("midnight", "m/44'/2400'/0'/0/0"),
+        ("ecash", "m/44'/1899'/0'/0/0"),
     ];
     for (chain, path) in paths {
         let shown = wallet.json(&["--chain", chain, "account", "show", chain]);
@@ -126,13 +127,13 @@ fn each_chain_reports_its_own_derivation_path() {
     }
 }
 
-/// One phrase, four addresses, one command.
+/// One phrase, an address on every chain, one command.
 #[test]
 fn every_chain_can_be_seeded_from_a_single_mnemonic_at_once() {
     let wallet = Wallet::new();
     let created = wallet.json(&["account", "new", "--every-chain", "--label", "me"]);
     let accounts = created.as_array().expect("one entry per chain");
-    assert_eq!(accounts.len(), 4);
+    assert_eq!(accounts.len(), CHAINS.len());
 
     let chains: Vec<&str> = accounts
         .iter()
@@ -145,7 +146,7 @@ fn every_chain_can_be_seeded_from_a_single_mnemonic_at_once() {
         assert_eq!(account["label"], format!("me-{chain}"));
     }
 
-    // All four came from the one phrase, so they share a single recall entry.
+    // They all came from the one phrase, so they share a single recall entry.
     let recalled = wallet.json(&["recent", "list"]);
     assert_eq!(recalled.as_array().unwrap().len(), 1);
     assert_eq!(recalled[0]["kind"], "mnemonic");
@@ -166,11 +167,15 @@ fn making_a_wallet_derives_every_chain_at_one_index() {
             &expected_index.to_string(),
         ]);
         let accounts = created.as_array().expect("one entry per chain");
-        assert_eq!(accounts.len(), 4, "wallet {expected_index} is incomplete");
+        assert_eq!(
+            accounts.len(),
+            CHAINS.len(),
+            "wallet {expected_index} is incomplete"
+        );
         for account in accounts {
             assert_eq!(account["index"], expected_index);
         }
-        // All four chains, every time.
+        // Every chain, every time.
         let chains: Vec<&str> = accounts
             .iter()
             .map(|a| a["chain"].as_str().unwrap())
@@ -178,19 +183,18 @@ fn making_a_wallet_derives_every_chain_at_one_index() {
         assert_eq!(chains, CHAINS);
     }
 
-    // Three wallets, twelve accounts, one mnemonic.
+    // Three wallets, one account per chain in each, one mnemonic.
     let listed = wallet.json(&["account", "list"]);
-    assert_eq!(listed.as_array().unwrap().len(), 12);
+    assert_eq!(listed.as_array().unwrap().len(), 3 * CHAINS.len());
     assert_eq!(
         wallet.json(&["recent", "list"]).as_array().unwrap().len(),
         1
     );
 }
 
-/// Importing a mnemonic makes the whole wallet, not a quarter of it. The bug
-/// this pins: an import produced an EVM account and silently left Solana,
-/// Cardano and Midnight behind, so the wallet looked like it had lost three
-/// chains it never had.
+/// Importing a mnemonic makes the whole wallet, not one chain of it. The bug
+/// this pins: an import produced an EVM account and silently left every other
+/// chain behind, so the wallet looked like it had lost chains it never had.
 #[test]
 fn importing_a_mnemonic_can_restore_every_chain_at_once() {
     let wallet = Wallet::new();
@@ -204,7 +208,7 @@ fn importing_a_mnemonic_can_restore_every_chain_at_once() {
         "restored",
     ]);
     let accounts = imported.as_array().expect("one entry per chain");
-    assert_eq!(accounts.len(), 4);
+    assert_eq!(accounts.len(), CHAINS.len());
     assert_eq!(
         accounts
             .iter()
@@ -308,13 +312,13 @@ fn deriving_an_index_can_cover_every_chain() {
         "w1",
     ]);
     let accounts = derived.as_array().unwrap();
-    assert_eq!(accounts.len(), 4);
+    assert_eq!(accounts.len(), CHAINS.len());
     for account in accounts {
         assert_eq!(account["index"], 1);
     }
     assert_eq!(
         wallet.json(&["account", "list"]).as_array().unwrap().len(),
-        8
+        2 * CHAINS.len()
     );
 }
 
@@ -544,6 +548,201 @@ fn the_legacy_bare_network_names_still_mean_cronos() {
     }
 }
 
+/// An address that carries its network must be rendered for the network in
+/// view, not for the one the store happens to hold.
+///
+/// Three chains put the network inside the address, so one key is two strings
+/// and a record can only keep one of them — the default network's, which is a
+/// test network on all three. Showing that string under a mainnet heading
+/// offers a deposit address that cannot receive there, and on the chains whose
+/// reads go by address it asks the node about somewhere nobody is watching,
+/// which comes back as a balance of zero.
+///
+/// Found by a GUI test: the LÖVE wallet list, pointed at eCash mainnet, was
+/// drawing the `ectest:` face.
+#[test]
+fn an_account_shows_the_address_of_the_network_in_view() {
+    let wallet = seeded();
+    // `(chain, testnet network, mainnet network, mainnet prefix)`.
+    let crossings = [
+        ("cardano", "cardano-preprod", "cardano-mainnet", "addr1"),
+        ("ecash", "ecash-testnet", "ecash-mainnet", "ecash:"),
+    ];
+
+    for (chain, testnet, mainnet, prefix) in crossings {
+        let on_testnet = wallet.json(&["--chain", chain, "-n", testnet, "account", "show", chain]);
+        let on_mainnet = wallet.json(&["--chain", chain, "-n", mainnet, "account", "show", chain]);
+
+        let testnet_address = on_testnet["address"].as_str().unwrap();
+        let mainnet_address = on_mainnet["address"].as_str().unwrap();
+        assert_ne!(
+            testnet_address, mainnet_address,
+            "{chain} served one string for both networks"
+        );
+        assert!(
+            mainnet_address.starts_with(prefix),
+            "{chain} on {mainnet}: {mainnet_address}"
+        );
+        // The account is the same account: only its rendering moved.
+        assert_eq!(on_testnet["id"], on_mainnet["id"], "{chain}");
+        assert_eq!(on_testnet["label"], on_mainnet["label"], "{chain}");
+        assert_eq!(
+            on_testnet["private_key"], on_mainnet["private_key"],
+            "{chain}"
+        );
+
+        // And each rendering is one that chain will accept on that network.
+        assert!(
+            wallet
+                .cmd(&[
+                    "--json",
+                    "--chain",
+                    chain,
+                    "-n",
+                    mainnet,
+                    "balance",
+                    "--address",
+                    mainnet_address,
+                ])
+                .output()
+                .is_ok(),
+            "{chain}"
+        );
+        assert_eq!(
+            wallet.json_error(&[
+                "--chain",
+                chain,
+                "-n",
+                mainnet,
+                "balance",
+                "--address",
+                testnet_address,
+            ]),
+            "invalid_address",
+            "{chain}: a testnet address was accepted on {mainnet}"
+        );
+    }
+}
+
+/// The listing is where a person reads an address off to hand it over, so it
+/// follows each chain's own network — every row, not only the one in view.
+#[test]
+fn the_account_listing_renders_every_chain_on_its_own_network() {
+    let wallet = seeded();
+    wallet.json(&["--chain", "ecash", "network", "use", "ecash-mainnet"]);
+
+    let listed = wallet.json(&["account", "list"]);
+    let row = |chain: &str| -> String {
+        listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["chain"] == chain)
+            .unwrap_or_else(|| panic!("no {chain} row"))["address"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+
+    // eCash moved to mainnet, so its row moved with it.
+    assert!(row("ecash").starts_with("ecash:"), "{}", row("ecash"));
+    // The chains that did not move are unchanged, which is the other half:
+    // one chain's network must not re-render another's.
+    assert!(
+        row("cardano").starts_with("addr_test1"),
+        "{}",
+        row("cardano")
+    );
+    assert!(row("evm").starts_with("0x"), "{}", row("evm"));
+
+    // The human rendering says the same thing as the JSON.
+    let human =
+        String::from_utf8(wallet.cmd(&["account", "list"]).output().unwrap().stdout).unwrap();
+    assert!(human.contains(&row("ecash")), "{human}");
+}
+
+/// `info` names the *wallet's* active account, which is not always on the
+/// chain in view — so its address follows its own chain's network, and the
+/// chain in view must not re-render it.
+#[test]
+fn info_reports_the_active_address_on_its_own_chains_network() {
+    let wallet = seeded();
+
+    // While the EVM account is the active one, the address `info` names is
+    // its own, whatever chain the command is pointed at.
+    let elsewhere = wallet.json(&["--chain", "ecash", "info"]);
+    assert_eq!(elsewhere["active_account"], "evm");
+    assert_eq!(
+        elsewhere["active_address"], "0x9858EfFD232B4033E47d90003D41EC34EcaEda94",
+        "the chain in view re-rendered another chain's account"
+    );
+
+    // Make the eCash account active, and the address follows eCash's network.
+    wallet.json(&["--chain", "ecash", "account", "use", "ecash"]);
+    wallet.json(&["--chain", "ecash", "network", "use", "ecash-testnet"]);
+    let on_testnet = wallet.json(&["info"]);
+    assert!(
+        on_testnet["active_address"]
+            .as_str()
+            .unwrap()
+            .starts_with("ectest:"),
+        "{on_testnet}"
+    );
+
+    wallet.json(&["--chain", "ecash", "network", "use", "ecash-mainnet"]);
+    let on_mainnet = wallet.json(&["info"]);
+    assert!(
+        on_mainnet["active_address"]
+            .as_str()
+            .unwrap()
+            .starts_with("ecash:"),
+        "{on_mainnet}"
+    );
+}
+
+/// An account with a key this wallet cannot re-derive from still lists: the
+/// stored string is shown rather than the listing failing.
+///
+/// Nothing produces such a record today, and the fallback exists so that a
+/// record from a future build — or a hand-edited log — degrades to showing
+/// what is on file instead of taking `account list` down with it.
+#[test]
+fn an_account_whose_key_cannot_be_read_still_lists() {
+    let wallet = Wallet::new();
+    wallet.json(&[
+        "--chain",
+        "ecash",
+        "account",
+        "import-mnemonic",
+        "-m",
+        PHRASE,
+        "--label",
+        "xec",
+    ]);
+
+    let path = wallet.home.path().join("accounts.jsonl");
+    let text = std::fs::read_to_string(&path).unwrap();
+    let broken: String = text
+        .lines()
+        .map(|line| {
+            let mut record: Value = serde_json::from_str(line).unwrap();
+            record["private_key"] = serde_json::json!("0xnot-a-key");
+            format!("{record}\n")
+        })
+        .collect();
+    std::fs::write(&path, broken).unwrap();
+
+    let listed = wallet.json(&["account", "list"]);
+    let rows = listed.as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    // The address on record, unchanged, rather than an error.
+    assert!(
+        rows[0]["address"].as_str().unwrap().starts_with("ectest:"),
+        "{}",
+        rows[0]
+    );
+}
+
 #[test]
 fn a_chain_and_a_network_that_disagree_are_refused() {
     let wallet = Wallet::new();
@@ -592,7 +791,7 @@ fn the_chains_command_lists_every_chain_and_its_capabilities() {
     let wallet = Wallet::new();
     let listed = wallet.json(&["chains"]);
     let rows = listed.as_array().unwrap();
-    assert_eq!(rows.len(), 4);
+    assert_eq!(rows.len(), CHAINS.len());
 
     let names: Vec<&str> = rows.iter().map(|c| c["chain"].as_str().unwrap()).collect();
     assert_eq!(names, CHAINS);
@@ -660,7 +859,7 @@ fn accounts_carry_their_chain_through_the_store() {
     let wallet = seeded();
     let listed = wallet.json(&["account", "list"]);
     let rows = listed.as_array().unwrap();
-    assert_eq!(rows.len(), 4);
+    assert_eq!(rows.len(), CHAINS.len());
     for (row, chain) in rows.iter().zip(CHAINS) {
         assert_eq!(row["chain"], chain);
     }
@@ -693,10 +892,10 @@ fn each_chain_resolves_its_own_active_account() {
 fn info_summarises_every_chain_the_wallet_holds() {
     let wallet = seeded();
     let info = wallet.json(&["info"]);
-    assert_eq!(info["accounts"], 4);
+    assert_eq!(info["accounts"], CHAINS.len());
 
     let chains = info["chains"].as_array().unwrap();
-    assert_eq!(chains.len(), 4);
+    assert_eq!(chains.len(), CHAINS.len());
     for row in chains {
         assert_eq!(row["accounts"], 1, "{row}");
         assert!(row["network"].as_str().unwrap().starts_with(

@@ -15,6 +15,7 @@ path = "src/lib.rs"
 alloy-primitives.workspace = true
 k256.workspace = true
 sha2.workspace = true
+ripemd.workspace = true
 hmac.workspace = true
 pbkdf2.workspace = true
 rand.workspace = true

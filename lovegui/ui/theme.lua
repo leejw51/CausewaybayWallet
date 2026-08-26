@@ -55,6 +55,10 @@ theme.colour = {
   red       = { 1.00, 0.32, 0.42 },
   amber     = { 1.00, 0.66, 0.20 },
   magenta   = { 0.94, 0.40, 0.90 },
+  -- The one hue here with no job but to be a chain's. Every other accent is
+  -- already spoken for by a state — active, money, danger, warning — and a
+  -- chain drawn in one of those reads as the state instead.
+  blue      = { 0.35, 0.60, 1.00 },
   white     = { 1.00, 1.00, 1.00 },
 }
 
@@ -280,7 +284,7 @@ end
 
 --- The colour a chain is drawn in, everywhere it is named.
 ---
---- The wallet holds four chains and shows them mixed: a list of accounts, a
+--- The wallet holds several chains and shows them mixed: a list of accounts, a
 --- flat list of every network. Colour is what turns that into groups without
 --- an indent or a heading, so the mapping lives here with the palette rather
 --- than beside one of the places that draws it.
@@ -288,6 +292,7 @@ function theme.chain_colour(chain)
   if chain == "solana" then return theme.colour.green end
   if chain == "cardano" then return theme.colour.cyan end
   if chain == "midnight" then return theme.colour.amber end
+  if chain == "ecash" then return theme.colour.blue end
   -- EVM, and anything a future build adds before this list catches up.
   return theme.colour.magenta
 end

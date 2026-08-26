@@ -85,6 +85,7 @@ impl Chain for CardanoChain {
 
     fn recover_message(
         &self,
+        network: &Network,
         message: &[u8],
         signature: &[u8],
         address: Option<&str>,
@@ -104,7 +105,13 @@ impl Chain for CardanoChain {
         let account = CardanoAccount::from_secret(secret)?;
         let valid = keys::verify(&account.payment_public_key(), message, signature)?;
         Ok(Recovered {
-            address: valid.then(|| account.base_address(CardanoNetwork::Testnet).to_bech32()),
+            // Rendered for the network in play: the header nibble makes the
+            // testnet and mainnet strings different addresses.
+            address: valid.then(|| {
+                account
+                    .base_address(CardanoNetwork::of(network))
+                    .to_bech32()
+            }),
             valid,
         })
     }
@@ -272,12 +279,22 @@ mod tests {
 
         let signature = signer.sign_message(b"hello").unwrap();
         let checked = CardanoChain
-            .recover_message(b"hello", &signature, Some(&derived.secret))
+            .recover_message(
+                &crate::network::CARDANO_PREPROD,
+                b"hello",
+                &signature,
+                Some(&derived.secret),
+            )
             .unwrap();
         assert!(checked.valid);
 
         let tampered = CardanoChain
-            .recover_message(b"different", &signature, Some(&derived.secret))
+            .recover_message(
+                &crate::network::CARDANO_PREPROD,
+                b"different",
+                &signature,
+                Some(&derived.secret),
+            )
             .unwrap();
         assert!(!tampered.valid);
     }
@@ -285,7 +302,7 @@ mod tests {
     #[test]
     fn verifying_with_nothing_to_verify_against_explains_why() {
         let err = CardanoChain
-            .recover_message(b"hello", &[0u8; 64], None)
+            .recover_message(&crate::network::CARDANO_PREPROD, b"hello", &[0u8; 64], None)
             .unwrap_err();
         assert_eq!(err.code, error::Code::Usage);
         assert!(err.message.contains("hash"), "{}", err.message);

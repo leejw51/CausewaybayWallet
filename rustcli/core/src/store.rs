@@ -516,6 +516,23 @@ impl Store {
             .iter()
             .find(|a| a.id == needle || a.label == needle || a.address.to_lowercase() == lowered)
             .or_else(|| accounts.iter().find(|a| a.label.to_lowercase() == lowered))
+            // The store holds each account's default-network address, but a
+            // listing renders it for whichever network its chain is on — so a
+            // selector copied from one may match none of the stored strings.
+            // Any network's rendering names the account just as well; derived
+            // last because it costs key derivation per account.
+            .or_else(|| {
+                accounts.iter().find(|a| {
+                    let chain = crate::chain::chain(a.chain);
+                    network::for_chain(a.chain).iter().any(|net| {
+                        chain
+                            .address_on(net, &a.private_key)
+                            .ok()
+                            .flatten()
+                            .is_some_and(|address| address.to_lowercase() == lowered)
+                    })
+                })
+            })
             .cloned()
             .ok_or_else(|| error::account_not_found(format!("no account matching '{needle}'")))
     }
@@ -1262,6 +1279,39 @@ mod tests {
             store.find_account("nope").unwrap_err().code,
             error::Code::AccountNotFound
         );
+    }
+
+    /// The listing renders an account's address for the network its chain is
+    /// on, which on eCash, Cardano and Midnight is not the stored string —
+    /// and a selector copied from the listing must still land.
+    #[test]
+    fn finds_an_account_by_any_networks_rendering_of_its_address() {
+        let (_dir, store) = store();
+        let secret = "0x1ab42cc412b618bdea3a599e3c9bae199ebf030895b039e9db1e30dafb12b727";
+        let chain = crate::chain::chain(ChainId::Ecash);
+        let stored = chain
+            .address_on(&network::ECASH_TESTNET, secret)
+            .unwrap()
+            .expect("ecash renders per network");
+        let account = store
+            .create_account(
+                Some("xec"),
+                &stored,
+                ChainId::Ecash,
+                Source::PrivateKey,
+                secret,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+
+        let mainnet = chain
+            .address_on(&network::ECASH_MAINNET, secret)
+            .unwrap()
+            .expect("ecash renders per network");
+        assert_ne!(mainnet, stored);
+        assert_eq!(store.find_account(&mainnet).unwrap().id, account.id);
     }
 
     #[test]

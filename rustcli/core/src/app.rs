@@ -245,6 +245,59 @@ impl App {
         }
     }
 
+    /// The address an account has **on one network**, which is not always the
+    /// address the store holds.
+    ///
+    /// Three chains put the network inside the address — Cardano's header
+    /// nibble, Midnight's bech32m prefix, eCash's CashAddr prefix folded into
+    /// its checksum — so one key is two strings and a record can only keep
+    /// one of them. It keeps the one for that chain's default network, which
+    /// is a test network on all three.
+    ///
+    /// Showing that stored string under another network's heading is not a
+    /// cosmetic fault. It is a deposit address offered for a network it
+    /// cannot receive on, and on the two chains whose reads go by address it
+    /// also asks the node about somewhere nobody is watching, which comes
+    /// back as a balance of zero.
+    ///
+    /// The account's `id` is deliberately unaffected: it is derived from the
+    /// address the record was created with, and it stays what it was.
+    ///
+    /// A chain that renders one address everywhere answers `None` and the
+    /// stored string is used untouched — as does a key this wallet cannot
+    /// re-derive from, which is a reason to show what is on record rather
+    /// than to fail a listing.
+    fn address_for(&self, account: &Account, network: &Network) -> String {
+        chain::chain(account.chain)
+            .address_on(network, &account.private_key)
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| account.address.clone())
+    }
+
+    /// The same, for the network this command is running on.
+    ///
+    /// Only for an account already known to be on this command's chain —
+    /// [`Self::pick_account`] refuses anything else. An account on another
+    /// chain needs [`Self::address_on_its_own_network`], because a network
+    /// belongs to exactly one chain and the two would not match.
+    fn address_here(&self, account: &Account) -> String {
+        debug_assert_eq!(account.chain, self.network.chain);
+        self.address_for(account, &self.network)
+    }
+
+    /// The address an account has on whichever network *its own chain* is
+    /// pointed at, which is what a listing spanning several chains needs.
+    ///
+    /// Public because the TUI shows and copies addresses too, and must show
+    /// the same string the listing does.
+    pub fn address_on_its_own_network(&self, account: &Account) -> String {
+        match self.store.network_on(account.chain) {
+            Ok(network) => self.address_for(account, &network),
+            Err(_) => account.address.clone(),
+        }
+    }
+
     /// The address a read-only query should use, in the chain's own rendering.
     fn pick_address(&self, target: &TargetArgs) -> Result<(String, Option<Account>)> {
         if let Some(raw) = &target.address {
@@ -252,7 +305,7 @@ impl App {
             return Ok((raw.trim().to_string(), None));
         }
         let account = self.pick_account(target.account.as_deref())?;
-        Ok((account.address.clone(), Some(account)))
+        Ok((self.address_here(&account), Some(account)))
     }
 
     /// Ask before doing something irreversible.
@@ -416,11 +469,16 @@ impl App {
                     &derived.address,
                     None,
                 )?;
+                // Named as it reads on this network, agreeing with the listing
+                // the user will look at next.
+                let here = self.address_here(&account);
+                let mut view = account.public_view();
+                view["address"] = json!(here);
                 Ok(CommandOutput::new(
-                    account.public_view(),
+                    view,
                     format!(
                         "Imported {} ({}) on {}{REMEMBERED_NOTE}",
-                        account.label, account.address, account.chain
+                        account.label, here, account.chain
                     ),
                 ))
             }
@@ -481,10 +539,16 @@ impl App {
                         )),
                     };
                 }
+                // A listing spans every chain, and each row renders its
+                // address for the network *its own chain* is on rather than
+                // the one this command happens to be pointed at.
+                let shown = |a: &Account| self.address_on_its_own_network(a);
+
                 let data: Vec<Value> = accounts
                     .iter()
                     .map(|a| {
                         let mut value = a.public_view();
+                        value["address"] = json!(shown(a));
                         value["active"] = json!(Some(&a.id) == active.as_ref());
                         value
                     })
@@ -506,7 +570,7 @@ impl App {
                         lines.push(format!(
                             "{marker} {:<19} {}  {}",
                             a.label,
-                            a.address,
+                            shown(a),
                             a.source.as_str()
                         ));
                     }
@@ -526,6 +590,8 @@ impl App {
                 } else {
                     account.public_view()
                 };
+                let here = self.address_here(&account);
+                data["address"] = json!(here);
                 data["public_key"] = json!(derived.public_key);
                 data["extra"] = derived.extra.clone();
                 if account.chain == ChainId::Evm {
@@ -535,7 +601,7 @@ impl App {
 
                 let mut rows = vec![
                     ("Label", account.label.clone()),
-                    ("Address", account.address.clone()),
+                    ("Address", here.clone()),
                     ("Id", account.id.clone()),
                     ("Chain", account.chain.as_str().to_string()),
                     ("Source", account.source.as_str().to_string()),
@@ -878,7 +944,11 @@ impl App {
         let mut data: Vec<Value> = Vec::new();
         let mut lines = Vec::new();
         for (account, derived, at) in created {
+            // Each row names the address for the network its own chain is on,
+            // as the listing does — the stored string is the default network's.
+            let shown = self.address_on_its_own_network(account);
             let mut value = account.public_view();
+            value["address"] = json!(shown);
             value["public_key"] = json!(derived.public_key);
             value["extra"] = derived.extra.clone();
             if show_secret {
@@ -890,7 +960,7 @@ impl App {
                 "{:<9} {:<20} {}\n{:>10}{} index {at}",
                 account.chain.as_str(),
                 account.label,
-                account.address,
+                shown,
                 "",
                 account.derivation_path.clone().unwrap_or_default(),
             ));
@@ -1436,7 +1506,12 @@ impl App {
                 continue;
             };
             let network = self.store.network_on(id)?;
-            targets.push((id, account, network));
+            // Each chain reads the address it has *on its own network*, which
+            // for Cardano, Midnight and eCash is not the string the store
+            // holds. Asking a mainnet node about a testnet address is how a
+            // funded account reads as empty.
+            let address = self.address_for(&account, &network);
+            targets.push((id, account, network, address));
         }
         if targets.is_empty() {
             return Ok(CommandOutput::new(
@@ -1447,20 +1522,20 @@ impl App {
 
         let clients: Vec<Arc<dyn ChainClient>> = targets
             .iter()
-            .map(|(id, _, network)| self.client_for(*id, *network))
+            .map(|(id, _, network, _)| self.client_for(*id, *network))
             .collect::<Result<_>>()?;
 
         let balances = runtime::block_on(async {
             let queries = targets
                 .iter()
                 .zip(&clients)
-                .map(|((_, account, _), client)| client.balance(&account.address));
+                .map(|((_, _, _, address), client)| client.balance(address));
             futures_util::future::join_all(queries).await
         })?;
 
         let mut rows = Vec::new();
         let mut data = Vec::new();
-        for ((id, account, network), balance) in targets.iter().zip(balances) {
+        for ((id, account, network, address), balance) in targets.iter().zip(balances) {
             let units = network.units();
             // One chain being unreachable must not hide the other three, so a
             // failure is reported in its row rather than aborting the command.
@@ -1480,7 +1555,7 @@ impl App {
                 "chain": id.as_str(),
                 "network": network.key,
                 "account": account.label,
-                "address": account.address,
+                "address": address,
                 "balance": value.as_ref().map(|_| units.format(
                     value.as_ref().and_then(|v| v.parse::<u128>().ok()).unwrap_or(0)
                 )),
@@ -1493,7 +1568,7 @@ impl App {
                 id.as_str(),
                 account.label,
                 shown,
-                account.address
+                address
             ));
         }
         Ok(CommandOutput::new(json!(data), rows.join("\n")))
@@ -2025,9 +2100,12 @@ impl App {
         let text = read_message(self.host.as_ref(), message)?;
         let signature = signer.sign_message(text.as_bytes())?;
         let encoded = format!("0x{}", hex::encode(&signature));
+        // The signer as it is named on this network, matching what `account
+        // list` and `verify` show — not the stored default-network string.
+        let address = self.address_here(&account);
         Ok(CommandOutput::new(
             json!({
-                "address": account.address,
+                "address": address,
                 "account": account.label,
                 "chain": account.chain.as_str(),
                 "scheme": signing_scheme(account.chain),
@@ -2035,7 +2113,7 @@ impl App {
                 "signature": encoded,
             }),
             output::table(&[
-                ("Signer", account.address.clone()),
+                ("Signer", address),
                 ("Scheme", signing_scheme(account.chain).to_string()),
                 ("Signature", encoded),
             ]),
@@ -2074,17 +2152,22 @@ impl App {
             }
             // Nothing to compare against would make `valid` mean only "this
             // parsed", which is true of a signature over any message at all.
-            // The wallet's own account is the expectation worth defaulting to.
+            // The wallet's own account is the expectation worth defaulting to —
+            // as it renders on this network, since the stored string belongs
+            // to the chain's default network and eCash would refuse the other.
             (None, true) => self
                 .store
                 .active_account_on(self.chain)
                 .ok()
-                .map(|account| account.address.clone()),
+                .map(|account| self.address_here(&account)),
         };
 
-        let recovered =
-            self.chain()
-                .recover_message(text.as_bytes(), &bytes, against.as_deref())?;
+        let recovered = self.chain().recover_message(
+            &self.network,
+            text.as_bytes(),
+            &bytes,
+            against.as_deref(),
+        )?;
 
         // The address is echoed back rather than the key that checked it.
         let shown = recovered.address.clone();
@@ -2765,7 +2848,14 @@ impl App {
                 "Active".into(),
                 active
                     .as_ref()
-                    .map(|a| format!("{} ({}) on {}", a.label, a.address, a.chain))
+                    .map(|a| {
+                        format!(
+                            "{} ({}) on {}",
+                            a.label,
+                            self.address_on_its_own_network(a),
+                            a.chain
+                        )
+                    })
                     .unwrap_or_else(|| "-".into()),
             ),
             ("Chain".into(), self.chain().name().to_string()),
@@ -2820,7 +2910,10 @@ impl App {
                 "accounts": accounts.len(),
                 "remembered": self.store.recent()?.len(),
                 "active_account": active.as_ref().map(|a| a.label.clone()),
-                "active_address": active.as_ref().map(|a| a.address.clone()),
+                // The wallet's active account, which is not always on the
+                // chain in view — so it is rendered on its own chain's
+                // network rather than on this command's.
+                "active_address": active.as_ref().map(|a| self.address_on_its_own_network(a)),
                 "chain": self.chain.as_str(),
                 "chains": by_chain,
                 "network": self.network.key,
@@ -2965,6 +3058,7 @@ fn signing_scheme(chain: ChainId) -> &'static str {
         ChainId::Solana => "ed25519",
         ChainId::Cardano => "ed25519 (BIP32-Ed25519 payment key)",
         ChainId::Midnight => "BIP-340 Schnorr (secp256k1)",
+        ChainId::Ecash => "Bitcoin signed message (secp256k1)",
     }
 }
 

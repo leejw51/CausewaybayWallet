@@ -3,7 +3,7 @@
 ⚠️  EDUCATIONAL SOFTWARE. Keys are stored unencrypted on disk. Do not use with
 funds you are not prepared to lose. For real value use a hardware wallet.
 
-The wallet itself is in ``rustcli/``: the key derivation for all four chains,
+The wallet itself is in ``rustcli/``: the key derivation for all five chains,
 the append-only store, the RPC and the command surface. This package loads that
 core through its C ABI and gives Python a wallet object over it, the way
 ``luacli/`` does for Lua and ``ccli/`` does for C.

@@ -6,13 +6,13 @@ front end returns. `pythoncli/`, `luacli/` and `ccli/` are bindings over its C
 ABI rather than second implementations, so a store written through any of them
 can be driven through any other.
 
-> **Multi-chain, as of ABI 2.** The wallet holds accounts on four chains: `evm`
-> (Cronos), `solana`, `cardano` and `midnight`. Everything below that does not
-> name a chain applies to all of them. A record written before this — an account
-> with no `chain` field — is an EVM account, so an existing store replays
-> unchanged and needs no migration.
+> **Multi-chain, as of ABI 2.** The wallet holds accounts on five chains: `evm`
+> (Cronos), `solana`, `cardano`, `midnight` and `ecash`. Everything below that
+> does not name a chain applies to all of them. A record written before this —
+> an account with no `chain` field — is an EVM account, so an existing store
+> replays unchanged and needs no migration.
 >
-> Every front end has all four, because there is one implementation of them.
+> Every front end has all five, because there is one implementation of them.
 
 Sections 1–7 are what the implementation does. Section 8 describes the C ABI it
 exposes — the way the other front ends reach it from another language.
@@ -73,10 +73,11 @@ with mode `0600`.
   `account<index>-<chain>` when omitted — `account0-evm`, `account0-solana` —
   so the name says which wallet and which chain. An account with no index (an
   imported private key), or a name already taken, falls back to `account-<n>`.
-* `chain` — `evm`, `solana`, `cardano` or `midnight`. **Absent means `evm`**:
+* `chain` — `evm`, `solana`, `cardano`, `midnight` or `ecash`. **Absent means `evm`**:
   every record written before the wallet was multi-chain is an EVM account.
 * `address` — in the chain's own rendering: EIP-55 checksummed hex for `evm`,
-  base58 for `solana`, bech32 for `cardano`, bech32m for `midnight`.
+  base58 for `solana`, bech32 for `cardano`, bech32m for `midnight`, CashAddr
+  for `ecash`.
 * `private_key` — in the chain's own encoding, and opaque to everything but
   that chain:
 
@@ -86,6 +87,12 @@ with mode `0600`.
   | `solana` | base58 of the 64-byte keypair |
   | `cardano` | 384 hex characters: the 96-byte payment extended key, then the 96-byte staking one |
   | `midnight` | 128 hex characters: the 32-byte night key, then its 32-byte DUST seed |
+  | `ecash` | `0x`-prefixed, 64 hex characters |
+
+  eCash stores plain hex rather than the Wallet Import Format its own tooling
+  exports, because a WIF string names a network and the key works on both.
+  A WIF is accepted on import — either network's — and normalised to hex; the
+  two WIF renderings are offered back in an account's `extra`.
 
   Cardano and Midnight store two keys because one is not derivable from the
   other and both are needed: Cardano's address contains the staking credential,
@@ -176,9 +183,17 @@ chain too. Each chain's first row is its default.
 | `cardano-mainnet`  | `cardano`  | —        | ADA    | 6        | utxo native-assets               | `https://api.koios.rest/api/v1`                       |
 | `midnight-preview` | `midnight` | —        | NIGHT  | 6        | privacy testnet shielded zk      | `https://indexer.preview.midnight.network/api/v4/graphql` |
 | `midnight-devnet`  | `midnight` | —        | NIGHT  | 6        | privacy testnet shielded zk      | `https://indexer.devnet.midnight.network/api/v4/graphql`  |
+| `ecash-testnet`    | `ecash`    | —        | tXEC   | 2        | utxo testnet bitcoin-fork        | `https://chronik-testnet.fabien.cash`                |
+| `ecash-mainnet`    | `ecash`    | —        | XEC    | 2        | utxo bitcoin-fork                | `https://chronik.e.cash`                             |
 
 Only EVM networks have a chain id; it is the EIP-155 replay-protection number
 and is omitted rather than faked for the others.
+
+**XEC has two decimal places, not Bitcoin's eight.** eCash redenominated at its
+2021 rebrand, so one XEC is a hundred satoshis where one BCH was a hundred
+million. A balance read with Bitcoin's decimals is out by a factor of a
+million, in the direction that makes a large transfer look like a rounding
+error.
 
 Midnight reads from an indexer and **submits to a different service**, its node
 RPC (`https://rpc.<network>.midnight.network`). No other chain separates the
@@ -351,11 +366,11 @@ report. See `guarded` in the `ffi` crate.
 * An export row is one account **on one network**, ordered by wallet index,
   then by chain, then by network, and named `account<index>-<network>`
   (`account0-cronos-testnet`) — or `account<index>-<chain>` where the chain
-  ships a single exported network. EVM writes both Cronos networks; the other
-  three chains are testnet-only until their mainnets are supported.
+  ships a single exported network. EVM writes both Cronos networks; every other
+  chain writes its default network only, which is a test network on each.
 
-Each chain derives differently, and the differences are load-bearing — three of
-the four disagree about what the mnemonic even turns into:
+Each chain derives differently, and the differences are load-bearing — one of
+the five disagrees about what the mnemonic even turns into:
 
 | chain | derives from | scheme | path | address |
 | --- | --- | --- | --- | --- |
@@ -363,6 +378,7 @@ the four disagree about what the mnemonic even turns into:
 | `solana` | the BIP-39 seed | SLIP-0010, ed25519, **hardened only** | `m/44'/501'/<i>'/0'` | base58 of the raw public key |
 | `cardano` | the BIP-39 **entropy** | Icarus/CIP-3 + BIP32-Ed25519 | `m/1852'/1815'/0'/0/<i>` | bech32 of blake2b-224 key hashes |
 | `midnight` | the BIP-39 seed | BIP-32, secp256k1 → BIP-340 | `m/44'/2400'/0'/0/<i>` | bech32m of SHA-256(x-only pubkey) |
+| `ecash` | the BIP-39 seed | BIP-32, secp256k1 | `m/44'/1899'/0'/0/<i>` | CashAddr of ripemd160(sha256(compressed pubkey)) |
 
 Three details an implementer will otherwise get wrong, each of which produces a
 plausible, wrong, unfunded address rather than an error:
@@ -376,18 +392,29 @@ plausible, wrong, unfunded address rather than an error:
    signing key reports is not always the one BIP-32 derived. The *derived*
    bytes are what is stored and exported, or roughly half of all indices
    disagree with the Midnight SDK.
+4. **eCash hashes the compressed public key.** The uncompressed form is an
+   equally valid encoding of the same key and hashes to a different address,
+   so a wallet that reaches for it derives somewhere real, empty, and not
+   where the funds are. eCash also uses coin type **1899**, neither Bitcoin's
+   `0` nor the generic testnet `1`.
 
 Addresses are rendered in each chain's own form, and one that carries its
-network — Cardano's header nibble, Midnight's bech32m prefix — is checked
-against the network in play before a transfer, because crossing that line puts
-the funds on a chain nobody is watching.
+network — Cardano's header nibble, Midnight's bech32m prefix, eCash's CashAddr
+prefix — is checked against the network in play before a transfer, because
+crossing that line puts the funds on a chain nobody is watching. eCash folds
+its prefix into the checksum, so `ecash:` and `ectest:` are not two labels on
+one string: neither form decodes as the other.
 
 The core and its bindings are tested against the shared fixtures in `testvectors/`,
 which carry the official BIP-39 and EIP-55 vectors, the worked example from
 EIP-155, and the mnemonics and keys published by Anvil, Hardhat and Ganache.
 `testvectors/multichain.json` carries the Solana, Cardano and Midnight
 derivations, addresses and transaction encodings, generated with each chain's
-official SDK.
+official SDK. `testvectors/ecash.json` carries eCash's, generated instead from
+`eth_account`'s BIP-32 and a CashAddr encoder pinned to the vector published
+with the CashAddr specification — eCash has no SDK in that generator, and an
+encoder checked against a document is a better anchor than one checked against
+itself.
 
 ## 4. Output envelope
 
@@ -459,8 +486,8 @@ Three things can name that ceiling, tried in order of how deliberate they are:
    `0` means the built-in ceiling, which is what every network starts at.
 3. Nothing, which leaves `Network::max_fee` in force.
 
-The unit is the **fee's**, not the transfer's. They are the same token on three
-chains out of four; a Midnight transfer moves NIGHT (6 decimals) and pays its
+The unit is the **fee's**, not the transfer's. They are the same token on four
+chains out of five; a Midnight transfer moves NIGHT (6 decimals) and pays its
 fee in DUST (15), so every place that shows or asks for a ceiling names the
 token it means.
 
@@ -475,13 +502,20 @@ needs to be told:
 | `solana` | ed25519 | the address (which *is* the public key) |
 | `cardano` | ed25519 over the BIP32-Ed25519 payment key | key material — the address is only a hash |
 | `midnight` | BIP-340 Schnorr, secp256k1 | key material — the address is only a hash |
+| `ecash` | Bitcoin signed message, secp256k1 | nothing — the signature recovers its signer |
 
 EIP-191 is `keccak256("\x19Ethereum Signed Message:\n" + len + msg)`; signatures
-are `0x` + 65 bytes (r‖s‖v) with `v` in {27,28}. The others are `0x` + 64 bytes.
+are `0x` + 65 bytes (r‖s‖v) with `v` in {27,28}. eCash keeps Bitcoin's scheme
+unchanged — `sha256d("\x18Bitcoin Signed Message:\n" + varint(len) + msg)`, and
+65 bytes of header‖r‖s with the header in {31..34} for a compressed key — so a
+signature made here verifies in Electrum ABC and in `bitcoind`. Solana,
+Cardano and Midnight are `0x` + 64 bytes.
 
-Only EVM can name a signer from a signature alone. Where it cannot, `verify`
-checks against an account this wallet holds — and says so rather than reporting
-a signature invalid because it was handed something it could not use.
+Only the two secp256k1 recoverable schemes can name a signer from a signature
+alone. Where a chain cannot, `verify` checks against an account this wallet
+holds — and says so rather than reporting a signature invalid because it was
+handed something it could not use. eCash takes either: an address, whose key
+hash it compares, or a key.
 
 ## 7.1 Chains
 

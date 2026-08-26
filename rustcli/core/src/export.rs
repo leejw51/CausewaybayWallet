@@ -121,13 +121,18 @@ pub fn seed_id(account: &Account) -> String {
 
 /// The networks a wallet's addresses are written out for.
 ///
-/// One key serves both Cronos networks and both are in use, so both are worth
-/// writing down. The other three chains are testnet-only in this wallet for
-/// now; when their mainnets are supported, this is the one place that changes.
+/// An export is a record of where funds are, so every network whose address
+/// differs gets a row. One key serves both Cronos networks and both are in
+/// use, so both are written; Cardano, Midnight and eCash render a different
+/// address per network, so a file that held only the default network's —
+/// a test network on all three — would omit the very address a mainnet
+/// balance sits on. Solana renders one address everywhere, and one row
+/// says it all. `rows` drops the duplicates the per-network chains still
+/// produce (Cardano's two test networks share one address).
 fn exported_networks(chain: ChainId) -> Vec<Network> {
     match chain {
-        ChainId::Evm => crate::network::for_chain(chain),
-        _ => vec![crate::network::default_for(chain)],
+        ChainId::Solana => vec![crate::network::default_for(chain)],
+        _ => crate::network::for_chain(chain),
     }
 }
 
@@ -227,10 +232,9 @@ fn rows<'a>(accounts: &'a [Account], active_id: Option<&str>) -> Vec<Row<'a>> {
     let mut out = Vec::new();
     for account in ordered(accounts) {
         let chain = crate::chain::chain(account.chain);
-        let networks = exported_networks(account.chain);
-        let several = networks.len() > 1;
         let (public_key_compressed, public_key) = public_keys(account);
-        for network in networks {
+        let mut pairs: Vec<(Network, String)> = Vec::new();
+        for network in exported_networks(account.chain) {
             // Only the chains whose addresses carry the network re-render one;
             // everywhere else — and for a record whose key will not parse —
             // the address the store already holds is the answer.
@@ -239,6 +243,19 @@ fn rows<'a>(accounts: &'a [Account], active_id: Option<&str>) -> Vec<Row<'a>> {
                 .ok()
                 .flatten()
                 .unwrap_or_else(|| account.address.clone());
+            // Two networks can render one string — Cardano's preprod and
+            // preview share the testnet form — and one row records it. The
+            // Cronos pair is the exception: one address, two networks in use,
+            // and the file has always carried both rows.
+            if account.chain != ChainId::Evm && pairs.iter().any(|(_, held)| *held == address) {
+                continue;
+            }
+            pairs.push((network, address));
+        }
+        // Named after what survived: a chain that came down to one row keeps
+        // the plain name, however many networks were looked at.
+        let several = pairs.len() > 1;
+        for (network, address) in pairs {
             out.push(Row {
                 position: out.len() + 1,
                 name: row_name(account, &network, several),
@@ -265,7 +282,8 @@ fn headers(secrets: bool) -> Vec<&'static str> {
 /// The order every export is written in: wallet by wallet, chain by chain.
 ///
 /// `account0-evm`, `account0-solana`, `account0-cardano`, `account0-midnight`,
-/// then index 1's four — so the file reads as a list of wallets rather than as
+/// `account0-ecash`, then index 1's — so the file reads as a list of wallets
+/// rather than as
 /// whatever order the accounts happened to be created in. An imported private
 /// key has no wallet index, so those sit at the end rather than being folded
 /// into index 0. `created_at` breaks the remaining ties, which is what keeps
@@ -556,12 +574,7 @@ mod tests {
     /// chain, network by network, with a name that says which is which.
     #[test]
     fn a_multichain_wallet_is_written_out_wallet_by_wallet() {
-        let chains = [
-            ChainId::Evm,
-            ChainId::Solana,
-            ChainId::Cardano,
-            ChainId::Midnight,
-        ];
+        let chains = ChainId::ALL;
         let mut accounts = Vec::new();
         for index in [0u32, 1] {
             for chain in chains {
@@ -582,6 +595,9 @@ mod tests {
             .into_iter()
             .map(|row| row["name"].as_str().unwrap().to_string())
             .collect();
+        // Midnight and eCash re-render the fixture's secp256k1 key per
+        // network, so each writes every distinct address. The fixture key is
+        // not a Cardano key, so Cardano keeps its single stored-address row.
         assert_eq!(
             names,
             [
@@ -589,12 +605,18 @@ mod tests {
                 "account0-cronos-mainnet",
                 "account0-solana",
                 "account0-cardano",
-                "account0-midnight",
+                "account0-midnight-preview",
+                "account0-midnight-devnet",
+                "account0-ecash-testnet",
+                "account0-ecash-mainnet",
                 "account1-cronos-testnet",
                 "account1-cronos-mainnet",
                 "account1-solana",
                 "account1-cardano",
-                "account1-midnight",
+                "account1-midnight-preview",
+                "account1-midnight-devnet",
+                "account1-ecash-testnet",
+                "account1-ecash-mainnet",
             ]
         );
     }

@@ -176,6 +176,207 @@ t.suite("card / number", function()
   end)
 end)
 
+t.suite("card / cashaddr", function()
+  --- An eCash face of the shared test phrase. Fifty characters with a colon
+  --- in the middle, where every other chain here is hex or bech32.
+  local ECASH = "ecash:qrwzys2q6xq98vwz0kjn6ulu5m6yljr5fyc909kalg"
+  local ECTEST = "ectest:qrwzys2q6xq98vwz0kjn6ulu5m6yljr5fy7w393sue"
+
+  t.case("a CashAddr gets a face like any other address", function()
+    local design = card.design(ECASH)
+    t.ok(design.scheme and design.scheme.name, "no scheme")
+    t.ok(design.emblem, "no emblem")
+    t.ok(design.tier and design.tier.name, "no tier")
+    t.ok(design.sigil and #design.sigil == 5, "no sigil")
+    -- And it is stably itself, which is the whole promise of a face.
+    t.equal(card.design(ECASH).emblem, design.emblem)
+    t.equal(card.design(ECASH).member, design.member)
+  end)
+
+  --- The prefix is inside a CashAddr's checksum, so these are two different
+  --- addresses for one key. A face that could not tell them apart would let
+  --- someone confirm a mainnet transfer while looking at the testnet card.
+  t.case("the two networks' faces are different cards", function()
+    local main = card.design(ECASH)
+    local test = card.design(ECTEST)
+    local same = main.scheme.name == test.scheme.name
+      and main.pattern == test.pattern
+      and main.emblem == test.emblem
+      and main.member == test.member
+    t.equal(same, false, "one key's two networks deal the same card")
+  end)
+
+  t.case("the number keeps every character of the address", function()
+    -- A card number that dropped a character would be a card number for a
+    -- different wallet, printed convincingly — and a CashAddr is long enough
+    -- to take the elided path, where dropping one is easiest.
+    local top, bottom = card.number(ECASH)
+    t.ok(top ~= "" and bottom ~= "", "nothing was printed")
+    if bottom:match("^…") then
+      -- Elided: the head and the tail must both be the address's own.
+      local head = (top:gsub(" ", ""))
+      local tail = (bottom:gsub("… ", ""):gsub(" ", ""))
+      t.equal(ECASH:sub(1, #head), head, "the head is not the address's")
+      t.equal(ECASH:sub(-#tail), tail, "the tail is not the address's")
+    else
+      t.equal((top .. bottom):gsub(" ", ""), ECASH, "the halves are not the whole")
+    end
+  end)
+
+  --- The `0x` a card prints belongs only to the addresses that start with one.
+  --- Printing it in front of a CashAddr would make the card lie about what
+  --- kind of address it is showing.
+  t.case("no hex prefix is invented for an address that has none", function()
+    t.equal(tostring(ECASH):match("^0[xX]"), nil)
+    t.equal(tostring(ECTEST):match("^0[xX]"), nil)
+    -- The card's own rule, which the draw call reads.
+    t.equal(tostring(support.ADDRESS_0):match("^0[xX]") and "0x " or "", "0x ")
+    t.equal(tostring(ECASH):match("^0[xX]") and "0x " or "", "")
+  end)
+end)
+
+t.suite("card / faces across the alphabets", function()
+  --- The addresses this wallet holds are not one alphabet: hex on EVM, base58
+  --- on Solana, bech32 on Cardano, bech32m on Midnight, CashAddr on eCash.
+  --- A face has to tell two wallets apart in every one of them.
+  ---
+  --- This is a real regression, not a hypothetical. `bytes_of` used to read
+  --- *hex pairs* out of an address, which on the non-hex alphabets scavenged
+  --- whichever hex digits happened to sit next to each other — almost nothing.
+  --- One eCash key's two networks dealt the same card, and so did two Cardano
+  --- wallets sharing a stake credential.
+  local ALPHABETS = {
+    { name = "hex", prefix = "0x", set = "0123456789abcdef", len = 40 },
+    { name = "cashaddr", prefix = "ecash:q", set = "qpzry9x8gf2tvdw0s3jn54khce6mua7l", len = 41 },
+    { name = "bech32", prefix = "addr1q", set = "qpzry9x8gf2tvdw0s3jn54khce6mua7l", len = 92 },
+    { name = "base58", prefix = "", set =
+      "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz", len = 44 },
+  }
+
+  --- A face as one comparable string. The sigil is in it: two cards that
+  --- agree on everything else and differ in the mark are different cards.
+  local function face(address)
+    local d = card.design(address)
+    local marks = {}
+    for row = 1, 5 do
+      for col = 1, 5 do
+        marks[#marks + 1] = d.sigil[row][col] and "1" or "0"
+      end
+    end
+    return table.concat({ d.scheme.name, d.pattern, d.emblem, d.tier.name, d.member,
+      table.concat(marks) }, "|")
+  end
+
+  --- Distinct addresses of one shape, generated without a random source so the
+  --- test is the same test every run.
+  ---
+  --- The first four characters spell the index out in the alphabet's own base,
+  --- which makes distinctness structural rather than something to hope for —
+  --- the smallest set here is sixteen characters, so four of them count past
+  --- sixty thousand. The rest are mixed from the index and the position, so
+  --- the body still varies along its whole length.
+  local function addresses(shape, count)
+    local list = {}
+    for k = 1, count do
+      local chars = {}
+      local counter = k
+      for _ = 1, 4 do
+        local index = (counter % #shape.set) + 1
+        chars[#chars + 1] = shape.set:sub(index, index)
+        counter = math.floor(counter / #shape.set)
+      end
+      for i = 5, shape.len do
+        local h = (k * 7919 + i * 65537) % 1000003
+        h = (h * 4099 + k * i) % 1000003
+        local index = (h % #shape.set) + 1
+        chars[#chars + 1] = shape.set:sub(index, index)
+      end
+      list[#list + 1] = shape.prefix .. table.concat(chars)
+    end
+    return list
+  end
+
+  t.case("a thousand wallets of any shape get a thousand faces", function()
+    for _, shape in ipairs(ALPHABETS) do
+      local list = addresses(shape, 1000)
+
+      -- The generator has to hand over distinct addresses or the assertion
+      -- below would pass on a technicality.
+      local distinct_input = {}
+      local inputs = 0
+      for _, a in ipairs(list) do
+        if not distinct_input[a] then distinct_input[a] = true; inputs = inputs + 1 end
+      end
+      t.equal(inputs, 1000, shape.name .. ": the generator repeated an address")
+
+      local seen, faces = {}, 0
+      for _, a in ipairs(list) do
+        local f = face(a)
+        if not seen[f] then seen[f] = true; faces = faces + 1 end
+      end
+      -- Not 1000 exactly: the member number is four digits, so a thousand
+      -- wallets collide a handful of times by design. A few is the birthday
+      -- bound; a few hundred is a hash that is not looking at the address.
+      t.ok(faces >= 985, shape.name .. ": 1000 wallets dealt only " .. faces .. " faces")
+    end
+  end)
+
+  --- On the hashed alphabets every character reaches the face, including the
+  --- last — which is where two addresses of one key differ on a checksummed
+  --- chain, and so the one that matters most here.
+  t.case("one character anywhere is a different card, on the hashed alphabets",
+    function()
+      for _, shape in ipairs(ALPHABETS) do
+        if shape.name ~= "hex" then
+          local base = addresses(shape, 1)[1]
+          local first, second = shape.set:sub(1, 1), shape.set:sub(2, 2)
+          for at = #shape.prefix + 1, #base do
+            local was = base:sub(at, at)
+            local now = was == first and second or first
+            local changed = base:sub(1, at - 1) .. now .. base:sub(at + 1)
+            t.ok(face(base) ~= face(changed),
+              shape.name .. ": changing character " .. at .. " dealt the same card")
+          end
+        end
+      end
+    end)
+
+  --- What the *hex* path actually does, written down because it is a weaker
+  --- promise than the one above and has been since the card was first drawn.
+  ---
+  --- `card.design` reads six bytes from the front of an address and two from
+  --- the back, so an EVM address that differs only in the middle deals the
+  --- same card. Thirty of its forty characters do not reach the face.
+  ---
+  --- This is not fixed here, and the reason is the first line of this file: a
+  --- card is a face, and every EVM card already dealt was dealt this way.
+  --- Widening it would change all of them, which is the one thing a face may
+  --- not do. The non-hex chains had no such history — their faces were
+  --- colliding outright — so they were free to be made whole.
+  t.case("the hex path reads the ends of an address, not its middle", function()
+    local base = "0x" .. ("ab"):rep(20)
+    local blind = 0
+    for at = 3, #base do
+      local was = base:sub(at, at)
+      local now = was == "a" and "c" or "d"
+      local changed = base:sub(1, at - 1) .. now .. base:sub(at + 1)
+      if face(base) == face(changed) then blind = blind + 1 end
+    end
+    -- Pinned exactly, not loosely: widening the hex path's reach would fix a
+    -- real weakness *and* change every EVM card ever dealt. That trade is a
+    -- decision someone has to make on purpose, so it fails a test rather than
+    -- passing quietly.
+    t.equal(blind, 26, "the hex path's reach changed")
+    -- The ends, which the card is built from, do reach it.
+    for _, at in ipairs({ 3, 4, #base - 1, #base }) do
+      local was = base:sub(at, at)
+      local now = was == "a" and "c" or "d"
+      local changed = base:sub(1, at - 1) .. now .. base:sub(at + 1)
+      t.ok(face(base) ~= face(changed), "character " .. at .. " does not reach the face")
+    end
+  end)
+end)
+
 t.suite("card / swipe", function()
   -- The real geometry, because the visibility question depends on it: the card
   -- is a little narrower than the column it lives in, and it travels its own

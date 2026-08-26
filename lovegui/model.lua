@@ -253,9 +253,18 @@ function Model:derived_addresses(phrase, stored)
     for _, chain in ipairs(chains) do
       local derived = self.wallet:derive({ mnemonic = phrase, index = index, chain = chain })
       if derived then
-        local address = tostring(derived.address):lower()
-        addresses[address] = true
-        if known[address] then hit = true end
+        -- Every face of the address, not just the default network's. The
+        -- wallet list renders each account for the network its chain is on,
+        -- and on Cardano, Midnight and eCash that is a different string —
+        -- a set holding only the default form made a logged-in wallet
+        -- vanish the moment its chain moved to another network.
+        for _, key in ipairs({ "address", "address_mainnet", "address_devnet" }) do
+          local face = derived[key]
+          if type(face) == "string" then
+            addresses[face:lower()] = true
+            if known[face:lower()] then hit = true end
+          end
+        end
       end
     end
     if hit then
@@ -293,9 +302,17 @@ function Model:login(phrase)
 
   local addresses = self:derived_addresses(phrase, stored)
 
+  -- The listing renders each account's address for the network its chain is
+  -- on, and the phrase's index-0 account may therefore wear any of its
+  -- faces there — so the match accepts all of them, not just the default
+  -- network's string `derive` leads with.
+  local faces = {}
+  for _, key in ipairs({ "address", "address_mainnet", "address_devnet" }) do
+    if type(derived[key]) == "string" then faces[derived[key]:lower()] = true end
+  end
   local account, welcome
   for _, entry in ipairs(stored) do
-    if entry.address == derived.address then account = entry end
+    if faces[tostring(entry.address):lower()] then account = entry end
   end
 
   if account then
@@ -322,14 +339,18 @@ function Model:login(phrase)
   -- Made active, not merely shown. Logging in *as* a wallet while the money
   -- moves from a different one is exactly the mismatch this screen exists to
   -- prevent, and a known phrase and a new one used to disagree about it.
-  local ok, use_error = self.wallet:use_account(account.address)
+  -- Selected by id where one is known: an id names the account on every
+  -- network, where the address only names it on one.
+  local ok, use_error = self.wallet:use_account(account.id or account.address)
   if not ok then return self:fail(use_error) end
   self.balance = nil
   self:refresh()
 
   self.scroll = 0
   for index, entry in ipairs(self.wallets) do
-    if entry.address == account.address then self.selected = index end
+    if (account.id and entry.id == account.id) or entry.address == account.address then
+      self.selected = index
+    end
   end
 
   self:say(welcome)
@@ -637,7 +658,9 @@ function Model:export_wallets()
 
   local rows = {}
   for _, account in ipairs(self.wallets) do
-    local secret, err = self.wallet:export_account(account.address)
+    -- By id for the same reason `select` is: the listed address is the
+    -- network's rendering, not necessarily the stored selector.
+    local secret, err = self.wallet:export_account(account.id or account.address)
     if not secret then return self:fail(err) end
 
     local keys = self.wallet:derive({ private_key = secret.private_key }) or {}
@@ -802,9 +825,9 @@ end
 function Model:create(label)
   -- Every chain at once: a wallet is one mnemonic and one index, and each
   -- chain derives its own account there. Creating only the chain in view made
-  -- "+ NEW" produce a quarter of a wallet — the other three chains showed
+  -- "+ NEW" produce one chain's worth of a wallet — the other chains showed
   -- nothing until the CLI filled them in. One press, one whole wallet, and the
-  -- chain in view just decides which of its four faces the list shows.
+  -- chain in view just decides which of its faces the list shows.
   local created, err = self.wallet:new_account({
     label = label ~= "" and label or nil,
     every_chain = true,
@@ -819,7 +842,17 @@ function Model:create(label)
   -- and may not have reached this index.
   if self.session then
     for _, account in ipairs(accounts) do
+      -- Every face the creation reports, as at login: the listing renders
+      -- per network, and a set holding one face hides the wallet on the
+      -- others.
       self.session.addresses[tostring(account.address):lower()] = true
+      if type(account.extra) == "table" then
+        for _, key in ipairs({ "address_mainnet", "address_devnet" }) do
+          if type(account.extra[key]) == "string" then
+            self.session.addresses[account.extra[key]:lower()] = true
+          end
+        end
+      end
     end
   end
   -- The face to land on and name: the chain in view's, since that is the one
@@ -842,7 +875,9 @@ function Model:create(label)
   -- The balance is deliberately left alone: the active wallet did not change,
   -- so the number that is on screen is still that wallet's and still true.
   for index, entry in ipairs(self.wallets) do
-    if entry.address == account.address then self.selected = index end
+    if (account.id and entry.id == account.id) or entry.address == account.address then
+      self.selected = index
+    end
   end
   self:say(#accounts > 1 and ("Created " .. account.label .. " — one wallet, " .. #accounts .. " chains")
     or ("Created " .. account.label))
@@ -853,7 +888,9 @@ end
 function Model:select(index)
   local account = self.wallets[index]
   if not account then return false end
-  local ok, err = self.wallet:use_account(account.address)
+  -- By id, not address: the listed address is the network's rendering, and
+  -- on a non-default network it is not the string the store holds.
+  local ok, err = self.wallet:use_account(account.id or account.address)
   if not ok then return self:fail(err) end
   -- A different wallet has a different balance; showing the old one beside a
   -- new name is worse than showing nothing.

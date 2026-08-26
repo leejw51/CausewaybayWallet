@@ -94,6 +94,7 @@ impl Chain for MidnightChain {
 
     fn recover_message(
         &self,
+        network: &Network,
         message: &[u8],
         signature: &[u8],
         address: Option<&str>,
@@ -111,8 +112,14 @@ impl Chain for MidnightChain {
         let account = MidnightAccount::from_secret(secret)?;
         let valid = keys::verify(&account.verifying_key_bytes(), message, signature)?;
         Ok(Recovered {
+            // Rendered for the network in play: the bech32m prefix makes each
+            // network's string a different address.
             address: valid
-                .then(|| account.address(NetworkId::Mainnet).to_bech32m().ok())
+                .then(|| {
+                    NetworkId::of(network)
+                        .and_then(|id| account.address(id).to_bech32m())
+                        .ok()
+                })
                 .flatten(),
             valid,
         })
@@ -272,13 +279,23 @@ mod tests {
         let signature = signer.sign_message(b"hello").unwrap();
         assert!(
             MidnightChain
-                .recover_message(b"hello", &signature, Some(&derived.secret))
+                .recover_message(
+                    &crate::network::MIDNIGHT_PREVIEW,
+                    b"hello",
+                    &signature,
+                    Some(&derived.secret)
+                )
                 .unwrap()
                 .valid
         );
         assert!(
             !MidnightChain
-                .recover_message(b"different", &signature, Some(&derived.secret))
+                .recover_message(
+                    &crate::network::MIDNIGHT_PREVIEW,
+                    b"different",
+                    &signature,
+                    Some(&derived.secret)
+                )
                 .unwrap()
                 .valid
         );
@@ -287,7 +304,12 @@ mod tests {
     #[test]
     fn verifying_with_nothing_to_verify_against_explains_why() {
         let err = MidnightChain
-            .recover_message(b"hello", &[0u8; 64], None)
+            .recover_message(
+                &crate::network::MIDNIGHT_PREVIEW,
+                b"hello",
+                &[0u8; 64],
+                None,
+            )
             .unwrap_err();
         assert_eq!(err.code, error::Code::Usage);
         assert!(err.message.contains("hash"), "{}", err.message);

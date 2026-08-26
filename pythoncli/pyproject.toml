@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
 authors = [{ name = "Causewaybay Wallet" }]
-keywords = ["ethereum", "cronos", "solana", "cardano", "midnight", "wallet", "cli", "ffi"]
+keywords = ["ethereum", "cronos", "solana", "cardano", "midnight", "ecash", "wallet", "cli", "ffi"]
 
 # None. The wallet is the Rust core, loaded through ctypes from the standard
 # library: the cryptography, the store and the RPC all live there. A second set

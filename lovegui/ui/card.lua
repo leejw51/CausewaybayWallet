@@ -78,24 +78,107 @@ card.TIERS = {
   { name = "BLACK",    weight = 3,  ink = "magenta" },
 }
 
+--- Eight-bit exclusive-or, built from arithmetic.
+---
+--- `bit` is a LuaJIT extension and this file has to run wherever Lua does, so
+--- the one bitwise operation FNV needs is spelled out. Eight iterations, and
+--- only ever over a byte.
+local function xor8(a, b)
+  local result, place = 0, 1
+  for _ = 1, 8 do
+    local x, y = a % 2, b % 2
+    if x ~= y then result = result + place end
+    a, b, place = (a - x) / 2, (b - y) / 2, place * 2
+  end
+  return result
+end
+
+--- `(value * 16777619) mod 2^32`, exactly, in a double.
+---
+--- The obvious spelling overflows: a 32-bit value times FNV's prime reaches
+--- 2^56, and a double is only exact to 2^53, so the product would round and
+--- the wallet would deal a different card on a different machine. Splitting
+--- the value into two 16-bit halves keeps every partial product under 2^40,
+--- which is exact, and the halves are recombined modulo 2^32.
+local function fnv_multiply(value)
+  local high = math.floor(value / 65536)
+  local low = value % 65536
+  return ((high * 16777619 % 65536) * 65536 + low * 16777619) % 4294967296
+end
+
+--- FNV-1a over a string: exclusive-or a byte in, then multiply.
+local function fnv1a(text)
+  local h = 2166136261
+  for i = 1, #text do
+    h = fnv_multiply(h - h % 256 + xor8(h % 256, text:byte(i)))
+  end
+  return h
+end
+
+--- Twenty bytes of face from one string.
+---
+--- The digest is advanced once per byte and the byte is taken from the *top*
+--- of the state rather than the bottom: FNV mixes upward, so its low bits
+--- carry the least of the input and a face built from them would be a face
+--- that mostly ignores the address.
+local function mixed_bytes(text)
+  local out = {}
+  local h = fnv1a(text)
+  for slot = 1, 20 do
+    h = fnv_multiply(h - h % 256 + xor8(h % 256, slot))
+    out[slot] = math.floor(h / 16777216) % 256
+  end
+  return out
+end
+
 --- The address as bytes.
+---
+--- Two paths, because the addresses this wallet holds are not one alphabet.
+---
+--- An **EVM address is hex**, and its bytes are read straight out of it. That
+--- path is untouched and must stay untouched: a card is a face, the same
+--- address has to deal the same card forever, and every EVM card already
+--- dealt was dealt this way.
+---
+--- **Everything else is not hex** — base58 on Solana, bech32 on Cardano,
+--- bech32m on Midnight, CashAddr on eCash — and reading hex pairs out of one
+--- scavenges whatever hex digits happen to sit next to each other, which on
+--- those alphabets is almost nothing. Two eCash addresses of the same key on
+--- its two networks dealt *the same card*, and so did two Cardano wallets
+--- sharing a stake credential. A face that cannot tell two wallets apart is
+--- worse than no face, because it is trusted: it is read instead of the
+--- string, which is the entire reason it is drawn.
+---
+--- So a non-hex address is hashed whole. Every character reaches every byte,
+--- and addresses that differ anywhere — including in the last character of a
+--- checksum — deal different cards.
+---
+--- Case is significant on this path and is not folded, because base58 is
+--- case-significant: two Solana addresses can differ only in case and are
+--- genuinely two wallets. The hex path folds case, as it always has, because
+--- hex does not care.
 ---
 --- Junk still has to produce a card: this is fed from a store, and a truncated
 --- or malformed address must give a face rather than an error — a wallet that
---- cannot be drawn is still a wallet somebody needs to see. Short input is
---- padded from what little there was, deterministically, so even a broken
---- address is stably itself.
+--- cannot be drawn is still a wallet somebody needs to see.
 local function bytes_of(address)
-  local hex = (tostring(address or ""):gsub("^0[xX]", ""))
-  local out = {}
-  for pair in hex:gmatch("%x%x") do
-    out[#out + 1] = tonumber(pair, 16)
+  local text = tostring(address or "")
+  local body = (text:gsub("^0[xX]", ""))
+
+  -- Hex, and enough of it to fill a face from: the EVM path, unchanged.
+  if #body >= 40 and body:match("^%x+$") then
+    local out = {}
+    for pair in body:gmatch("%x%x") do
+      out[#out + 1] = tonumber(pair, 16)
+    end
+    local seed = out[1] or 7
+    while #out < 20 do
+      out[#out + 1] = (#out * 37 + seed * 11 + 13) % 256
+    end
+    return out
   end
-  local seed = out[1] or 7
-  while #out < 20 do
-    out[#out + 1] = (#out * 37 + seed * 11 + 13) % 256
-  end
-  return out
+
+  return mixed_bytes(text)
 end
 
 --- One bit out of a number, without `bit` — this has to run wherever Lua does.
@@ -136,10 +219,20 @@ local function tier_of(roll)
   return card.TIERS[1]
 end
 
+--- Designs already dealt, by the address they were dealt from.
+---
+--- A design is pure — same address, same card — and the draw asks for it
+--- every frame, so hashing the address sixty times a second bought nothing.
+--- The set of addresses is the wallet list, so this never grows past a
+--- handful of small tables.
+local dealt = {}
+
 --- Everything about one card, from one address. No `love.*` anywhere below.
 function card.design(address)
+  local key = tostring(address)
+  if dealt[key] then return dealt[key] end
   local b = bytes_of(address)
-  return {
+  dealt[key] = {
     address = address,
     scheme  = card.SCHEMES[b[1] % #card.SCHEMES + 1],
     pattern = card.PATTERNS[b[2] % #card.PATTERNS + 1],
@@ -148,6 +241,7 @@ function card.design(address)
     tier    = tier_of(b[6]),
     member  = ("%04d"):format((b[19] * 256 + b[20]) % 10000),
   }
+  return dealt[key]
 end
 
 --- The address as a card number: groups of four, the way one is printed.
@@ -349,9 +443,9 @@ function card.draw(design, box, options)
   if options.body then options.body(box, ink, alpha) end
 
   -- The number, in the place a card puts it. The `0x` belongs only to the
-  -- addresses that actually start with it — a Cardano or Midnight address is
-  -- bech32 text, and printing it behind a hex prefix made the card lie about
-  -- what the address is.
+  -- addresses that actually start with it — a Cardano, Midnight or eCash
+  -- address is not hex, and printing one behind a hex prefix made the card lie
+  -- about what the address is.
   local top, bottom = card.number(design.address)
   local prefix = tostring(design.address or ""):match("^0[xX]") and "0x " or ""
   theme.text(prefix .. top, box.x + 10, box.y + box.h - 44, ink, theme.font.small, alpha)

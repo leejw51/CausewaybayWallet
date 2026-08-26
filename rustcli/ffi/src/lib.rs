@@ -386,13 +386,13 @@ mod tests {
         let listed: Value = serde_json::from_str(&owned(cwb_chains())).unwrap();
         assert_eq!(listed["ok"], true);
         let chains = listed["data"].as_array().unwrap();
-        assert_eq!(chains.len(), 4);
+        assert_eq!(chains.len(), causewaybay_core::chain::ChainId::ALL.len());
 
         let names: Vec<&str> = chains
             .iter()
             .map(|c| c["chain"].as_str().unwrap())
             .collect();
-        assert_eq!(names, ["evm", "solana", "cardano", "midnight"]);
+        assert_eq!(names, ["evm", "solana", "cardano", "midnight", "ecash"]);
 
         for chain in chains {
             assert!(!chain["networks"].as_array().unwrap().is_empty());

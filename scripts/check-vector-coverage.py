@@ -90,6 +90,12 @@ MUTATIONS = {
     "multichain.json": lambda d: d["solana"]["accounts"][0].update(
         address=flip(d["solana"]["accounts"][0]["address"])
     ),
+    # An eCash mainnet address, which every suite derives from the phrase and
+    # compares. Flipping the last character breaks its checksum too, so a
+    # suite that merely *parses* it rather than deriving it also fails.
+    "ecash.json": lambda d: d["accounts"][0].update(
+        address_mainnet=flip(d["accounts"][0]["address_mainnet"])
+    ),
 }
 
 

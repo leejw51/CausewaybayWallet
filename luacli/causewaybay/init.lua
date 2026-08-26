@@ -69,7 +69,7 @@ M.Wallet = Wallet
 ---   `home`     wallet directory; default `$CAUSEWAYBAY_HOME` or `~/.causewaybaywallet`
 ---   `network`  default network for every call ("testnet", "cronos-mainnet", …)
 ---   `chain`    default chain for every call ("evm", "solana", "cardano",
----              "midnight"). Naming a network settles the chain too, so this
+---              "midnight", "ecash"). Naming a network settles the chain too, so this
 ---              is for a caller that picks a chain and lets each one keep its
 ---              own network — which is what a chain picker in a GUI does.
 ---   `yes`      answer confirmations with yes. A GUI sets this once it shows

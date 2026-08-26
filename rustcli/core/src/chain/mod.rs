@@ -13,11 +13,12 @@
 //!   wait on, so they are the only things coloured by it. One
 //!   [`Chain::client`] call per network yields the client for it.
 //!
-//! The split is also what keeps `send` honest across four very different
+//! The split is also what keeps `send` honest across five very different
 //! ledgers. A transfer is always [`ChainClient::prepare_transfer`] followed by
 //! [`ChainClient::submit`], never one call: everything that can be refused —
 //! a malformed recipient, a fee that outruns the balance, a Cardano output
-//! below the minimum, a Midnight UTxO that cannot pay its own dust — is
+//! below the minimum, a Midnight UTxO that cannot pay its own dust, an eCash
+//! amount under the dust limit — is
 //! refused by `prepare`, *before* the user is asked to confirm and before a
 //! key signs anything. `submit` then only broadcasts what was already agreed
 //! to. `--dry-run` is simply a `prepare` with no `submit` after it.
@@ -41,6 +42,7 @@ use crate::network::Network;
 
 pub mod amount;
 pub mod cardano;
+pub mod ecash;
 pub mod evm;
 pub mod http;
 pub mod midnight;
@@ -68,14 +70,17 @@ pub enum ChainId {
     Cardano,
     /// Midnight: secp256k1 → BIP-340 Schnorr, bech32m addresses.
     Midnight,
+    /// eCash: secp256k1 over BIP-44, CashAddr addresses, Bitcoin's UTXOs.
+    Ecash,
 }
 
 impl ChainId {
-    pub const ALL: [ChainId; 4] = [
+    pub const ALL: [ChainId; 5] = [
         ChainId::Evm,
         ChainId::Solana,
         ChainId::Cardano,
         ChainId::Midnight,
+        ChainId::Ecash,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -84,6 +89,7 @@ impl ChainId {
             ChainId::Solana => "solana",
             ChainId::Cardano => "cardano",
             ChainId::Midnight => "midnight",
+            ChainId::Ecash => "ecash",
         }
     }
 
@@ -99,6 +105,11 @@ impl ChainId {
             "solana" | "sol" => Ok(ChainId::Solana),
             "cardano" | "ada" => Ok(ChainId::Cardano),
             "midnight" | "night" | "mn" => Ok(ChainId::Midnight),
+            // `bitcoin` is deliberately absent: eCash forked from it and
+            // shares its transaction format, and a wallet that answered to
+            // the name would be inviting a Bitcoin address onto a chain that
+            // cannot return the funds.
+            "ecash" | "xec" | "e-cash" => Ok(ChainId::Ecash),
             _ => Err(error::usage(format!(
                 "unknown chain '{name}'; known chains: {}",
                 ChainId::ALL
@@ -130,10 +141,10 @@ impl Default for ChainId {
 /// A freshly derived (or imported) account, before the store gets hold of it.
 ///
 /// `secret` is whatever that chain calls a private key, in whatever encoding
-/// that chain's tooling uses — `0x…` hex for EVM and Midnight, base58 for a
-/// Solana keypair, hex of the 96-byte extended key for Cardano. It is opaque
-/// to everything except the [`Chain`] that produced it, which is the whole
-/// reason the store can hold four kinds of key in one column.
+/// that chain's tooling uses — `0x…` hex for EVM, Midnight and eCash, base58
+/// for a Solana keypair, hex of the 96-byte extended key for Cardano. It is
+/// opaque to everything except the [`Chain`] that produced it, which is the
+/// whole reason the store can hold five kinds of key in one column.
 pub struct DerivedAccount {
     pub address: String,
     pub secret: String,
@@ -296,7 +307,7 @@ impl PreparedTransfer {
     /// The question to put to the user before [`ChainClient::submit`].
     ///
     /// Built here rather than by each chain, because a chain that writes its
-    /// own sentence is a chain that can leave the fee out of it — and all four
+    /// own sentence is a chain that can leave the fee out of it — and every one
     /// did. The fee is the number that decides whether a send is reasonable,
     /// so it belongs in the sentence the user says yes to, on every front end,
     /// including the ones that never draw a screen.
@@ -358,7 +369,7 @@ impl Balance {
 ///
 /// One struct rather than a widening argument list, because the things a chain
 /// needs from its host are not the same from chain to chain and the set is
-/// still growing. Midnight is the reason all four fields exist: it reads from
+/// still growing. Midnight is the reason all four of them exist: it reads from
 /// an indexer and submits to a different node, it caches a replayed dust state
 /// that costs minutes to rebuild, and it does work slow enough that saying
 /// nothing would look like a hang.
@@ -420,7 +431,7 @@ pub trait Chain: Send + Sync + 'static {
 
     /// The unit this chain's fees are counted in.
     ///
-    /// The same as [`Self::units`] for three chains out of four. Midnight
+    /// The same as [`Self::units`] for four chains out of five. Midnight
     /// moves NIGHT and pays in DUST, and `--max-fee` has to be read in the
     /// unit the ceiling is actually applied in.
     fn fee_units(&self, network: &Network) -> Amount {
@@ -432,7 +443,7 @@ pub trait Chain: Send + Sync + 'static {
 
     /// Derive the account at `index` from a mnemonic.
     ///
-    /// Chains disagree about what a mnemonic *is*: three of the four hash the
+    /// Chains disagree about what a mnemonic *is*: four of the five hash the
     /// BIP-39 seed, Cardano hashes the entropy. [`Seed`] carries both, so this
     /// signature does not have to pick a side.
     fn derive(&self, seed: &Seed, index: u32) -> Result<DerivedAccount>;
@@ -467,7 +478,7 @@ pub trait Chain: Send + Sync + 'static {
     ///
     /// `identity` says whose signature this should be, and the chains need
     /// different things from it — which is why it is one loosely-typed
-    /// parameter rather than four incompatible methods:
+    /// parameter rather than one incompatible method per chain:
     ///
     /// * EVM recovers the signer from the signature itself, so an identity is
     ///   optional and, when given, is an address to compare against.
@@ -475,13 +486,20 @@ pub trait Chain: Send + Sync + 'static {
     ///   public key.
     /// * Cardano and Midnight hash the public key into the address, so no
     ///   address can verify anything; they need key material.
+    /// * eCash recovers like EVM, and hashes like Cardano — so it takes
+    ///   either, and compares key hashes rather than strings.
     ///
     /// Every chain therefore accepts the account's stored secret, and the two
     /// that can also accept an address say so. A chain that is handed
     /// something it cannot use must say what it needed rather than reporting
     /// the signature invalid — a wrong answer is worse than a refusal here.
+    ///
+    /// `network` is where the answer is rendered when nothing else settles it:
+    /// eCash writes a different string per network, and an identity that is an
+    /// address names its own. A chain with one rendering everywhere ignores it.
     fn recover_message(
         &self,
+        network: &Network,
         message: &[u8],
         signature: &[u8],
         identity: Option<&str>,
@@ -605,6 +623,7 @@ pub fn registry() -> &'static [&'static dyn Chain] {
             &solana::SolanaChain,
             &cardano::CardanoChain,
             &midnight::MidnightChain,
+            &ecash::EcashChain,
         ]
     })
 }
@@ -702,6 +721,18 @@ mod tests {
         assert_eq!(ChainId::parse("SOL").unwrap(), ChainId::Solana);
         assert_eq!(ChainId::parse("ada").unwrap(), ChainId::Cardano);
         assert_eq!(ChainId::parse("night").unwrap(), ChainId::Midnight);
+        for alias in ["ecash", "XEC", " e-cash "] {
+            assert_eq!(ChainId::parse(alias).unwrap(), ChainId::Ecash, "{alias}");
+        }
+    }
+
+    /// eCash shares Bitcoin's transaction format and none of its chain, so
+    /// `bitcoin` must not resolve to it — a Bitcoin address typed under that
+    /// name would name an eCash account nobody holds the key to.
+    #[test]
+    fn bitcoin_is_not_a_name_for_ecash() {
+        assert!(ChainId::parse("bitcoin").is_err());
+        assert!(ChainId::parse("btc").is_err());
     }
 
     #[test]
@@ -710,6 +741,7 @@ mod tests {
         assert_eq!(err.code, error::Code::Usage);
         assert!(err.message.contains("solana"), "{}", err.message);
         assert!(err.message.contains("midnight"), "{}", err.message);
+        assert!(err.message.contains("ecash"), "{}", err.message);
     }
 
     #[test]

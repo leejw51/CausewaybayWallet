@@ -1548,9 +1548,17 @@ local function draw_send(model, state, x)
   local shapes = {
     evm = "0x…", solana = "base58…", cardano = "addr…", midnight = "mn_addr…",
   }
+  local shape = shapes[model:chain()]
+  if model:chain() == "ecash" then
+    -- eCash's prefix names the network — `ecash:` matches no testnet address
+    -- and `ectest:` no mainnet one — so this is the one shape picked per
+    -- network rather than per chain.
+    local network = model.info and model.info.network or ""
+    shape = network == "ecash-mainnet" and "ecash:…" or "ectest:…"
+  end
   local to = { x = form.x, y = form.y + 42, w = form.w - 108, h = field_h }
   widgets.field(game.springs, "to", to, model.form.to, "RECIPIENT",
-    model.focus == "to", { placeholder = shapes[model:chain()] or "address…", ellipsis = 8 })
+    model.focus == "to", { placeholder = shape or "address…", ellipsis = 8 })
 
   local paste = { x = form.x + form.w - 104, y = to.y, w = 56, h = field_h }
   if widgets.button(game.springs, "paste", paste, "PASTE", state,
