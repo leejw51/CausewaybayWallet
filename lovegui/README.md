@@ -612,6 +612,74 @@ state machine is now `ui/launch.lua`: it takes `dt` and one boolean, touches no
 the one that shipped broken. The property underneath it — **an animation must
 not depend on a network reply to stop** — is a test now, not a hope.
 
+## The card's two links
+
+Under the card, and not in the action bar beside SAVE and KEYS, are **FAUCET**
+and **EXPLORER**. They are there because they are answers about *the card on
+screen* — this address, on this network — and because the action bar could not
+have held them: five verbs are 236 pixels of button in a 260-pixel column, and
+seven labels at this font's eight pixels a character come to 264 before a
+single pixel of padding. One row of seven does not exist at this resolution, so
+the card gave up 22 pixels of height instead and keeps its proportions.
+
+**EXPLORER copies the link that looks this wallet up.** The link comes from the
+library rather than being assembled here: Solana keeps its cluster in a query
+string, so appending `/address/…` to the base URL gives a *mainnet* link that
+loads and shows an empty account. The copy is invisible, so the press is not —
+a ring leaves the button and the URL lands on a plate under the toast, which is
+how you know which of the two links on this screen you got.
+
+**FAUCET asks this network for money into the wallet in use.** It reads the
+label off the network, because the promise is not the same everywhere:
+
+| label | what a press does |
+| --- | --- |
+| **FAUCET** | Solana's clusters, where the wallet asks `requestAirdrop` itself |
+| **FAUCET >** | everywhere else: the faucet is a web page, and the press copies its address to the clipboard |
+
+Ten of the twelve networks are the second kind. Their faucets are forms with
+captchas on them, built precisely so that a program cannot drain one, and a
+button that pretended to try would fail every single time it was pressed.
+
+On those, the press *is* the copy — there is exactly one useful thing to do
+with an address behind a captcha, so the button does it rather than opening a
+panel with a second button on it. Nothing here launches a browser: handing over
+the link is the whole of the wallet's job, and where it gets opened is not the
+wallet's business. The panel keeps a COPY for when something else has landed in
+the clipboard in between.
+
+The arrival is the point of the whole thing, and it is why a run is three round
+trips and not one: read the balance, ask the faucet, read it again. A
+difference needs two readings, and the second one cannot be taken immediately —
+a faucet answers when it has *accepted* the request, not when the money is
+spendable, so a balance read fired the instant the airdrop returns gives the
+number that was already there and animates a value counting to itself. The
+panel waits, asks, and asks again a few times; if nothing has arrived by then
+it says so rather than celebrating.
+
+When it does arrive, both readings sit side by side and the right-hand one
+climbs to meet the left over about a second on a `cubic_out` curve, with coins
+thrown from the foot of the panel and homing on it — `System:coins`, staggered
+so the stream lasts exactly as long as the number is moving. Coins that land
+after the number has settled read as decoration; a number that settles first
+reads as the coins having missed.
+
+A refusal gets its own animation rather than a quieter version of that one: a
+shake, a fall of red, and no coins.
+
+**DEMO plays the arrival with nothing moved.** It is there because the one
+moment in this program worth watching was otherwise reachable only by being on
+Solana and being lucky — the public devnet faucet says no more often than yes.
+Every number in it is invented and the panel says so three times over: in the
+title, in amber under the number, and in the word on the button. A celebration
+that could be mistaken for money arriving would be the one animation here that
+lies.
+
+The panel's coins are drawn on a second particle layer, above the modal scrim
+rather than under it. One system was enough while every effect belonged to the
+screen behind a dialog and was meant to be dimmed; these belong to the panel
+itself, and a celebration behind its own frosted glass is not a celebration.
+
 ## Controls
 
 | | |
@@ -627,11 +695,12 @@ not depend on a network reply to stop** — is a test now, not a hope.
 | `F11` · `Alt+Enter` | fullscreen, or the **FULL/WIN** button |
 | `Space` | on the title screen: skip the sequence, then continue |
 | `0` | on the title screen: replay the intro from black |
-| `Esc` | cancel a confirmation, or quit |
+| `Esc` | cancel a confirmation, close the faucet panel, or quit |
 
-Everything is clickable too — **COPY** under the card, **PASTE** beside the
-recipient field, **USE CARD** to spend from the one on screen, **SFX**,
-**FULL/WIN** and **LOGOUT** in the header. An address is 42 characters of hex
+Everything is clickable too — **COPY** under the card, **FAUCET** and
+**EXPLORER** beneath it, **PASTE** beside the recipient field, **USE CARD** to
+spend from the one on screen, **SFX**, **FULL/WIN** and **LOGOUT** in the
+header. An address is 42 characters of hex
 that nobody retypes correctly, so the clipboard is not a convenience here, it
 is the only realistic way to move one.
 

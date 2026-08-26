@@ -4,6 +4,81 @@ Every release is one number across every front end — see
 [Versioning and releases](README.md#versioning-and-releases) for where it lives
 and how a tag is checked against it.
 
+## Unreleased
+
+### The faucet, and the block explorer (#30, #31)
+
+The wallet now knows where money is given away, and the GUI can go and get it.
+
+**Every test network names its faucet, and no mainnet does.** The address is a
+field on the network table, so `network list`, `network show` and `info` all
+report it — alongside `faucet_automatic`, which answers the *other* question.
+
+| network | faucet | `airdrop` |
+| --- | --- | --- |
+| `cronos-testnet` | <https://faucet.cronos.com/> | no |
+| `solana-devnet` · `solana-testnet` | <https://faucet.solana.com/> | **yes** |
+| `cardano-preprod` · `cardano-preview` | <https://docs.cardano.org/cardano-testnets/tools/faucet> | no |
+| `midnight-preview` | <https://midnight-tmnight-preview.nethermind.dev/> | no |
+| `midnight-devnet` | <https://midnight.network/test-faucet> | no |
+| `ecash-testnet` | <https://texplorer.e.cash/testnet-faucet> | no |
+
+Those two questions have different answers on ten of the twelve rows. Only
+Solana's clusters answer a faucet request over the endpoint the balance came
+from; every other faucet here is a web form with a captcha, built precisely so
+that a program cannot drain one. So `airdrop` refuses on those networks *by
+naming the page* rather than making a request that could never succeed — the
+old refusal was "this chain has no faucet the wallet can call", which is true
+and is a dead end.
+
+**Every account carries its explorer link.** `account list` and `account show`
+now hand one down beside the address, and `balance` does too. Assembled by the
+wallet rather than by whoever draws it, because assembling one is not a matter
+of appending a path: Solana keeps its cluster in a query string, so
+`https://explorer.solana.com/?cluster=devnet` with `/address/<addr>` on the end
+is a *mainnet* link that loads and shows an empty account.
+
+**A node that refuses with a sentence is quoted, not its envelope.** Solana's
+exhausted faucet answers 429 with "You've either reached your airdrop limit
+today or the airdrop faucet has run dry", wrapped in JSON-RPC. The wallet now
+prefers the sentence wherever a failing body carries one, and falls back to an
+excerpt of the raw text otherwise, which is what every reply did before.
+
+### FAUCET and EXPLORER, in the GUI (#30, #31)
+
+Two buttons under the card, because both are answers about *the card on
+screen*. They are not in the action bar beside SAVE and KEYS and could not have
+been: five verbs are 236 pixels of button in a 260-pixel column, and seven
+labels at the GUI's eight pixels a character come to 264 before any padding.
+The card gave up 22 pixels of height instead and kept its proportions.
+
+- **EXPLORER** copies the link and makes the copy visible — a ring leaves the
+  button and the URL lands on a plate under the toast, because a clipboard is
+  invisible and this screen has two buttons within forty pixels that both copy
+  something.
+- **FAUCET** reads the label off the network: `FAUCET` where the wallet asks
+  the faucet itself, `FAUCET >` where the press copies a web page's address to
+  the clipboard — which is the whole interaction on the ten networks whose
+  faucet is behind a captcha. Nothing in the GUI launches a browser.
+- The arrival is three round trips, not one — read the balance, ask, read it
+  again — because a difference needs two readings, and the second cannot be
+  taken immediately: a faucet answers when it has *accepted* the request, not
+  when the money is spendable. Reading straight back gives the number that was
+  already there and animates a value counting to itself.
+- Both readings then sit side by side and the second climbs to meet the first
+  over about a second on a `cubic_out` curve, with a stream of coins homing on
+  it, staggered to last exactly as long as the number is moving.
+- A refusal gets its own animation rather than a quieter version of that one,
+  and a faucet that said yes and then delivered nothing says exactly that.
+- **DEMO** plays the arrival with nothing moved, because the one moment worth
+  watching was otherwise reachable only by being on Solana and being lucky.
+  Every number in it is invented and the panel says so three times over.
+
+Also in the GUI: a second particle layer that draws above the modal scrim
+rather than under it, and a toast detail line that is trimmed from the middle
+to fit the canvas — it was sized for a filesystem path and an explorer link is
+sixty-odd characters, which ran off both edges losing the host and the address.
+
 ## 1.0.4
 
 The fifth chain, a token registry, one search box, and a security pass that

@@ -322,7 +322,14 @@ class Wallet:
         return self.call(_flags(["chain-info"], **opts), **_call_options(opts))
 
     def airdrop(self, **opts: Any) -> dict[str, Any]:
-        """Ask a test network for funds, where the chain has a faucet."""
+        """Ask a test network for funds, where the wallet can ask at all.
+
+        Only Solana's clusters answer a faucet request over the endpoint the
+        balance came from. Everywhere else this refuses and names the web page
+        that hands the money out — the ``faucet`` field on the network row —
+        because those faucets are forms with captchas and no retry will get
+        past one.
+        """
         return self.call(_flags(["airdrop"], **opts), **_call_options(opts))
 
     def send(self, *, yes: bool = False, **opts: Any) -> dict[str, Any]:

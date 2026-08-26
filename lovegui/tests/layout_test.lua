@@ -44,6 +44,25 @@ t.suite("layout / landscape", function()
     t.equal(L.status_edge, 206)
   end)
 
+  t.case("the card's own links sit under it, inside its column", function()
+    -- The strip was added to the card's column rather than to the action bar
+    -- because seven buttons do not fit one row at this font. What must stay
+    -- true is that it costs the card height and nothing else: the column is
+    -- where it always was, and the card is still a card.
+    t.equal(L.card.x, L.detail.x)
+    t.equal(L.card.w, L.detail.w)
+    t.ok(L.card.h < L.detail.h, "the strip has to come out of something")
+    t.ok(L.card.y + L.card.h <= L.card_actions.faucet.y,
+      "the links are under the card, not on it")
+    t.ok(L.card_actions.explorer.x + L.card_actions.explorer.w
+      <= L.detail.x + L.detail.w, "EXPLORER runs off the column")
+    t.ok(L.card_actions.faucet.x + L.card_actions.faucet.w
+      <= L.card_actions.explorer.x, "FAUCET overlaps EXPLORER")
+    -- Still a card, at the ratio that is what makes it read as one.
+    local face_h = math.min(L.card.h, math.floor(L.card.w / 1.585))
+    t.ok(face_h >= 120, "a card too small to read is not a card")
+  end)
+
   t.case("the send screen shares the wallets screen's columns", function()
     t.equal(L.pad.x, L.list.x)
     t.equal(L.pad.w, L.list.w)
@@ -62,6 +81,10 @@ t.suite("layout / portrait", function()
     end
     for name, box in pairs(L.actions) do
       t.ok(inside(box, 270, 480), name .. " runs off the canvas")
+    end
+    t.ok(inside(L.card, 270, 480), "card runs off the canvas")
+    for name, box in pairs(L.card_actions) do
+      t.ok(inside(box, 270, 480), "card " .. name .. " runs off the canvas")
     end
     for name, box in pairs(L.header.buttons) do
       t.ok(inside(box, 270, 480), "header " .. name .. " runs off the canvas")
@@ -94,10 +117,18 @@ t.suite("layout / portrait", function()
     end
   end)
 
+  t.case("the card's own links sit under it, inside its band", function()
+    t.ok(not overlaps(L.card, L.card_actions.faucet), "FAUCET is drawn over the card")
+    t.ok(not overlaps(L.card, L.card_actions.explorer), "EXPLORER is drawn over the card")
+    t.ok(not overlaps(L.card_actions.faucet, L.card_actions.explorer))
+    t.ok(L.card_actions.explorer.y + L.card_actions.explorer.h
+      <= L.detail.y + L.detail.h, "the strip hangs out of the band")
+  end)
+
   t.case("a card with a card's proportions fits the detail band", function()
-    local face_h = math.min(L.detail.h, math.floor(L.detail.w / 1.585))
+    local face_h = math.min(L.card.h, math.floor(L.card.w / 1.585))
     local face_w = math.floor(face_h * 1.585)
-    t.ok(face_w <= L.detail.w and face_h <= L.detail.h)
+    t.ok(face_w <= L.card.w and face_h <= L.card.h)
     t.ok(face_h >= 120, "a card too small to read is not a card")
   end)
 

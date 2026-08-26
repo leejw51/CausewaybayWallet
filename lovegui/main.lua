@@ -107,6 +107,14 @@ local game = {
   confirm_t = 0,
   -- The same tween, for the dialog that asks before a file is written.
   write_t = 0,
+  -- And for the faucet panel, which is the third modal.
+  faucet_t = 0,
+  -- The arrival, as something to watch: two counters easing apart, coins
+  -- flying into the second one, and a delta that pops. See FAUCET below.
+  purse = nil,
+  -- What the last EXPLORER press put on the clipboard, and how long ago —
+  -- the link flies out of the button and lands on a plate. See `copy_link`.
+  link = nil,
   toast = nil,
   boot = nil,  -- the MSX-style boot sequence, until it hands over
   login = nil, -- the mnemonic gate, until a session is open
@@ -185,6 +193,13 @@ local CARD_SWIPE = 0.42
 local coin_target = { x = theme.WIDTH / 2, y = 90 }  -- where earned coins fly to
 local card_target = { x = theme.WIDTH / 2, y = 140 } -- the middle of the card
 local rocket = { x = theme.WIDTH / 2, y = 120 }      -- what the exhaust comes out of
+-- Where the faucet's coins land, and where they are thrown from: the "after"
+-- number on the panel and the panel's own bottom-left corner, neither of which
+-- anything but the panel knows the position of.
+local purse_target = { x = theme.WIDTH / 2, y = 150 }
+local purse_source = { x = theme.WIDTH / 2, y = 200 }
+-- And where the copied link flies from, which is the EXPLORER button.
+local link_source = { x = theme.WIDTH / 2, y = 200 }
 
 -- ----------------------------------------------------------------- session
 --
@@ -328,6 +343,14 @@ function love.load()
 
   game.springs = widgets.Springs.new()
   game.fx = particles.System.new(700)
+  -- A second layer, drawn *over* the modal panels rather than under them.
+  --
+  -- One system was enough while every effect belonged to the screen: the
+  -- dialogs draw last, over a scrim, and anything under that scrim is meant to
+  -- be dimmed. The faucet's coins are the exception — they belong to the panel
+  -- itself, and a celebration behind its own frosted glass is not a
+  -- celebration. Same class, same update, different draw order.
+  game.fx_top = particles.System.new(300)
   game.stars = particles.Stars.new(110, theme.WIDTH, theme.HEIGHT)
   game.entrance = anim.Tween.new(0, 1, 0.9, anim.expo_out)
   game.screen_slide = anim.Spring.new(0, 240, 0.62)
@@ -432,6 +455,59 @@ local function swipe_card(model)
       sprite = "spark", size = 3 })
 end
 
+-- ------------------------------------------------------------------ FAUCET
+--
+-- What being given money looks like.
+--
+-- The whole effect is one idea: a number that *changes* in front of you is
+-- worth more than a number that is simply correct when you look at it. So the
+-- panel holds both readings — what was there, what is there now — and the
+-- second one counts up to meet the first over about a second and a bit, on an
+-- eased curve so it decelerates into its final value instead of stopping dead.
+--
+-- The coins are the second half of that. They fly out of the bottom of the
+-- panel and home in on the counter, which is `System:coins`'s whole trick, and
+-- they are staggered so they arrive as a stream over roughly the same second
+-- the counter is climbing. The two are timed together on purpose: coins that
+-- land after the number has settled read as decoration, and a number that
+-- settles before the coins arrive reads as the coins having missed.
+
+--- How long the counter takes to climb, and the coins to arrive.
+---
+--- 1.15 rather than something snappier because this is the payoff, not a
+--- transition: it is the only moment in the wallet where the interesting thing
+--- is the animation rather than what is behind it.
+local PURSE_COUNT = 1.15
+
+--- Start the arrival. `panel` is `model.faucet`, already in its landed state.
+local function begin_purse(panel)
+  if not panel then return end
+  local from = tonumber(panel.before) or 0
+  local to = tonumber(panel.after) or from
+  game.purse = {
+    -- The eased climb. `cubic_out` rather than `expo_out`: the exponential
+    -- spends most of its time within a hair of the target, which on a
+    -- four-decimal number is a second of the last digit twitching.
+    count = anim.Tween.new(from, to, PURSE_COUNT, anim.cubic_out),
+    -- The delta, which pops in behind the counter on a spring with overshoot.
+    pop = anim.Tween.new(0, 1, 0.55, anim.back_out),
+    -- Emitted over the climb rather than all at once, so the stream lasts as
+    -- long as the number is moving.
+    left = 18,
+    every = PURSE_COUNT / 20,
+    next = 0,
+    time = 0,
+    demo = panel.demo == true,
+  }
+  sound.play("coin")
+  sound.play("created", { pitch = 1.1 })
+  game.shake = 1.6
+  game.fx_top:burst(purse_target.x, purse_target.y, {
+    count = 22, speed = 180, colour = { 1, 0.85, 0.3 }, life = 0.7,
+    sprite = "spark", size = 4,
+  })
+end
+
 --- React to what the model says happened, with light and noise.
 ---
 --- Light and noise are emitted together on purpose. An effect and its sound
@@ -479,6 +555,30 @@ local function celebrate(event)
       colour = secret and theme.colour.red or theme.colour.green,
       life = 2.6,
     }
+  elseif event == "faucet_landed" then
+    -- The one arrival worth watching. Everything here is aimed at the panel's
+    -- own "after" number rather than at the middle of the screen: the point of
+    -- the effect is to say *that* number is the one that changed.
+    begin_purse(game.model.faucet)
+  elseif event == "faucet_failed" or event == "faucet_slow" then
+    -- A refusal gets an animation too, and a different one — not a quieter
+    -- version of the arrival. A shake, a fall, and no coins.
+    sound.play("deny")
+    game.shake = 5
+    game.fx_top:burst(purse_target.x, purse_target.y, {
+      count = 26, speed = 210, colour = { 1, 0.32, 0.42 }, life = 0.8, gravity = 420,
+      sprite = "spark", size = 3,
+    })
+    game.purse = nil
+  elseif event == "faucet_manual" then
+    -- Not a failure: this network does hand out money, just to a person with a
+    -- browser rather than to a program. Light, and no sound — the press
+    -- already copied the address, and `copy_link` played for that a frame ago.
+    -- Two chimes for one press reads as something having gone wrong twice.
+    game.fx_top:burst(purse_target.x, purse_target.y, {
+      count = 18, speed = 150, colour = { 0.3, 0.94, 1 }, life = 0.7,
+      sprite = "spark", size = 3,
+    })
   elseif event == "selected" or event == "network" then
     sound.play("blip", { pitch = 1.25 })
     game.fx:burst(cx, cy, { count = 12, speed = 140, colour = { 0.3, 0.94, 1 }, life = 0.5 })
@@ -533,7 +633,38 @@ function love.update(dt)
   game.screen_slide:update(dt)
   game.stars:update(dt, 1 + (game.model and game.model:busy() and 6 or 0))
   game.fx:update(dt)
+  game.fx_top:update(dt)
   game.shake = game.shake * math.exp(-9 * dt)
+
+  -- The arrival: a counter climbing, and a stream of coins timed to land while
+  -- it is still moving. Both are driven here rather than from the drawing code
+  -- because they have to keep running for the frames the panel is fading out.
+  if game.purse then
+    local purse = game.purse
+    purse.time = purse.time + dt
+    purse.count:update(dt)
+    purse.pop:update(dt)
+    purse.next = purse.next - dt
+    if purse.left > 0 and purse.next <= 0 then
+      purse.next = purse.every
+      purse.left = purse.left - 1
+      -- Thrown from the foot of the panel and homing on the number, so the
+      -- arc crosses the panel rather than rising out of the number it is
+      -- about to land in. Three at a time: the stream wants some width to it,
+      -- and eighteen separate emissions would be eighteen coins in a line.
+      game.fx_top:coins(purse_source.x + (math.random() - 0.5) * 60,
+        purse_source.y, purse_target, 3)
+    end
+    -- Cleared once the number has settled *and* the last coin has landed,
+    -- rather than when the tween ends: the coins are staggered past it.
+    if purse.time > PURSE_COUNT + 1.4 then game.purse = nil end
+  end
+
+  -- The copied link, rising off the button and fading.
+  if game.link then
+    game.link.life = game.link.life - dt
+    if game.link.life <= 0 then game.link = nil end
+  end
 
   if game.toast then
     game.toast.life = game.toast.life - dt
@@ -601,11 +732,18 @@ function love.update(dt)
     for _, event in ipairs(events) do celebrate(event) end
   end
 
+  -- A faucet run that is waiting for the money moves itself along. The clock
+  -- is the model's — *when to ask again* is a fact about the run — and this is
+  -- only where the frame's own dt is handed to it.
+  game.model:tick(dt)
+
   -- The confirmation dialog fades in, and snaps out.
   local wanted = game.model.confirm and 1 or 0
   game.confirm_t = anim.approach(game.confirm_t, wanted, wanted == 1 and 14 or 22, dt)
   local asked = game.model.write and 1 or 0
   game.write_t = anim.approach(game.write_t, asked, asked == 1 and 14 or 22, dt)
+  local pouring = game.model.faucet and 1 or 0
+  game.faucet_t = anim.approach(game.faucet_t, pouring, pouring == 1 and 14 or 22, dt)
 
   -- Count the balance up rather than replacing the number, which turns a value
   -- arriving into an event you can watch.
@@ -637,6 +775,73 @@ local function copy_to_clipboard(model, text, what)
   love.system.setClipboardText(text)
   model:say(("%s copied"):format(what))
   game.toast = { text = "COPIED", colour = theme.colour.cyan, life = 1.4 }
+  return true
+end
+
+--- Copy a URL, and make the copying visible.
+---
+--- A plain `copy_to_clipboard` says COPIED in the middle of the screen, which
+--- is right for an address: an address is the thing you were already looking
+--- at, and the toast is confirmation. A link is not — it is 60-odd characters
+--- nobody has seen, going somewhere nobody named, and "COPIED" alone leaves
+--- two questions open: copied from where, and copied *what*.
+---
+--- So the flight answers the first — the spark leaves the button that was
+--- pressed, which is how you know which of the two links you got — and the
+--- plate under the toast answers the second by printing the URL itself.
+--- How long the ring and the chevron take to leave the button.
+local LINK_FLIGHT = 0.8
+
+--- And how long the copy stays *said* — longer, because on the faucet panel
+--- the saying is a word beside the link rather than a thing that flies.
+local LINK_SAID = 1.8
+
+local function copy_link(model, text, what, from)
+  if not text or text == "" then return false end
+  love.system.setClipboardText(text)
+  model:say(("%s copied"):format(what))
+  -- A toast, unless the faucet panel is up.
+  --
+  -- The toast lands at the top of the screen and the panel is drawn over the
+  -- top of the screen, so the one press whose whole point is the clipboard
+  -- would have produced a confirmation nobody could see — behind the panel's
+  -- own scrim, over its address. The panel says it itself instead, beside the
+  -- link, which is where the eye already is. See `draw_faucet`.
+  if not model.faucet then
+    game.toast = { text = "LINK COPIED", detail = text, colour = theme.colour.cyan, life = 2.4 }
+  end
+  sound.play("power", { pitch = 1.15 })
+  -- Where it left from, so the rise starts at the button rather than at some
+  -- fixed point that happens to be near it in one orientation.
+  link_source.x, link_source.y = from.x + from.w / 2, from.y
+  game.link = { life = LINK_SAID, x = link_source.x, y = link_source.y }
+  game.fx:burst(link_source.x, link_source.y, {
+    count = 16, speed = 130, colour = { 0.3, 0.94, 1 }, life = 0.55,
+    sprite = "spark", size = 3,
+  })
+  return true
+end
+
+--- What pressing FAUCET does.
+---
+--- A function rather than the body of the button, because the screenshot
+--- harness has no button to press and reached `request_faucet` directly — so
+--- it photographed a panel that had never copied anything, which is a path the
+--- game does not have. Two callers, one behaviour.
+---
+--- `from` is the box the press came from, which is where the copy's flight
+--- starts.
+local function press_faucet(model, from)
+  if not model:request_faucet() then return false end
+  -- On the networks the wallet cannot ask, the press *is* the copy. There is
+  -- exactly one useful thing to do with a faucet that lives behind a captcha —
+  -- take its address somewhere that can answer one — so the button does that
+  -- itself rather than opening a panel with a second button on it. The panel
+  -- still holds a COPY: the clipboard is one slot deep, and something else may
+  -- land in it before anyone reaches a browser.
+  if model.faucet and model.faucet.phase == "manual" then
+    copy_link(model, model.faucet.url, "the faucet address", from)
+  end
   return true
 end
 
@@ -769,6 +974,9 @@ function love.keypressed(key)
     elseif game.model and game.model.write then
       sound.play("back")
       game.model:cancel_write()
+    elseif game.model and game.model.faucet then
+      sound.play("back")
+      game.model:dismiss_faucet()
     -- A search is a thing you are in the middle of, and Escape is how anyone
     -- gets out of one. Quitting the wallet instead — from a screen where the
     -- last thing they did was type — is not a mistake worth allowing.
@@ -798,6 +1006,17 @@ function love.keypressed(key)
     -- So does this one. ENTER writes the files it just named; ESCAPE, handled
     -- above, writes nothing.
     if key == "return" or key == "kpenter" then model:confirm_write() end
+    return
+  end
+
+  if model.faucet then
+    -- And this one. There is nothing here to approve — the panel reports
+    -- rather than asks — so ENTER simply closes it, which is what a person
+    -- reaching for a key after reading it means.
+    if key == "return" or key == "kpenter" then
+      sound.play("back")
+      model:dismiss_faucet()
+    end
     return
   end
 
@@ -1135,25 +1354,36 @@ local function draw_card(model, entry, face, place)
     -- frame of its own above; a card with somebody else's balance printed
     -- over it would be the one mistake this whole design is here to prevent.
     body = function(box, ink, alpha)
+      -- Where the money block starts: under the ACTIVE chip, above the card
+      -- number, and measured rather than fixed.
+      --
+      -- It used to be a flat `box.y + 60`, which was right for the one card
+      -- height the screen had. The two links under the card took 22 pixels off
+      -- that height, and 60 plus a big number plus a line of advice ran
+      -- straight into the card number — the balance said "REFRESH to ask the
+      -- node" through its own account digits. The 82 is that block's own
+      -- height plus the number's: what the band actually needs.
+      local top = math.min(box.y + 60, box.y + box.h - 82)
       if model.balance and entry.address == model.active then
-        local amount = (("%.4f"):format(game.balance_shown)
-          :gsub("0+$", ""):gsub("%.$", ""))
-        theme.text(amount, box.x + 10, box.y + 60, theme.colour.text,
+        -- The same rule the faucet panel counts by, so the number a person
+        -- watches arrive is the number the card settles on.
+        local amount = Model.format_amount(game.balance_shown)
+        theme.text(amount, box.x + 10, top, theme.colour.text,
           theme.font.big, alpha)
         theme.text(model.balance.symbol or "",
-          box.x + 12 + theme.width(amount, theme.font.big), box.y + 68,
+          box.x + 12 + theme.width(amount, theme.font.big), top + 8,
           ink, theme.font.small, alpha)
       elseif entry.address == model.active then
-        theme.text("- - -", box.x + 10, box.y + 60, theme.colour.faint,
+        theme.text("- - -", box.x + 10, top, theme.colour.faint,
           theme.font.big, alpha)
-        theme.text("REFRESH to ask the node", box.x + 10, box.y + 84,
+        theme.text("REFRESH to ask the node", box.x + 10, top + 24,
           theme.colour.faint, theme.font.small, alpha * 0.9)
       else
         -- An inactive card must not show the active one's money. Saying
         -- which card the balance belongs to is the only honest option.
-        theme.text("USE THIS CARD", box.x + 10, box.y + 62, ink,
+        theme.text("USE THIS CARD", box.x + 10, top + 2, ink,
           theme.font.body, alpha)
-        theme.text("to see its balance", box.x + 10, box.y + 80,
+        theme.text("to see its balance", box.x + 10, top + 20,
           theme.colour.faint, theme.font.small, alpha * 0.9)
       end
 
@@ -1205,6 +1435,9 @@ end
 
 local function draw_wallets(model, state, x)
   local height = L.list.h
+  -- Every button on this screen is in the small font — there are seven of
+  -- them across two rows and none has room for anything larger.
+  local small = theme.font.small
 
   -- ------------------------------------------------------------ the list
   --
@@ -1362,11 +1595,15 @@ local function draw_wallets(model, state, x)
   -- it reads as a card at a glance and not as a panel with a picture on it —
   -- so when the region is the wrong shape (portrait's band is wide and short),
   -- the card keeps its ratio and centres, rather than stretching to fill.
-  local face_h = math.min(L.detail.h, math.floor(L.detail.w / 1.585))
+  --
+  -- `L.card`, not `L.detail`: the two links under it took a strip off the
+  -- bottom of the column, and a card measured against the whole column would
+  -- be drawn straight through them.
+  local face_h = math.min(L.card.h, math.floor(L.card.w / 1.585))
   local face_w = math.floor(face_h * 1.585)
   local face = {
-    x = x + L.detail.x + math.floor((L.detail.w - face_w) / 2),
-    y = L.detail.y + math.floor((L.detail.h - face_h) / 2),
+    x = x + L.card.x + math.floor((L.card.w - face_w) / 2),
+    y = L.card.y + math.floor((L.card.h - face_h) / 2),
     w = face_w,
     h = face_h,
   }
@@ -1389,7 +1626,7 @@ local function draw_wallets(model, state, x)
     --
     -- Clipped to the column, because a card number sliding across the wallet
     -- list is not a transition, it is a bug with an easing curve on it.
-    local window = { x = x + L.detail.x, y = face.y - 2, w = L.detail.w, h = face.h + 4 }
+    local window = { x = x + L.card.x, y = face.y - 2, w = L.card.w, h = face.h + 4 }
     theme.clip(window, function()
       if game.face.next then
         local leaving, arriving = card.swipe(game.face.turn, face.w + 16, game.face.dir)
@@ -1399,6 +1636,45 @@ local function draw_wallets(model, state, x)
         draw_card(model, game.face.shown or selected, face, nil)
       end
     end)
+  end
+
+  -- ------------------------------------------------------- the card's links
+  --
+  -- Two verbs that belong to the card rather than to the wallet, which is why
+  -- they are here and not in the action bar below: one asks this network for
+  -- money into this address, the other copies the link that looks this address
+  -- up. Both are answers about the card on screen.
+  --
+  -- FAUCET is the only button in the game whose label changes with the
+  -- network, and it has to. On Solana's clusters the wallet asks the faucet
+  -- itself and the press is the whole interaction; everywhere else the faucet
+  -- is a web page with a captcha, and the press hands over its address. Those
+  -- are different promises, so they are different words: FAUCET and FAUCET >.
+  local faucet_box = widgets.offset(L.card_actions.faucet, x)
+  local automatic = model:faucet_is_automatic()
+  local has_faucet = model:faucet_url() ~= nil
+  if widgets.button(game.springs, "faucet", faucet_box,
+      automatic and "FAUCET" or "FAUCET >", state, {
+        font = small,
+        -- Gold, because it is money arriving; the same colour the balance is
+        -- drawn in and the same one the quick-send button wears.
+        colour = has_faucet and theme.colour.gold or theme.colour.faint,
+        -- A mainnet has no faucet and never will, which is not a thing to be
+        -- retried — so the button says so by being dead rather than by
+        -- refusing every press with the same sentence.
+        disabled = model:busy() or not has_faucet or #model.wallets == 0,
+      }) then
+    press_faucet(model, faucet_box)
+  end
+
+  local link_box = widgets.offset(L.card_actions.explorer, x)
+  if widgets.button(game.springs, "explorer", link_box, "EXPLORER", state,
+      { font = small, colour = theme.colour.cyan,
+        disabled = model:explorer_link() == nil }) then
+    local link, account = model:explorer_link()
+    if link then
+      copy_link(model, link, ("the explorer link for %s"):format(account.label), link_box)
+    end
   end
 
   -- ------------------------------------------------------------ actions
@@ -1412,7 +1688,6 @@ local function draw_wallets(model, state, x)
   --
   -- 60 + 40 + 56 + 40 + 40 across five buttons and 6 between them is exactly
   -- the 260 the column has, so the row is flush at both ends.
-  local small = theme.font.small
   local refresh = widgets.offset(L.actions.refresh, x)
   if widgets.button(game.springs, "refresh", refresh, "REFRESH", state,
       { font = small, disabled = model:busy() or #model.wallets == 0 }) then
@@ -2085,6 +2360,343 @@ local function draw_confirm(model, state)
   end
 end
 
+--- The copied link, leaving the button it was copied from.
+---
+--- A ring and a chevron rising out of the press. It is a small thing and it
+--- does one job: the clipboard is invisible, so a copy that produces no motion
+--- is indistinguishable from a click that did nothing — and this game already
+--- has two buttons within forty pixels of each other that both copy something.
+local function draw_link_flight()
+  if not game.link then return end
+  local t = (LINK_SAID - game.link.life) / LINK_FLIGHT
+  if t >= 1 then return end
+  local rise = anim.expo_out(t) * 22
+  local fade = 1 - t
+
+  -- The ring: a square outline that grows and thins, which at this resolution
+  -- reads as a pulse leaving the button.
+  local size = 6 + anim.expo_out(t) * 26
+  theme.outline(theme.colour.cyan, game.link.x - size / 2, game.link.y - size / 2 + 2,
+    size, size, fade * 0.7)
+
+  theme.text_centred(">>", game.link.x, game.link.y - rise, theme.colour.cyan,
+    theme.font.small, fade)
+end
+
+--- The faucet, from the asking to the arrival.
+---
+--- The panel exists because the interesting part of being given money is the
+--- *difference*, and a difference cannot be drawn as one number. So it holds
+--- both readings side by side with an arrow between them, and the right-hand
+--- one climbs to meet the left over about a second while coins fly into it.
+---
+--- Everything that is not a number is here to keep that honest. The network
+--- and the address are named at the top, because a before and an after read on
+--- two different chains would be a lie told in the most convincing possible
+--- form. The demo says it is a demo three times over — in the title, in amber
+--- under the number, and in the word on the button that starts it. And a run
+--- that was accepted but has not landed says exactly that rather than counting
+--- from a number to itself, which would animate beautifully and mean nothing.
+local function draw_faucet(model, state)
+  if game.faucet_t < 0.01 then return end
+  local panel = model.faucet
+  if not panel then return end
+
+  local landed = panel.phase == "landed" or panel.phase == "demo"
+  local working = panel.phase == "reading" or panel.phase == "asking"
+    or panel.phase == "waiting"
+  local line = 11
+
+  -- Measured before it is drawn, like the other two dialogs: an address is 42
+  -- characters, which is one line on a wide canvas and two on a phone's, and a
+  -- faucet URL is longer than either.
+  local w = math.min(theme.WIDTH - 24, 412)
+  local inner = w - 24
+  local address = wrap(panel.address or "no wallet in use", inner)
+
+  -- What the panel has to say, in the words of the phase it is in. Settled
+  -- here, before a pixel is drawn, because the sentence and the height it
+  -- needs are the same decision — the panel is sized around its own text, and
+  -- a sentence chosen further down would be one the box had no room for.
+  local says
+  if panel.phase == "manual" then
+    says = ("%s hands out %s from a web page, and a page with a captcha on it "
+      .. "is a thing a person does — so the address is on your clipboard.")
+      :format(panel.network, panel.symbol)
+  elseif panel.phase == "reading" then
+    says = "Reading what is there now, so the arrival has something to be measured against."
+  elseif panel.phase == "asking" then
+    says = ("Asking %s for %s %s."):format(panel.network, panel.amount, panel.symbol)
+  elseif panel.phase == "waiting" then
+    says = "The faucet said yes. Waiting for it to land — a faucet answers before the money does."
+  elseif panel.phase == "slow" and not panel.before then
+    -- The rarer half of this phase, and a different sentence because it is a
+    -- different fact: the balance could not be read before the request, so
+    -- there is no "before" and nothing here can be compared to anything. The
+    -- money may well have arrived.
+    says = "The faucet said yes. The balance would not read, so there is nothing to compare against — REFRESH will say what is there."
+  elseif panel.phase == "slow" then
+    says = "The faucet said yes and nothing has arrived yet. It still may; a test network can be slow."
+  elseif panel.phase == "failed" then
+    says = (panel.error or {}).message or "the faucet said no"
+  elseif panel.phase == "demo" then
+    says = "This is what an arrival looks like. Every number in it is invented."
+  end
+  local words = wrap(says or "", inner)
+
+  -- The money block: a row of labels, a row of numbers, the difference under
+  -- them, and — only on the demo — the line that says none of it happened.
+  local body = 0
+  if landed then
+    body = (line + 2) + 24 + 18 + (panel.demo and line or 0)
+  end
+  local url = panel.url and wrap(panel.url, inner) or {}
+  local show_url = panel.url ~= nil and not landed
+  local h = 20                                   -- the title and its rule
+    + line                                       -- the network, and its ticker
+    + line                                       -- whose wallet this is
+    + #address * line + 6                        -- and its address, in full
+    + body                                       -- the two counters, or nothing
+    + #words * line + 6                          -- what is happening
+    -- Where, when there is a where — and a line under it for the word that
+    -- says the address is on the clipboard. Reserved whether or not anything
+    -- has been copied yet, because a panel that grew a line the moment COPY
+    -- was pressed would jump under the pointer that pressed it.
+    + (show_url and (#url * line + 6 + line + 4) or 0)
+    + 34                                         -- the buttons, and air above
+  h = math.min(h, theme.HEIGHT - 32)
+
+  local box = widgets.dialog({
+    x = math.floor((theme.WIDTH - w) / 2),
+    y = math.max(16, math.floor((theme.HEIGHT - h) / 2)),
+    w = w,
+    h = h,
+  }, game.faucet_t, panel.demo and "FAUCET — DEMO" or "FAUCET")
+  local alpha = box.eased
+  -- Low and to the left, so the coins arc up and across the panel into a
+  -- number that is right-aligned near its far corner.
+  purse_source.x = box.x + box.w * 0.3
+  purse_source.y = box.y + box.h + 10
+  -- And roughly where the "now" number goes, published on every frame the
+  -- panel is up rather than only on the ones that draw it.
+  --
+  -- The bursts for a refusal and for a web faucet are fired from `celebrate`,
+  -- which runs a frame *before* this panel has ever been drawn — so a target
+  -- only set inside the arrival branch left them aimed at wherever the last
+  -- run's number happened to be, or at a default in the middle of the screen.
+  -- The arrival refines it below; this is what the other two get.
+  purse_target.x = box.x + box.w * 0.72
+  purse_target.y = box.y + box.h * 0.45
+
+  -- A coin over the corner, turning. Gold while money is the subject and red
+  -- when it is not, so the panel's temperature is readable before a word of it.
+  local accent = theme.colour.gold
+  if panel.phase == "failed" then accent = theme.colour.red
+  elseif panel.phase == "slow" then accent = theme.colour.amber
+  elseif panel.phase == "manual" then accent = theme.colour.cyan
+  end
+  sprite.draw_glowing("coin", box.x + box.w - 26, box.y + 14, 22, {
+    angle = game.time * (landed and 2.4 or 0.6),
+    glow = 0.6 + 0.3 * math.sin(game.time * 4),
+    glow_colour = accent,
+  })
+
+  -- Three rows, one fact each: which network, whose wallet, which address.
+  -- They were two rows once, with the label sharing the network's line, and
+  -- `account0-evm` printed straight through `cronos-testnet` — a panel whose
+  -- entire job is to be believed about where money went.
+  --
+  -- The ticker stops short of the coin in the corner rather than at the panel
+  -- edge, which is what that 34 is.
+  local y = box.y + 20
+  theme.text(panel.network, box.x + 12, y, theme.colour.cyan, theme.font.small, alpha)
+  theme.text_right(panel.symbol, box.x + box.w - 34, y, theme.colour.dim,
+    theme.font.small, alpha)
+  y = y + line
+
+  theme.text(panel.label or "no wallet in use", box.x + 12, y, theme.colour.faint,
+    theme.font.small, alpha * 0.9)
+  y = y + line
+
+  for _, text in ipairs(address) do
+    theme.text(text, box.x + 12, y, theme.colour.text, theme.font.small, alpha)
+    y = y + line
+  end
+  y = y + 6
+
+  -- ------------------------------------------------------------ the money
+  if landed then
+    local purse = game.purse
+    local before = tonumber(panel.before) or 0
+    local shown = purse and purse.count.value or (tonumber(panel.after) or before)
+    local delta = (tonumber(panel.after) or before) - before
+
+    theme.text("BEFORE", box.x + 12, y, theme.colour.faint, theme.font.small, alpha)
+    theme.text_right("NOW", box.x + box.w - 12, y, theme.colour.faint,
+      theme.font.small, alpha)
+    y = y + line + 2
+
+    local was = Model.format_amount(before)
+    theme.text(was, box.x + 12, y + 4, theme.colour.dim, theme.font.body, alpha)
+
+    -- The number that changed, in the big face, right-aligned so its last
+    -- digit does not walk while it climbs.
+    local now = Model.format_amount(shown)
+    theme.text_right(now, box.x + box.w - 12, y, theme.colour.gold,
+      theme.font.big, alpha)
+
+    -- The arrow between them, travelling. Not decoration: it is the only thing
+    -- on the panel that says which number came first.
+    --
+    -- Placed in the space the two numbers leave rather than at the middle of
+    -- the panel, and dropped when they leave none. At the panel's midpoint it
+    -- was drawn *inside* the big number on a phone's width — a seven-figure
+    -- balance at double scale is 112 pixels of a 222-pixel row, and it starts
+    -- to the left of centre.
+    local from = box.x + 12 + theme.width(was, theme.font.body)
+    local to = box.x + box.w - 12 - theme.width(now, theme.font.big)
+    if to - from > 24 then
+      local slide = anim.pulse(game.time, 1.1, 0, 6)
+      theme.text_centred(">", (from + to) / 2 + slide, y + 4, accent,
+        theme.font.body, alpha * (0.5 + anim.pulse(game.time, 1.1, 0, 0.5)))
+    end
+    -- Where the coins are aimed. Published from here because only the drawing
+    -- knows where this landed, and it moves with the orientation.
+    purse_target.x = box.x + box.w - 12 - theme.width(now, theme.font.big) / 2
+    purse_target.y = y + theme.height(theme.font.big) / 2
+    y = y + 24
+
+    -- And the difference, which is the answer to the question the button was
+    -- pressed to ask. It pops in on an overshoot and settles.
+    local pop = purse and purse.pop.value or 1
+    if delta > 0 then
+      local text = ("+ %s %s"):format(Model.format_amount(delta), panel.symbol)
+      love.graphics.push()
+      love.graphics.translate(box.x + box.w / 2, y + 4)
+      love.graphics.scale(0.6 + pop * 0.4, 0.6 + pop * 0.4)
+      theme.text_centred(text, 0, 0, theme.colour.green, theme.font.body, alpha * pop)
+      love.graphics.pop()
+    end
+    y = y + 18
+
+    -- The second of three sayings, and none of them is redundant. The title
+    -- says DEMO in a corner nobody reading a number is looking at, and the
+    -- button that started this is behind them by now. This one is in amber,
+    -- directly under the number — which is where the eye actually is.
+    --
+    -- Two lengths, like the warning banner at the foot of every screen, and
+    -- for the same reason: the long one is 312 pixels of text and a phone's
+    -- panel is 222 wide, so it ran off both edges — which is a disclaimer
+    -- nobody can finish reading, on the one panel that must not be misread.
+    if panel.demo then
+      local notice = "NOTHING MOVED - NO FUNDS WERE REQUESTED"
+      if theme.width(notice, theme.font.small) > box.w - 24 then
+        notice = "DEMO - NOTHING MOVED"
+      end
+      theme.text_centred(notice, box.x + box.w / 2, y, theme.colour.amber,
+        theme.font.small, alpha)
+      y = y + line
+    end
+  end
+
+  -- --------------------------------------------------------- what happened
+  if working then
+    -- The same six-dot spinner the header wears, so "the wallet is waiting"
+    -- looks the same wherever it is said.
+    local r = 4
+    for i = 0, 5 do
+      local a = game.time * 6 + i * 0.9
+      local fade = 1 - (i / 6)
+      theme.set(theme.colour.amber, fade * 0.9 * alpha)
+      love.graphics.rectangle("fill",
+        box.x + 16 + math.cos(a) * r, y + 5 + math.sin(a) * r, 2, 2)
+    end
+  end
+
+  local ink = panel.phase == "failed" and theme.colour.red
+    or (panel.phase == "slow" and theme.colour.amber or theme.colour.faint)
+  for i, text in ipairs(words) do
+    local left = (working and i == 1) and box.x + 28 or box.x + 12
+    theme.text(text, left, y, ink, theme.font.small, alpha * 0.95)
+    y = y + line
+  end
+  y = y + 6
+
+  if show_url then
+    for _, text in ipairs(url) do
+      theme.text(text, box.x + 12, y, theme.colour.cyan, theme.font.small, alpha)
+      y = y + line
+    end
+    -- Said here rather than in a toast, because a toast is drawn under this
+    -- panel. Under the link it is about, which is a better place for it than
+    -- the top of the screen was anyway.
+    --
+    -- Under and not beside: `https://faucet.cronos.com/` is 208 pixels of a
+    -- 222-pixel row on a phone's panel, so a chip on the same line was drawn
+    -- straight through the address it was confirming.
+    if game.link then
+      local fade = math.min(1, game.link.life / 0.4)
+      local chip_w = theme.width("COPIED", theme.font.small) + 10
+      -- A chip is 14 tall and a line is 11, so it is dropped a pixel clear of
+      -- the address above it rather than clipping its descenders.
+      widgets.chip(box.x + box.w - 12 - chip_w, y + 1, "COPIED",
+        theme.colour.green, { alpha = alpha * fade })
+    end
+    y = y + line + 4
+  end
+
+  -- ------------------------------------------------------------- the verbs
+  --
+  -- CLOSE on the left, where CANCEL is on the other two panels; everything
+  -- else right-aligned and laid out from the right edge inwards, so a phase
+  -- with two buttons and one with four both end flush.
+  local close = { x = box.x + 16, y = box.y + box.h - 24, w = 52, h = 16 }
+  if widgets.button(game.springs, "faucet_close", close, "CLOSE", state,
+      { colour = theme.colour.dim }) then
+    model:dismiss_faucet()
+  end
+
+  local edge = box.x + box.w - 16
+  local function verb(key, label, colour, press)
+    local width = theme.width(label, theme.font.body) + 12
+    local at = { x = edge - width, y = box.y + box.h - 24, w = width, h = 16 }
+    -- Never over CLOSE. A panel narrow enough for the two to meet drops the
+    -- rightmost verb rather than printing one button through another.
+    if at.x < close.x + close.w + 6 then return end
+    edge = at.x - 6
+    -- The box goes to the press, because a copy's flight starts at the button
+    -- that was pressed and this is the only place that knows where it landed.
+    if widgets.button(game.springs, key, at, label, state, { colour = colour }) then
+      press(at)
+    end
+  end
+
+  -- COPY, and deliberately nothing that launches anything.
+  --
+  -- The press that opened this panel has already put the address on the
+  -- clipboard; this is here to put it back, for the person who copied
+  -- something else in between. A wallet handing over a link is doing its whole
+  -- job — where that link is opened, and in what, is not its business.
+  if panel.url and not landed then
+    verb("faucet_copy", "COPY", theme.colour.cyan, function(at)
+      copy_link(model, panel.url, "the faucet address", at)
+    end)
+  end
+
+  -- The arrival, on demand.
+  --
+  -- Ten of the twelve networks cannot be asked at all, and on the two that can
+  -- a faucet is a shared thing that says no more often than yes — so the one
+  -- moment in this program worth watching was reachable by being on Solana and
+  -- being lucky. That is a poor reason to hide it. It is labelled a demo in
+  -- the title, in amber under the numbers, and in the word on the button.
+  if not landed then
+    verb("faucet_demo", "DEMO", theme.colour.magenta, function()
+      model:demo_faucet()
+    end)
+  end
+end
+
 local function draw_toast()
   if not game.toast then return end
   local toast = game.toast
@@ -2105,11 +2717,36 @@ local function draw_toast()
   -- — this lands over the wallet list and a card, and faint text over a wall
   -- of hex is not a path anybody can read either — and only fades.
   if toast.detail then
-    local width = theme.width(toast.detail, theme.font.small) + 12
-    local y = 66 - rise + 26
+    -- Trimmed from the middle, keeping both ends, and only where it has to be.
+    --
+    -- This plate was sized around a filesystem path, which is short enough to
+    -- print whole. An explorer link is not: sixty-odd characters is 500 pixels
+    -- on a 480-pixel canvas, so it ran off both edges with the host and the
+    -- address — the two halves that say *which* link this is — the first
+    -- things to go. Cutting the middle keeps them.
+    local detail = toast.detail
+    local room = theme.WIDTH - 24
+    if theme.width(detail, theme.font.small) > room then
+      local keep = math.floor(room / 16)
+      while keep > 4 do
+        local shorter = theme.ellipsis(detail, keep, keep)
+        if theme.width(shorter, theme.font.small) <= room then
+          detail = shorter
+          break
+        end
+        keep = keep - 1
+      end
+    end
+    local width = theme.width(detail, theme.font.small) + 12
+    -- Clear of the word above it. `theme.font.big` is the 16-pixel strip at
+    -- double scale, so the toast is 32 pixels tall and not the 16 this offset
+    -- was written for — the plate was drawn through the bottom of its own
+    -- heading. Only visible when a toast carries a detail line, which until
+    -- now was two of them.
+    local y = 66 - rise + 36
     theme.rect(theme.colour.void, (theme.WIDTH - width) / 2, y, width, 14, 0.88 * fade)
     theme.outline(theme.colour.raised, (theme.WIDTH - width) / 2, y, width, 14, 0.6 * fade)
-    theme.text_centred(toast.detail, theme.WIDTH / 2, y + 1,
+    theme.text_centred(detail, theme.WIDTH / 2, y + 1,
       theme.colour.text, theme.font.small, fade)
   end
 end
@@ -2233,7 +2870,16 @@ function love.draw()
       if model then
         draw_confirm(model, state)
         draw_write(model, state)
+        draw_faucet(model, state)
       end
+      -- Over the panels: the faucet panel has a COPY on it, and a ring leaving
+      -- a button from behind the panel that button is drawn on is not a ring
+      -- leaving a button.
+      draw_link_flight()
+      -- Above the panels, not under them. The faucet's coins belong to the
+      -- panel they are landing on, and a celebration behind its own scrim is
+      -- not a celebration. Everything else stays on the layer below.
+      game.fx_top:draw(sprite.images)
     end
 
     love.graphics.pop()
@@ -2408,6 +3054,30 @@ local function advance_replay(dt)
             game.model:pick_row(entry)
             break
           end
+        end
+      end
+    elseif step == "faucet" or step == "faucet_demo" then
+      -- The faucet panel opens on a click and nothing else, so there is no
+      -- keypress to replay. `faucet` presses the button for real — which on
+      -- the default network opens on the web faucet's address, the state ten
+      -- of the twelve networks are in — and `faucet_demo` plays the arrival,
+      -- which no picture could otherwise catch: it needs a funded devnet, a
+      -- faucet in a generous mood, and a shutter open at the right second.
+      if game.model then
+        if step == "faucet" then
+          press_faucet(game.model, widgets.offset(L.card_actions.faucet, 0))
+        else
+          game.model:demo_faucet()
+          for _, event in ipairs(game.model:drain()) do celebrate(event) end
+        end
+      end
+    elseif step == "explorer" then
+      -- And the other card link, so the copy and its flight can be pictured.
+      if game.model then
+        local link = game.model:explorer_link()
+        if link then
+          copy_link(game.model, link, "the explorer link",
+            widgets.offset(L.card_actions.explorer, 0))
         end
       end
     elseif step == "save" or step == "keys" then

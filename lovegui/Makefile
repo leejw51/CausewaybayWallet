@@ -514,6 +514,19 @@ shots: require-love build ## Write a PNG of each screen into ./shots
 		CWB_SHOT_KEYS="wait:0.5,save" $(LOVE) lovegui
 	@cd .. && CWB_SHOT="$(CURDIR)/shots/keys.png" CWB_SHOT_AFTER=1.6 \
 		CWB_SHOT_KEYS="wait:0.5,keys" $(LOVE) lovegui
+	@# The faucet, in both of the states a person actually meets. On the
+	@# default network it opens on the web faucet's address, which is where ten
+	@# of the twelve networks land; the arrival is photographed through the
+	@# demo, because the real one needs a funded devnet, a faucet in a generous
+	@# mood, and a shutter open at the right second.
+	@cd .. && CWB_SHOT="$(CURDIR)/shots/faucet.png" CWB_SHOT_AFTER=1.8 \
+		CWB_SHOT_KEYS="wait:0.5,faucet" $(LOVE) lovegui
+	@cd .. && CWB_SHOT="$(CURDIR)/shots/faucet-arrived.png" CWB_SHOT_AFTER=1.5 \
+		CWB_SHOT_KEYS="wait:0.4,faucet_demo" $(LOVE) lovegui
+	@# And the other card link, mid-flight: the copy is invisible, so the only
+	@# thing worth photographing is the motion that says it happened.
+	@cd .. && CWB_SHOT="$(CURDIR)/shots/explorer.png" CWB_SHOT_AFTER=1.15 \
+		CWB_SHOT_KEYS="wait:0.5,explorer" $(LOVE) lovegui
 	@# Two frames of the flight rather than one, because the whole point of
 	@# expo_in is that the first half and the second half look nothing alike.
 	@cd .. && CWB_SHOT="$(CURDIR)/shots/launch-ignition.png" CWB_SHOT_AFTER=0.6 \
@@ -546,6 +559,10 @@ shots-tall: require-love build ## Write a PNG of each screen in the tall layout
 	@cd .. && CAUSEWAYBAY_HOME="$(CURDIR)/shots/.home" CWB_SHOT_TALL=1 \
 		CWB_SHOT="$(CURDIR)/shots/tall-login.png" CWB_SHOT_AFTER=1.8 \
 		CWB_SHOT_SCREEN=login CWB_SHOT_KEYS="type:$(SHOT_WORDS)" $(LOVE) lovegui
+	@cd .. && CWB_SHOT_TALL=1 CWB_SHOT="$(CURDIR)/shots/tall-faucet.png" \
+		CWB_SHOT_AFTER=1.8 CWB_SHOT_KEYS="wait:0.5,faucet" $(LOVE) lovegui
+	@cd .. && CWB_SHOT_TALL=1 CWB_SHOT="$(CURDIR)/shots/tall-faucet-arrived.png" \
+		CWB_SHOT_AFTER=1.5 CWB_SHOT_KEYS="wait:0.4,faucet_demo" $(LOVE) lovegui
 	@cd .. && CWB_SHOT_TALL=1 CWB_SHOT="$(CURDIR)/shots/tall-boot.png" \
 		CWB_SHOT_AFTER=1.4 CWB_SHOT_SCREEN=boot $(LOVE) lovegui
 

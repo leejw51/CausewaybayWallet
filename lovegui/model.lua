@@ -71,6 +71,10 @@ function Model.new(wallet, jobs)
     -- network row clears it. See `Model:asset`.
     token = nil,
     confirm = nil,
+    -- A faucet run, from the balance read that opens it to the arrival that
+    -- ends it — or the link to a web faucet on the networks the wallet cannot
+    -- ask itself. See the faucet section for the shape and why it has one.
+    faucet = nil,
     -- A file the window is about to write, waiting to be approved. See
     -- `ask_save` below for why writing one is a question and not a button.
     write = nil,
@@ -131,13 +135,16 @@ function Model:busy()
   return next(self.pending) ~= nil
 end
 
---- Whether a modal is up. Both of them take the keyboard and the mouse.
+--- Whether a modal is up. All three take the keyboard and the mouse.
 ---
 --- The send confirmation must not have the form edited underneath it — that
 --- would change what was approved — and the write dialog must not have the
---- list scrolled or a field typed into behind it either.
+--- list scrolled or a field typed into behind it either. The faucet panel is
+--- here for a third reason: it is a running thing, and switching network or
+--- wallet underneath it would leave it reporting a before and an after read on
+--- two different chains.
 function Model:asking()
-  return self.confirm ~= nil or self.write ~= nil
+  return self.confirm ~= nil or self.write ~= nil or self.faucet ~= nil
 end
 
 -- ------------------------------------------------------------------- session
@@ -390,6 +397,8 @@ function Model:logout(opts)
   self:refresh()
   self.balance = nil
   self.confirm = nil
+  -- A panel reporting one session's balances must not survive into the next.
+  self.faucet = nil
   self.form.to, self.form.amount = "", ""
   self.screen = "wallets"
   self.scroll = 0
@@ -1341,6 +1350,285 @@ function Model:cancel_send()
   self:say("Cancelled — nothing was signed.")
   self:emit("cancelled")
   return true
+end
+
+-- ------------------------------------------------------------------- faucet
+--
+-- Being given money, on a network where somebody gives it away.
+--
+-- ## Why this is a small state machine and not one call
+--
+-- What makes a faucet worth watching is the *difference* it made, and a
+-- difference needs two readings. So a run is three round trips rather than
+-- one: read the balance, ask the faucet, read the balance again. The first
+-- reading has to happen before the request or there is nothing to compare
+-- against, and the last has to happen after the money has had time to land.
+--
+-- That last part is the awkward one. A faucet answers the moment it has
+-- accepted the request, not when the funds are spendable — Solana hands back a
+-- signature and confirms it a second or so later — so a balance read fired the
+-- instant the airdrop returns shows the number that was already there, and the
+-- animation counts from a value to itself. Hence `FAUCET_SETTLE` and the
+-- retries: the wallet waits, asks, and asks again a few times before accepting
+-- that what is there is what arrived.
+--
+-- ## Why some networks have a button that cannot be pressed
+--
+-- Only Solana's clusters answer a faucet request over the endpoint the balance
+-- came from. Every other faucet in the table is a web page with a captcha,
+-- built precisely so that a program cannot drain it, and pretending otherwise
+-- would be a button that fails every single time. Those networks get the
+-- address of the page instead — which is the answer, just one a person has to
+-- carry to a browser. `Model:faucet_is_automatic` is what the view branches on.
+
+--- How much to ask for, in whole tokens.
+---
+--- One, not the two Solana's RPC will cap a single request at: a devnet faucet
+--- is a shared thing and this button is pressable as often as somebody likes.
+Model.FAUCET_AMOUNT = "1"
+
+--- How long to let the money land before asking what arrived.
+---
+--- A faucet answers when it has accepted the request, not when the funds are
+--- spendable. Reading the balance straight back gives the number that was
+--- already there, and an animation that counts from a value to itself is a
+--- worse outcome than a spinner: it says, convincingly, that nothing happened.
+Model.FAUCET_SETTLE = 1.5
+
+--- How many times to ask before taking what is there as the answer.
+Model.FAUCET_TRIES = 4
+
+--- And how long to wait between those asks.
+Model.FAUCET_GAP = 2.0
+
+--- Where this network's faucet is, or nil where there is none.
+function Model:faucet_url()
+  local url = self.info and self.info.faucet
+  if type(url) ~= "string" or url == "" then return nil end
+  return url
+end
+
+--- Whether the wallet can ask that faucet itself, rather than sending a person
+--- to a web form. The library answers this; see `Network::faucet_is_callable`.
+function Model:faucet_is_automatic()
+  return self.info ~= nil and self.info.faucet_automatic == true
+end
+
+--- Where a block explorer shows one wallet.
+---
+--- The link is the library's, not this file's: Solana's explorer carries its
+--- cluster in a query string, so a link built by appending `/address/…` to the
+--- base URL points at mainnet whatever address it is given — which loads, shows
+--- nothing, and reads as an empty wallet. `account list` hands each row the
+--- link for the network its own chain is on.
+---
+--- `index` is a row of the wallet list; nil means whichever row is selected.
+function Model:explorer_link(index)
+  local account = self.wallets[index or self.selected]
+  if not account then return nil end
+  local link = account.explorer
+  if type(link) ~= "string" or link == "" then return nil end
+  return link, account
+end
+
+--- Whether a faucet panel is on screen. It is modal like the other two.
+function Model:faucet_showing()
+  return self.faucet ~= nil
+end
+
+--- Close it, whatever it was showing.
+function Model:dismiss_faucet()
+  if not self.faucet then return false end
+  self.faucet = nil
+  self:emit("faucet_closed")
+  return true
+end
+
+--- The state a run starts in, so the three ways of starting one agree.
+function Model:_faucet_panel(phase, extra)
+  local asset = self:asset()
+  local account = self.wallets[self.selected]
+  local panel = {
+    phase = phase,
+    network = self.info and self.info.network or "?",
+    symbol = self.info and self.info.symbol or asset.symbol or "",
+    address = self.active,
+    label = self:active_label(),
+    url = self:faucet_url(),
+    automatic = self:faucet_is_automatic(),
+    amount = Model.FAUCET_AMOUNT,
+    before = nil,
+    after = nil,
+    tries = Model.FAUCET_TRIES,
+    wait = 0,
+  }
+  -- The card on screen when there is no active account at all, so the panel
+  -- still names an address rather than a blank.
+  if not panel.address and account then
+    panel.address, panel.label = account.address, account.label
+  end
+  for key, value in pairs(extra or {}) do panel[key] = value end
+  self.faucet = panel
+  return panel
+end
+
+--- Ask this network for money, into the wallet being spent from.
+---
+--- Deliberately the *active* wallet and not the selected one. A faucet pays
+--- whoever it is told to, and the wallet the window is aimed at is the one
+--- whose balance every other screen is showing — funding a card somebody had
+--- merely scrolled past would leave the balance on screen unchanged and the
+--- money somewhere they were not looking.
+function Model:request_faucet()
+  if self.faucet then return false end
+  if self:busy() then
+    return self:fail({ code = "usage", message = "the node is already being asked something" })
+  end
+  if #self.wallets == 0 then
+    return self:fail({ code = "no_active_account", message = "create a wallet first" })
+  end
+
+  local url = self:faucet_url()
+  if not url then
+    -- A mainnet. Nobody gives its coin away, and saying so is the whole
+    -- answer — there is no page to send anyone to.
+    return self:fail({
+      code = "usage",
+      message = ("%s is a mainnet — nobody gives its coin away")
+        :format(self.info and self.info.network or "this network"),
+    })
+  end
+
+  if not self:faucet_is_automatic() then
+    -- A web form with a captcha on it. The wallet cannot answer a captcha, and
+    -- a button that pretends to try is worse than one that hands over the
+    -- address — so the panel opens on the link, and the view copies it.
+    self:_faucet_panel("manual")
+    self:say(("%s hands out %s from a web page"):format(
+      self.faucet.network, self.faucet.symbol))
+    self:emit("faucet_manual")
+    return true
+  end
+
+  local panel = self:_faucet_panel("reading")
+  self:say("Reading the balance before asking…", "busy")
+  self:submit({ argv = { "balance" } }, function(envelope)
+    -- Gone, because the panel was closed while the read was in flight.
+    if self.faucet ~= panel then return end
+    local data = unwrap(envelope)
+    -- A balance that cannot be read is not a reason to refuse the money. The
+    -- panel simply has no "before" to count from, and says so.
+    panel.before = data and tonumber(data.balance) or nil
+    self:_ask_the_faucet(panel)
+  end)
+  return true
+end
+
+--- The middle of a run: the request itself.
+function Model:_ask_the_faucet(panel)
+  panel.phase = "asking"
+  self:say(("Asking %s for %s %s…"):format(panel.network, panel.amount, panel.symbol), "busy")
+  self:submit({
+    argv = { "airdrop", "--amount", panel.amount },
+  }, function(envelope)
+    if self.faucet ~= panel then return end
+    local data, err = unwrap(envelope)
+    if not data then
+      panel.phase = "failed"
+      panel.error = err
+      -- The status line carries it too, because the panel can be dismissed
+      -- and the reason should outlive it.
+      self:say(err.message or "the faucet said no", "error")
+      self:emit("faucet_failed")
+      return
+    end
+    panel.id = data.id
+    panel.phase = "waiting"
+    panel.wait = Model.FAUCET_SETTLE
+    self:say("The faucet said yes — waiting for it to land…", "busy")
+    self:emit("faucet_asked")
+  end)
+  return true
+end
+
+--- Move a waiting run along. Called once a frame with the frame's own dt.
+---
+--- A clock, in the file that holds the decisions rather than in the one that
+--- draws them: *when to ask again* is a fact about the run, and the tests drive
+--- it here with a dt they choose.
+function Model:tick(dt)
+  local panel = self.faucet
+  if not panel or panel.phase ~= "waiting" then return false end
+  if self:busy() then return false end
+
+  panel.wait = panel.wait - (dt or 0)
+  if panel.wait > 0 then return false end
+  panel.wait = Model.FAUCET_GAP
+  panel.tries = panel.tries - 1
+
+  local last = panel.tries <= 0
+  self:submit({ argv = { "balance" } }, function(envelope)
+    if self.faucet ~= panel then return end
+    local data = unwrap(envelope)
+    local after = data and tonumber(data.balance) or nil
+    if data then
+      -- The window's own balance moves with it, so the card behind the panel
+      -- is not still showing the old number when the panel closes.
+      self.balance = data
+    end
+
+    -- More than there was, or out of patience. Either way this is the number,
+    -- and `landed` is what the view celebrates.
+    if after and panel.before and after > panel.before then
+      panel.after = after
+      panel.phase = "landed"
+      self:say(("%s %s arrived"):format(
+        Model.format_amount(after - panel.before), panel.symbol))
+      self:emit("faucet_landed")
+    elseif last then
+      panel.after = after
+      -- Accepted and yet nothing more is there. Honest about which of the two
+      -- it is: the faucet did say yes, and a devnet can be slow enough that
+      -- the money turns up after this panel has been closed.
+      panel.phase = "slow"
+      self:say(panel.before
+        and "The faucet said yes; nothing has arrived yet"
+        or "The faucet said yes; the balance would not read", "error")
+      self:emit("faucet_slow")
+    end
+  end)
+  return true
+end
+
+--- Play the arrival, with nothing moved and nothing claimed.
+---
+--- The reason this exists: on ten of the twelve networks the wallet cannot ask
+--- the faucet at all, so the one moment in this program worth watching was
+--- reachable only by being on Solana and being lucky. That is a poor reason to
+--- hide it.
+---
+--- Every number in it is made up, and the panel says so in as many words —
+--- a celebration that could be mistaken for money arriving would be the one
+--- animation in this wallet that lies.
+function Model:demo_faucet()
+  local panel = self:_faucet_panel("demo", {
+    before = 12.5,
+    after = 13.5,
+    amount = "1",
+    demo = true,
+  })
+  panel.symbol = panel.symbol ~= "" and panel.symbol or "COIN"
+  self:say("Showing what an arrival looks like — nothing moved")
+  self:emit("faucet_landed")
+  return true
+end
+
+--- Four places, with the trailing zeros taken off. The card draws its balance
+--- this way and the panel has to agree with it, so the rule is written once.
+function Model.format_amount(value)
+  local text = ("%.4f"):format(tonumber(value) or 0)
+  text = text:gsub("0+$", ""):gsub("%.$", "")
+  return text
 end
 
 -- --------------------------------------------------------------- text entry

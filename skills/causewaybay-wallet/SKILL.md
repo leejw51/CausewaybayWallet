@@ -131,6 +131,36 @@ cwbwallet --json network set-rpc testnet https://my-node:8545  # empty URL resto
 
 Aliases `testnet` and `mainnet` work everywhere a network is named.
 
+### Getting a test wallet funded
+
+Every test network carries the address of the faucet that funds it, on the row:
+
+```bash
+cwbwallet --json network list faucet     # every network that gives money away
+cwbwallet --json info                    # `faucet` and `faucet_automatic` for the current one
+cwbwallet --json -n solana-devnet airdrop --amount 1
+```
+
+`faucet_automatic` is the field to branch on, and it is false on most rows.
+Only Solana's clusters answer a faucet request over the endpoint the balance
+came from; every other faucet is a web page with a captcha, so `airdrop` there
+refuses and names the page. **Give the user that address rather than retrying**
+— nothing about the request will succeed on a second attempt. Where it does
+work it is rate limited, and a refusal saying the faucet has run dry is a
+normal answer.
+
+### Explorer links
+
+Every account carries one, for the network its own chain is on:
+
+```bash
+cwbwallet --json account list | jq -r '.data[].explorer'
+```
+
+Use it rather than assembling a link from `explorer`: that field is a base URL,
+and Solana keeps its cluster in a query string, so appending `/address/<addr>`
+to it produces a mainnet link that loads and shows an empty account.
+
 ## Reading the chain
 
 ```bash
