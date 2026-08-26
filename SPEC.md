@@ -173,21 +173,59 @@ chain too. Each chain's first row is its default.
 
 | key                | chain      | chain id | symbol | decimals | tags                             | endpoint                                             |
 | ------------------ | ---------- | -------- | ------ | -------- | -------------------------------- | ---------------------------------------------------- |
-| `cronos-testnet`   | `evm`      | 338      | TCRO   | 18       | evm testnet smart-contracts erc20 | `https://evm-t3.cronos.org`                           |
+| `cronos-testnet`   | `evm`      | 338      | TCRO   | 18       | evm testnet faucet smart-contracts erc20 | `https://evm-t3.cronos.org`                           |
 | `cronos-mainnet`   | `evm`      | 25       | CRO    | 18       | evm smart-contracts erc20        | `https://evm.cronos.org`                              |
 | `solana-devnet`    | `solana`   | —        | SOL    | 9        | svm testnet faucet spl           | `https://api.devnet.solana.com`                       |
 | `solana-testnet`   | `solana`   | —        | SOL    | 9        | svm testnet faucet spl           | `https://api.testnet.solana.com`                      |
 | `solana-mainnet`   | `solana`   | —        | SOL    | 9        | svm spl                          | `https://api.mainnet-beta.solana.com`                 |
-| `cardano-preprod`  | `cardano`  | —        | tADA   | 6        | utxo testnet native-assets       | `https://preprod.koios.rest/api/v1`                   |
-| `cardano-preview`  | `cardano`  | —        | tADA   | 6        | utxo testnet native-assets       | `https://preview.koios.rest/api/v1`                   |
+| `cardano-preprod`  | `cardano`  | —        | tADA   | 6        | utxo testnet faucet native-assets | `https://preprod.koios.rest/api/v1`                   |
+| `cardano-preview`  | `cardano`  | —        | tADA   | 6        | utxo testnet faucet native-assets | `https://preview.koios.rest/api/v1`                   |
 | `cardano-mainnet`  | `cardano`  | —        | ADA    | 6        | utxo native-assets               | `https://api.koios.rest/api/v1`                       |
-| `midnight-preview` | `midnight` | —        | NIGHT  | 6        | privacy testnet shielded zk      | `https://indexer.preview.midnight.network/api/v4/graphql` |
-| `midnight-devnet`  | `midnight` | —        | NIGHT  | 6        | privacy testnet shielded zk      | `https://indexer.devnet.midnight.network/api/v4/graphql`  |
-| `ecash-testnet`    | `ecash`    | —        | tXEC   | 2        | utxo testnet bitcoin-fork        | `https://chronik-testnet.fabien.cash`                |
+| `midnight-preview` | `midnight` | —        | NIGHT  | 6        | privacy testnet faucet shielded zk | `https://indexer.preview.midnight.network/api/v4/graphql` |
+| `midnight-devnet`  | `midnight` | —        | NIGHT  | 6        | privacy testnet faucet shielded zk | `https://indexer.devnet.midnight.network/api/v4/graphql`  |
+| `ecash-testnet`    | `ecash`    | —        | tXEC   | 2        | utxo testnet faucet bitcoin-fork | `https://chronik-testnet.fabien.cash`                |
 | `ecash-mainnet`    | `ecash`    | —        | XEC    | 2        | utxo bitcoin-fork                | `https://chronik.e.cash`                             |
 
 Only EVM networks have a chain id; it is the EIP-155 replay-protection number
 and is omitted rather than faked for the others.
+
+### Faucets
+
+Every test network carries the address of the faucet that funds it, and no
+mainnet does. `network list`, `network show` and `info` all report it as
+`faucet`, alongside `faucet_automatic` — whether the wallet can make the
+request itself, which is a different question with a different answer.
+
+| network            | faucet                                                    | `airdrop` works |
+| ------------------ | --------------------------------------------------------- | --------------- |
+| `cronos-testnet`   | `https://faucet.cronos.com/`                               | no              |
+| `solana-devnet`    | `https://faucet.solana.com/`                               | **yes**         |
+| `solana-testnet`   | `https://faucet.solana.com/`                               | **yes**         |
+| `cardano-preprod`  | `https://docs.cardano.org/cardano-testnets/tools/faucet`   | no              |
+| `cardano-preview`  | `https://docs.cardano.org/cardano-testnets/tools/faucet`   | no              |
+| `midnight-preview` | `https://midnight-tmnight-preview.nethermind.dev/`         | no              |
+| `midnight-devnet`  | `https://midnight.network/test-faucet`                     | no              |
+| `ecash-testnet`    | `https://texplorer.e.cash/testnet-faucet`                  | no              |
+
+Only Solana's clusters answer a faucet request over the endpoint the balance
+came from — `requestAirdrop`, on the same JSON-RPC. Every other faucet here is
+a web form with a captcha, built precisely so that a program cannot drain it,
+so `airdrop` on those networks refuses *by naming the page* rather than making
+a request that was never going to succeed. Handing over the address is the
+whole of what a wallet can honestly do there.
+
+`airdrop` is rate limited wherever it works, and the public devnet endpoint
+says so plainly when it has run dry. That refusal is a normal outcome, not a
+fault.
+
+### Explorer links
+
+`network.explorer` is a base URL, and assembling a link from it is not a matter
+of appending a path: Solana carries its cluster in a query string, so
+`https://explorer.solana.com/?cluster=devnet` plus `/address/<addr>` gives a
+*mainnet* link that loads and shows an empty account. So the wallet assembles
+them. `account list` and `account show` carry `explorer` for the address, and
+`balance`, `tx` and `airdrop` carry one for what they are about.
 
 **XEC has two decimal places, not Bitcoin's eight.** eCash redenominated at its
 2021 rebrand, so one XEC is a hundred satoshis where one BCH was a hundred

@@ -366,6 +366,123 @@ fn networks_can_be_listed_and_switched() {
 }
 
 #[test]
+fn every_test_network_says_where_its_faucet_is() {
+    // The faucet address is the one thing a person needs on arriving at an
+    // empty test wallet, and it is the one thing they cannot derive from
+    // anything else on the row. So it travels with the row.
+    let wallet = Wallet::new();
+    for row in wallet.json(&["network", "list"]).as_array().unwrap() {
+        let key = row["key"].as_str().unwrap();
+        if row["testnet"].as_bool().unwrap() {
+            let url = row["faucet"]
+                .as_str()
+                .unwrap_or_else(|| panic!("{key} names no faucet"));
+            assert!(url.starts_with("https://"), "{key}: {url}");
+        } else {
+            assert!(row["faucet"].is_null(), "{key} claims a faucet");
+            assert_eq!(row["faucet_automatic"], false, "{key}");
+        }
+    }
+
+    // And whether the wallet can ask on its own, which is a different
+    // question: only Solana's clusters answer a faucet request over the same
+    // endpoint the balance came from.
+    let listed = wallet.json(&["network", "list"]);
+    let automatic: Vec<&str> = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|n| n["faucet_automatic"].as_bool().unwrap())
+        .map(|n| n["key"].as_str().unwrap())
+        .collect();
+    assert_eq!(automatic, ["solana-devnet", "solana-testnet"]);
+}
+
+#[test]
+fn the_handshake_carries_the_faucet_and_the_explorer() {
+    // `info` is the one call a front end makes on opening, so what it can do
+    // about an empty account should not cost a second round trip.
+    let wallet = Wallet::new();
+    let info = wallet.json(&["info"]);
+    assert_eq!(info["network"], "cronos-testnet");
+    assert_eq!(info["testnet"], true);
+    assert_eq!(info["explorer"], "https://explorer.cronos.org/testnet");
+    assert_eq!(info["faucet"], "https://faucet.cronos.com/");
+    // Cronos's faucet is a web form with a captcha on it.
+    assert_eq!(info["faucet_automatic"], false);
+
+    let solana = wallet.json(&["-n", "solana-devnet", "info"]);
+    assert_eq!(solana["faucet_automatic"], true);
+
+    let mainnet = wallet.json(&["-n", "cronos-mainnet", "info"]);
+    assert!(mainnet["faucet"].is_null());
+    assert_eq!(mainnet["testnet"], false);
+}
+
+#[test]
+fn an_account_carries_the_link_that_looks_it_up() {
+    let wallet = Wallet::new();
+    let created = wallet.json(&["account", "new", "--label", "alpha"]);
+    let address = created["address"].as_str().unwrap().to_string();
+
+    let listed = wallet.json(&["account", "list"]);
+    let row = &listed.as_array().unwrap()[0];
+    assert_eq!(
+        row["explorer"],
+        format!("https://explorer.cronos.org/testnet/address/{address}")
+    );
+    assert_eq!(
+        wallet.json(&["account", "show"])["explorer"],
+        row["explorer"]
+    );
+}
+
+#[test]
+fn solanas_explorer_link_keeps_its_cluster() {
+    // The link is assembled where the table is, because appending
+    // `/address/<addr>` to `https://explorer.solana.com/?cluster=devnet`
+    // produces a mainnet link that loads and shows an empty account.
+    let wallet = Wallet::new();
+    wallet.json(&["account", "new", "--every-chain", "--label", "alpha"]);
+    wallet.json(&["network", "use", "solana-devnet"]);
+    let listed = wallet.json(&["account", "list"]);
+    // Its own chain's row, not the first one: a listing spans every chain,
+    // and each row's link follows the network *that* chain is pointed at.
+    let row = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["chain"] == "solana")
+        .expect("--every-chain derives a Solana account");
+    let link = row["explorer"].as_str().unwrap();
+    assert!(
+        link.starts_with("https://explorer.solana.com/address/"),
+        "{link}"
+    );
+    assert!(link.ends_with("?cluster=devnet"), "{link}");
+}
+
+#[test]
+fn an_airdrop_nobody_can_ask_for_names_the_page_that_gives_it() {
+    // Refused before a request is made, and refused with the address of the
+    // thing that would have worked. "no faucet" on its own is a dead end.
+    let wallet = Wallet::new();
+    wallet.json(&["account", "new", "--label", "alpha"]);
+    wallet
+        .cmd(&["airdrop"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("https://faucet.cronos.com/"));
+
+    wallet.json(&["network", "use", "cronos-mainnet"]);
+    wallet
+        .cmd(&["airdrop"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("mainnet"));
+}
+
+#[test]
 fn an_unknown_network_is_rejected() {
     let wallet = Wallet::new();
     assert_eq!(

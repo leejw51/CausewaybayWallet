@@ -244,7 +244,35 @@ fn status_error(url: &str, status: u16, body: &str) -> crate::error::Error {
     if body.to_lowercase().contains("insufficient funds") {
         return error::insufficient_funds(body.to_string());
     }
+    // A JSON-RPC node that refuses with an HTTP status usually explains itself
+    // in the body, in the same shape a 200 would have carried — Solana's
+    // exhausted faucet answers 429 with "You've either reached your airdrop
+    // limit today or the airdrop faucet has run dry", which is the whole
+    // answer, wrapped in an envelope nobody needs to read.
+    //
+    // So the sentence is preferred to the envelope where there is one. It
+    // matters more than it looks: this message is what a GUI puts in front of
+    // somebody, and `{"jsonrpc":"2.0","error":{"code": 429,"message":"…` is
+    // eight lines of punctuation with the answer somewhere inside it.
+    if let Some(said) = json_rpc_message(body) {
+        return error::rpc_error(format!("{url} returned HTTP {status}: {said}"));
+    }
     error::rpc_error(format!("{url} returned HTTP {status}: {}", excerpt(body)))
+}
+
+/// The `error.message` of a JSON-RPC failure body, when the body is one.
+///
+/// Nothing is assumed: a body that does not parse, or parses to something
+/// without that field, falls through to the excerpt of the raw text — which is
+/// the behaviour every reply had before, and the right one for a node that
+/// answers with HTML or with nothing.
+fn json_rpc_message(body: &str) -> Option<String> {
+    let value: Value = serde_json::from_str(body).ok()?;
+    let said = value.pointer("/error/message")?.as_str()?.trim();
+    if said.is_empty() {
+        return None;
+    }
+    Some(excerpt(said))
 }
 
 /// Enough of a reply to diagnose it, never enough to bury the message.
@@ -266,6 +294,28 @@ fn next_id() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_refusal_that_explains_itself_is_quoted_rather_than_its_envelope() {
+        // Solana's exhausted faucet, verbatim. The sentence is the answer; the
+        // JSON around it is eight lines of punctuation in a GUI panel.
+        let body = r#"{"jsonrpc":"2.0","error":{"code": 429,"message":"You've either reached your airdrop limit today or the airdrop faucet has run dry."}, "id": 1 }"#;
+        let error = status_error("https://api.devnet.solana.com", 429, body);
+        assert!(
+            error.message.contains("airdrop faucet has run dry"),
+            "{}",
+            error.message
+        );
+        assert!(!error.message.contains("jsonrpc"), "{}", error.message);
+    }
+
+    #[test]
+    fn a_body_that_is_not_json_rpc_is_still_shown_whole() {
+        // The fallback has to stay: a node behind a proxy answers with HTML,
+        // and an excerpt of that is far better than nothing at all.
+        let error = status_error("https://node.example", 502, "<html>bad gateway</html>");
+        assert!(error.message.contains("bad gateway"), "{}", error.message);
+    }
 
     #[test]
     fn request_ids_advance_so_replies_can_be_matched() {

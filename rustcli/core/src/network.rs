@@ -34,6 +34,21 @@ pub struct Network {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_submit_endpoint: Option<&'static str>,
     pub explorer: &'static str,
+    /// Where a person goes to be given money on this network, when anyone
+    /// gives it away. `None` on every mainnet, because nobody does.
+    ///
+    /// Written down here rather than looked up, and the two halves of that are
+    /// worth separating. A faucet *page* is a URL and nothing more — this
+    /// field. Whether the wallet can ask for the funds itself is a different
+    /// question, answered by [`Self::faucet_is_callable`]: Solana's clusters
+    /// answer `requestAirdrop` over the same JSON-RPC the balance came from,
+    /// and every other faucet in this table is a web form with a captcha on
+    /// it, which is a thing a person does and not a thing a wallet does.
+    ///
+    /// So the field is not "can I have some money": it is "here is where the
+    /// money is", which is the answer a front end can always act on — copy it,
+    /// open it, print it — even where it cannot make the request.
+    pub faucet: Option<&'static str>,
     pub testnet: bool,
     /// What this network is, beyond what its name already says.
     ///
@@ -80,8 +95,9 @@ pub const CRONOS_TESTNET: Network = Network {
     default_endpoint: "https://evm-t3.cronos.org",
     default_submit_endpoint: None,
     explorer: "https://explorer.cronos.org/testnet",
+    faucet: Some("https://faucet.cronos.com/"),
     testnet: true,
-    tags: &["evm", "testnet", "smart-contracts", "erc20"],
+    tags: &["evm", "testnet", "faucet", "smart-contracts", "erc20"],
     // A plain transfer at Cronos's 5000 gwei costs about 0.105 CRO; this is
     // room for a 5,000,000-gas contract call at that price.
     max_fee: 25_000_000_000_000_000_000,
@@ -97,6 +113,7 @@ pub const CRONOS_MAINNET: Network = Network {
     default_endpoint: "https://evm.cronos.org",
     default_submit_endpoint: None,
     explorer: "https://explorer.cronos.org",
+    faucet: None,
     testnet: false,
     tags: &["evm", "smart-contracts", "erc20"],
     max_fee: 25_000_000_000_000_000_000,
@@ -112,6 +129,7 @@ pub const SOLANA_DEVNET: Network = Network {
     default_endpoint: "https://api.devnet.solana.com",
     default_submit_endpoint: None,
     explorer: "https://explorer.solana.com/?cluster=devnet",
+    faucet: Some("https://faucet.solana.com/"),
     testnet: true,
     tags: &["svm", "testnet", "faucet", "spl"],
     // Solana charges 5000 lamports per signature, and this wallet signs once.
@@ -128,6 +146,7 @@ pub const SOLANA_TESTNET: Network = Network {
     default_endpoint: "https://api.testnet.solana.com",
     default_submit_endpoint: None,
     explorer: "https://explorer.solana.com/?cluster=testnet",
+    faucet: Some("https://faucet.solana.com/"),
     testnet: true,
     tags: &["svm", "testnet", "faucet", "spl"],
     max_fee: 10_000_000,
@@ -143,6 +162,7 @@ pub const SOLANA_MAINNET: Network = Network {
     default_endpoint: "https://api.mainnet-beta.solana.com",
     default_submit_endpoint: None,
     explorer: "https://explorer.solana.com",
+    faucet: None,
     testnet: false,
     tags: &["svm", "spl"],
     max_fee: 10_000_000,
@@ -158,8 +178,9 @@ pub const CARDANO_PREPROD: Network = Network {
     default_endpoint: "https://preprod.koios.rest/api/v1",
     default_submit_endpoint: None,
     explorer: "https://preprod.cardanoscan.io",
+    faucet: Some("https://docs.cardano.org/cardano-testnets/tools/faucet"),
     testnet: true,
-    tags: &["utxo", "testnet", "native-assets"],
+    tags: &["utxo", "testnet", "faucet", "native-assets"],
     // The protocol's own worst case is min_fee_a x 16384 + min_fee_b, about
     // 0.88 ADA at today's parameters; a real transfer costs about 0.17.
     max_fee: 5_000_000,
@@ -175,8 +196,9 @@ pub const CARDANO_PREVIEW: Network = Network {
     default_endpoint: "https://preview.koios.rest/api/v1",
     default_submit_endpoint: None,
     explorer: "https://preview.cardanoscan.io",
+    faucet: Some("https://docs.cardano.org/cardano-testnets/tools/faucet"),
     testnet: true,
-    tags: &["utxo", "testnet", "native-assets"],
+    tags: &["utxo", "testnet", "faucet", "native-assets"],
     max_fee: 5_000_000,
 };
 
@@ -190,6 +212,7 @@ pub const CARDANO_MAINNET: Network = Network {
     default_endpoint: "https://api.koios.rest/api/v1",
     default_submit_endpoint: None,
     explorer: "https://cardanoscan.io",
+    faucet: None,
     testnet: false,
     tags: &["utxo", "native-assets"],
     max_fee: 5_000_000,
@@ -205,8 +228,9 @@ pub const MIDNIGHT_PREVIEW: Network = Network {
     default_endpoint: "https://indexer.preview.midnight.network/api/v4/graphql",
     default_submit_endpoint: Some("https://rpc.preview.midnight.network"),
     explorer: "https://preview.midnightexplorer.com",
+    faucet: Some("https://midnight-tmnight-preview.nethermind.dev/"),
     testnet: true,
-    tags: &["privacy", "testnet", "shielded", "zk"],
+    tags: &["privacy", "testnet", "faucet", "shielded", "zk"],
     // Counted in DUST, not NIGHT: 100 DUST against a transfer's usual 0.82.
     max_fee: 100_000_000_000_000_000,
 };
@@ -221,8 +245,9 @@ pub const MIDNIGHT_DEVNET: Network = Network {
     default_endpoint: "https://indexer.devnet.midnight.network/api/v4/graphql",
     default_submit_endpoint: Some("https://rpc.devnet.midnight.network"),
     explorer: "https://devnet.midnightexplorer.com",
+    faucet: Some("https://midnight.network/test-faucet"),
     testnet: true,
-    tags: &["privacy", "testnet", "shielded", "zk"],
+    tags: &["privacy", "testnet", "faucet", "shielded", "zk"],
     max_fee: 100_000_000_000_000_000,
 };
 
@@ -240,8 +265,9 @@ pub const ECASH_TESTNET: Network = Network {
     default_endpoint: "https://chronik-testnet.fabien.cash",
     default_submit_endpoint: None,
     explorer: "https://texplorer.e.cash",
+    faucet: Some("https://texplorer.e.cash/testnet-faucet"),
     testnet: true,
-    tags: &["utxo", "testnet", "bitcoin-fork"],
+    tags: &["utxo", "testnet", "faucet", "bitcoin-fork"],
     // A plain transfer is about 226 bytes at eCash's flat 1 satoshi a byte.
     // This is room for a sweep of some four hundred unspent outputs, and it
     // is 1,000 XEC.
@@ -258,6 +284,7 @@ pub const ECASH_MAINNET: Network = Network {
     default_endpoint: "https://chronik.e.cash",
     default_submit_endpoint: None,
     explorer: "https://explorer.e.cash",
+    faucet: None,
     testnet: false,
     tags: &["utxo", "bitcoin-fork"],
     max_fee: 100_000,
@@ -498,6 +525,24 @@ impl Network {
         self.explorer_url("tx", id)
     }
 
+    /// Whether the wallet can ask this network's faucet itself.
+    ///
+    /// Two things have to be true, and neither implies the other. The chain
+    /// has to answer a faucet request over its ordinary endpoint — Solana
+    /// does, through `requestAirdrop`, and nothing else here does — and the
+    /// network has to be one that gives money away, which no mainnet is.
+    ///
+    /// Everything else in the table has a faucet a *person* uses: a page, a
+    /// form and a captcha, deliberately built so that a program cannot drain
+    /// it. So this is false for them, and [`Self::faucet`] is still the answer
+    /// to give — the front end offers the link rather than a button that would
+    /// fail every time it was pressed.
+    pub fn faucet_is_callable(&self) -> bool {
+        self.testnet
+            && self.faucet.is_some()
+            && crate::chain::chain(self.chain).capabilities().faucet
+    }
+
     /// Explorer link for an address.
     pub fn address_url(&self, address: &str) -> String {
         let kind = match self.chain {
@@ -617,6 +662,52 @@ mod tests {
         for n in ALL {
             assert!(!n.tags.is_empty(), "{} carries no tags", n.key);
         }
+    }
+
+    #[test]
+    fn every_testnet_names_a_faucet_and_no_mainnet_does() {
+        // The table is where a faucet address is written down, so the table is
+        // where "somebody added a network and forgot the faucet" has to be
+        // caught. A testnet nobody can fund is a testnet nobody can use.
+        for n in ALL {
+            assert_eq!(
+                n.faucet.is_some(),
+                n.testnet,
+                "{} has the wrong faucet shape",
+                n.key
+            );
+            if let Some(url) = n.faucet {
+                assert!(url.starts_with("https://"), "{} faucet is not https", n.key);
+            }
+        }
+    }
+
+    #[test]
+    fn the_faucet_tag_marks_exactly_the_rows_that_have_one() {
+        // Someone searching `faucet` is asking "where can I be given money",
+        // and a row that answers yes in one field and no in the other answers
+        // that question differently depending on which half is read.
+        for n in ALL {
+            assert_eq!(
+                n.tags.contains(&"faucet"),
+                n.faucet.is_some(),
+                "{} disagrees with itself about having a faucet",
+                n.key
+            );
+        }
+    }
+
+    #[test]
+    fn only_solanas_test_clusters_can_be_asked_by_the_wallet_itself() {
+        // Everything else is a web form with a captcha. Pinned because the
+        // difference decides whether a front end draws a button or a link, and
+        // a button that cannot work is worse than a link that can.
+        let callable: Vec<&str> = ALL
+            .iter()
+            .filter(|n| n.faucet_is_callable())
+            .map(|n| n.key)
+            .collect();
+        assert_eq!(callable, vec!["solana-devnet", "solana-testnet"]);
     }
 
     #[test]

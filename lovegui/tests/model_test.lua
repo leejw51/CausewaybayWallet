@@ -1446,6 +1446,222 @@ t.suite("model / events", function()
   end)
 end)
 
+t.suite("model / the faucet", function()
+  --- A worker that answers whatever it is asked, by command, when pumped.
+  ---
+  --- Scripted rather than live: every faucet in the table is somebody else's
+  --- server, and a test that spent real devnet SOL to check an animation would
+  --- be a test that fails when a faucet is rate limited.
+  local function scripted(replies)
+    local queue, answers = {}, {}
+    local jobs = {
+      submit = function(request) queue[#queue + 1] = request end,
+      poll = function()
+        local answer = table.remove(answers, 1)
+        if not answer then return nil end
+        return answer.id, answer.envelope
+      end,
+    }
+    --- Answer everything outstanding, then deliver it.
+    function jobs.settle()
+      while queue[1] do
+        local request = table.remove(queue, 1)
+        local name = request.argv[1]
+        local reply = replies[name]
+        if type(reply) == "function" then reply = reply() end
+        answers[#answers + 1] = { id = request.id, envelope = reply }
+      end
+    end
+    jobs.queue = queue
+    return jobs
+  end
+
+  local function funded_model(jobs, network)
+    local wallet = support.wallet()
+    wallet:new_account({ label = "alpha", every_chain = true })
+    local model = Model.new(wallet, jobs)
+    if network then model:switch_network(network) end
+    return model
+  end
+
+  t.case("a mainnet is refused without a panel, because there is no page", function()
+    local model = funded_model(nil, "cronos-mainnet")
+    t.equal(model:faucet_url(), nil)
+    t.equal(model:request_faucet(), false)
+    t.equal(model:faucet_showing(), false)
+    t.contains(model.status.text, "mainnet")
+  end)
+
+  t.case("a web faucet opens on its address rather than pretending to ask", function()
+    -- Cronos hands out TCRO from a page with a captcha on it. The wallet
+    -- cannot answer a captcha, and the honest button hands over the address.
+    local jobs = scripted({})
+    local model = funded_model(jobs, "cronos-testnet")
+    t.equal(model:faucet_is_automatic(), false)
+    t.ok(model:request_faucet())
+    t.equal(model.faucet.phase, "manual")
+    t.contains(model.faucet.url, "https://")
+    t.equal(#jobs.queue, 0, "nothing should have been asked of the node")
+  end)
+
+  t.case("solana's clusters are asked directly, and the arrival is the difference",
+    function()
+      local balances = { "0", "1" }
+      local jobs = scripted({
+        balance = function()
+          local value = table.remove(balances, 1) or "1"
+          return { ok = true, data = { balance = value, symbol = "SOL" } }
+        end,
+        airdrop = { ok = true, data = { id = "5xSig", amount = "1" } },
+      })
+      local model = funded_model(jobs, "solana-devnet")
+      t.equal(model:faucet_is_automatic(), true)
+
+      t.ok(model:request_faucet())
+      t.equal(model.faucet.phase, "reading")
+
+      -- The balance before, then the request, then the wait.
+      jobs.settle(); model:pump()
+      t.equal(model.faucet.before, 0)
+      t.equal(model.faucet.phase, "asking")
+
+      jobs.settle(); model:pump()
+      t.equal(model.faucet.phase, "waiting")
+      t.equal(model.faucet.id, "5xSig")
+
+      -- Nothing is asked until the money has had time to land: a balance read
+      -- fired the instant the airdrop returns shows the number that was
+      -- already there.
+      t.equal(model:tick(0.1), false, "it asked before waiting")
+      t.equal(model:tick(Model.FAUCET_SETTLE), true)
+      jobs.settle(); model:pump()
+
+      t.equal(model.faucet.phase, "landed")
+      t.equal(model.faucet.after, 1)
+      t.equal(model.balance.balance, "1", "the card behind it moves too")
+    end)
+
+  t.case("a faucet that says no leaves the reason on the panel and in the line",
+    function()
+      local jobs = scripted({
+        balance = { ok = true, data = { balance = "0", symbol = "SOL" } },
+        airdrop = { ok = false,
+          error = { code = "rpc_error", message = "airdrop request failed" } },
+      })
+      local model = funded_model(jobs, "solana-devnet")
+      model:request_faucet()
+      jobs.settle(); model:pump()
+      jobs.settle(); model:pump()
+
+      t.equal(model.faucet.phase, "failed")
+      t.equal(model.faucet.error.code, "rpc_error")
+      t.equal(model.status.kind, "error")
+    end)
+
+  t.case("a yes that never lands says so rather than counting to itself", function()
+    -- The failure worth naming: the faucet accepted the request and the money
+    -- has not turned up. Reporting that as an arrival would animate a change
+    -- from a number to the same number, which reads as a bug, not as patience.
+    local jobs = scripted({
+      balance = { ok = true, data = { balance = "0", symbol = "SOL" } },
+      airdrop = { ok = true, data = { id = "5xSig" } },
+    })
+    local model = funded_model(jobs, "solana-devnet")
+    model:request_faucet()
+    jobs.settle(); model:pump()
+    jobs.settle(); model:pump()
+
+    for _ = 1, Model.FAUCET_TRIES do
+      model:tick(Model.FAUCET_GAP + Model.FAUCET_SETTLE)
+      jobs.settle(); model:pump()
+    end
+    t.equal(model.faucet.phase, "slow")
+    t.equal(model.faucet.tries, 0)
+  end)
+
+  t.case("closing it mid-flight leaves the answers with nowhere to land", function()
+    -- The panel is what every callback checks itself against. Without that, a
+    -- balance read still in the air would write into a run that had been
+    -- dismissed, and reopen it.
+    local jobs = scripted({
+      balance = { ok = true, data = { balance = "0", symbol = "SOL" } },
+      airdrop = { ok = true, data = { id = "5xSig" } },
+    })
+    local model = funded_model(jobs, "solana-devnet")
+    model:request_faucet()
+    t.ok(model:dismiss_faucet())
+    jobs.settle(); model:pump()
+    t.equal(model.faucet, nil)
+  end)
+
+  t.case("two runs cannot overlap", function()
+    local jobs = scripted({ balance = { ok = true, data = { balance = "0" } } })
+    local model = funded_model(jobs, "solana-devnet")
+    t.ok(model:request_faucet())
+    t.equal(model:request_faucet(), false)
+  end)
+
+  t.case("the panel is modal, like the other two", function()
+    local jobs = scripted({})
+    local model = funded_model(jobs, "cronos-testnet")
+    t.equal(model:asking(), false)
+    model:request_faucet()
+    t.equal(model:asking(), true)
+    model:dismiss_faucet()
+    t.equal(model:asking(), false)
+  end)
+
+  t.case("the demo says it is one, and moves nothing", function()
+    -- It exists because ten of the twelve networks cannot be asked at all, so
+    -- the one moment worth watching was otherwise reachable only by being on
+    -- Solana and being lucky. Every number in it is invented, and the flag is
+    -- what lets the panel say so.
+    local model = funded_model(nil, "cronos-testnet")
+    t.ok(model:demo_faucet())
+    t.equal(model.faucet.phase, "demo")
+    t.equal(model.faucet.demo, true)
+    t.ok(model.faucet.after > model.faucet.before)
+    t.equal(model.balance, nil, "nothing was read and nothing moved")
+  end)
+
+  t.case("logging out takes the panel with it", function()
+    local model = funded_model(nil, "cronos-testnet")
+    model:request_faucet()
+    model:logout({})
+    t.equal(model.faucet, nil)
+  end)
+end)
+
+t.suite("model / the explorer", function()
+  t.case("each wallet carries the link that looks it up", function()
+    local model = model_over()
+    model:create("alpha")
+    local link, account = model:explorer_link()
+    t.ok(link, "the library hands one down with every account")
+    t.contains(link, "explorer.cronos.org")
+    t.contains(link, account.address)
+  end)
+
+  t.case("the link follows the network, cluster and all", function()
+    -- The reason this comes from the library rather than being assembled
+    -- here: Solana's explorer carries its cluster in a query string, so
+    -- appending `/address/…` to the base URL gives a mainnet link that loads
+    -- and shows an empty account.
+    local wallet = support.wallet()
+    wallet:new_account({ label = "alpha", every_chain = true })
+    local model = Model.new(wallet, nil)
+    model:switch_network("solana-devnet")
+    local link = model:explorer_link()
+    t.contains(link, "cluster=devnet")
+    t.contains(link, "/address/")
+  end)
+
+  t.case("no wallet is nil rather than a link to nothing", function()
+    local model = model_over()
+    t.equal(model:explorer_link(), nil)
+  end)
+end)
+
 t.suite("model / asynchrony", function()
   t.case("a submitted request is not answered until it is pumped", function()
     -- The shape the worker thread gives the real GUI, faked with a queue.

@@ -459,9 +459,12 @@ end
 
 --- Ask a test network for funds.
 ---
---- Only Solana's devnet and testnet have a faucet this wallet can call; the
---- others say so rather than pretending to try. `opts.address` funds an
---- address other than the active account's, `opts.amount` asks for a size.
+--- Only Solana's devnet and testnet have a faucet this wallet can call. The
+--- others refuse and name the web page that hands the money out instead — the
+--- same address `network current` reports as `faucet` — because those faucets
+--- are forms with captchas on them and no retry will succeed. `opts.address`
+--- funds an address other than the active account's, `opts.amount` asks for a
+--- size.
 function Wallet:airdrop(opts)
   opts = opts or {}
   return self:call(with_flags({ "airdrop" }, opts, { "address", "amount" }), opts)

@@ -298,6 +298,22 @@ impl App {
         }
     }
 
+    /// Where a block explorer shows that account, on the same network the
+    /// listing rendered its address for.
+    ///
+    /// Built here rather than by whoever is drawing the row, because the two
+    /// halves have to agree: Solana's explorer carries its cluster in a query
+    /// string, so a link assembled by appending `/address/<addr>` to the base
+    /// URL points at mainnet whatever address it was given — which is a link
+    /// that loads, shows nothing, and looks like an empty wallet.
+    fn explorer_on_its_own_network(&self, account: &Account) -> String {
+        let network = self
+            .store
+            .network_on(account.chain)
+            .unwrap_or_else(|_| network::default_for(account.chain));
+        network.address_url(&self.address_for(account, &network))
+    }
+
     /// The address a read-only query should use, in the chain's own rendering.
     fn pick_address(&self, target: &TargetArgs) -> Result<(String, Option<Account>)> {
         if let Some(raw) = &target.address {
@@ -549,6 +565,11 @@ impl App {
                     .map(|a| {
                         let mut value = a.public_view();
                         value["address"] = json!(shown(a));
+                        // Beside the address, and for the same network it was
+                        // rendered for. A front end that offers "look this up"
+                        // should not have to know that Solana puts its cluster
+                        // in a query string.
+                        value["explorer"] = json!(self.explorer_on_its_own_network(a));
                         value["active"] = json!(Some(&a.id) == active.as_ref());
                         value
                     })
@@ -592,6 +613,7 @@ impl App {
                 };
                 let here = self.address_here(&account);
                 data["address"] = json!(here);
+                data["explorer"] = json!(self.network.address_url(&here));
                 data["public_key"] = json!(derived.public_key);
                 data["extra"] = derived.extra.clone();
                 if account.chain == ChainId::Evm {
@@ -1169,6 +1191,11 @@ impl App {
                                 self.store.config_get(&n.endpoint_config_key()).ok().flatten().as_deref()
                             ),
                             "explorer": n.explorer,
+                            "faucet": n.faucet,
+                            // Whether the wallet can ask, as opposed to
+                            // whether anyone gives. See
+                            // `Network::faucet_is_callable`.
+                            "faucet_automatic": n.faucet_is_callable(),
                             "testnet": n.testnet,
                             "tags": n.tags,
                             "tokens": crate::token::for_network(n.key)
@@ -1276,6 +1303,8 @@ impl App {
                         "rpc": endpoint,
                         "submit_endpoint": submit,
                         "explorer": n.explorer, "testnet": n.testnet,
+                        "faucet": n.faucet,
+                        "faucet_automatic": n.faucet_is_callable(),
                     }),
                     output::table(&rows),
                 ))
@@ -1474,6 +1503,7 @@ impl App {
         Ok(CommandOutput::new(
             json!({
                 "address": address,
+                "explorer": self.network.address_url(&address),
                 "chain": self.chain.as_str(),
                 "account": account.as_ref().map(|a| a.label.clone()),
                 "balance": units.format(balance.native),
@@ -1983,6 +2013,26 @@ impl App {
             }
             None => self.pick_account(None)?.address.clone(),
         };
+        // Refused here, by name, rather than a chain down where the answer is
+        // "this chain has no faucet the wallet can call" and stops.
+        //
+        // The refusal is not the useful part — *where to go instead* is, and
+        // this is the one place that knows both which network was asked and
+        // what its table row says. Every faucet in that table except Solana's
+        // is a web form with a captcha on it, so "I cannot" and "nobody can"
+        // are different answers and only one of them is true.
+        if !self.network.faucet_is_callable() {
+            return Err(match self.network.faucet {
+                Some(url) => error::usage(format!(
+                    "{} has no faucet this wallet can call; ask {url} for {}",
+                    self.network.name, target
+                )),
+                None => error::usage(format!(
+                    "{} is a mainnet — nobody gives its coin away",
+                    self.network.name
+                )),
+            });
+        }
         let client = self.client()?;
         let id = runtime::block_on(client.faucet(&target, requested))??;
         Ok(CommandOutput::new(
@@ -1994,6 +2044,7 @@ impl App {
                 "amount_raw": requested.to_string(),
                 "id": id,
                 "explorer": self.network.tx_url(&id),
+                "faucet": self.network.faucet,
             }),
             format!(
                 "Asked {} for {} to {target}\n{id}",
@@ -2927,6 +2978,14 @@ impl App {
                 "symbol": self.network.symbol,
                 "decimals": self.network.decimals,
                 "tags": self.network.tags,
+                "testnet": self.network.testnet,
+                "explorer": self.network.explorer,
+                // Where funds are given away here, and whether this wallet can
+                // ask for them itself. One handshake already tells a front end
+                // which network it is on; these two say what it can do about
+                // an empty account on it without a second round trip.
+                "faucet": self.network.faucet,
+                "faucet_automatic": self.network.faucet_is_callable(),
                 "max_fee": fee_units.format(ceiling),
                 "max_fee_raw": ceiling.to_string(),
                 "max_fee_symbol": fee_units.symbol,

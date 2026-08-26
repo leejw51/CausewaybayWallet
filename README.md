@@ -358,21 +358,68 @@ what each chain can do. The default is `cronos-testnet`.
 
 | key | chain | chain id | symbol | tags | endpoint |
 | --- | ----- | -------- | ------ | ---- | -------- |
-| `cronos-testnet` (default) | evm | 338 | TCRO | evm testnet smart-contracts erc20 | `https://evm-t3.cronos.org` |
+| `cronos-testnet` (default) | evm | 338 | TCRO | evm testnet faucet smart-contracts erc20 | `https://evm-t3.cronos.org` |
 | `cronos-mainnet` | evm | 25 | CRO | evm smart-contracts erc20 | `https://evm.cronos.org` |
 | `solana-devnet` | solana | — | SOL | svm testnet faucet spl | `https://api.devnet.solana.com` |
 | `solana-testnet` | solana | — | SOL | svm testnet faucet spl | `https://api.testnet.solana.com` |
 | `solana-mainnet` | solana | — | SOL | svm spl | `https://api.mainnet-beta.solana.com` |
-| `cardano-preprod` | cardano | — | tADA | utxo testnet native-assets | `https://preprod.koios.rest/api/v1` |
-| `cardano-preview` | cardano | — | tADA | utxo testnet native-assets | `https://preview.koios.rest/api/v1` |
+| `cardano-preprod` | cardano | — | tADA | utxo testnet faucet native-assets | `https://preprod.koios.rest/api/v1` |
+| `cardano-preview` | cardano | — | tADA | utxo testnet faucet native-assets | `https://preview.koios.rest/api/v1` |
 | `cardano-mainnet` | cardano | — | ADA | utxo native-assets | `https://api.koios.rest/api/v1` |
-| `midnight-preview` | midnight | — | NIGHT | privacy testnet shielded zk | `https://indexer.preview.midnight.network/api/v4/graphql` |
-| `midnight-devnet` | midnight | — | NIGHT | privacy testnet shielded zk | `https://indexer.devnet.midnight.network/api/v4/graphql` |
-| `ecash-testnet` | ecash | — | tXEC | utxo testnet bitcoin-fork | `https://chronik-testnet.fabien.cash` |
+| `midnight-preview` | midnight | — | NIGHT | privacy testnet faucet shielded zk | `https://indexer.preview.midnight.network/api/v4/graphql` |
+| `midnight-devnet` | midnight | — | NIGHT | privacy testnet faucet shielded zk | `https://indexer.devnet.midnight.network/api/v4/graphql` |
+| `ecash-testnet` | ecash | — | tXEC | utxo testnet faucet bitcoin-fork | `https://chronik-testnet.fabien.cash` |
 | `ecash-mainnet` | ecash | — | XEC | utxo bitcoin-fork | `https://chronik.e.cash` |
 
 Only EVM networks have a chain id — it is the EIP-155 replay-protection number,
 omitted rather than faked for the rest.
+
+### Getting funded
+
+Every test network in that table names the faucet that funds it, and every row
+carries the address:
+
+    cwbwallet network list faucet         # every network that gives money away
+    cwbwallet network current             # `faucet` and `faucet_automatic`
+    cwbwallet --json info | jq .data.faucet
+
+Whether the *wallet* can ask is a separate question, and mostly the answer is
+no. Solana's clusters answer `requestAirdrop` over the same JSON-RPC the
+balance came from, so there:
+
+    cwbwallet -n solana-devnet airdrop --amount 1
+
+Everywhere else the faucet is a web page with a captcha on it, built precisely
+so that a program cannot drain it — so `airdrop` refuses by naming the page
+rather than making a request that could never succeed:
+
+    $ cwbwallet airdrop
+    Cronos EVM Testnet has no faucet this wallet can call;
+    ask https://faucet.cronos.com/ for 0xb91B…fF09
+
+| network | faucet | `airdrop` |
+| --- | --- | --- |
+| `cronos-testnet` | <https://faucet.cronos.com/> | no |
+| `solana-devnet` · `solana-testnet` | <https://faucet.solana.com/> | **yes** |
+| `cardano-preprod` · `cardano-preview` | <https://docs.cardano.org/cardano-testnets/tools/faucet> | no |
+| `midnight-preview` | <https://midnight-tmnight-preview.nethermind.dev/> | no |
+| `midnight-devnet` | <https://midnight.network/test-faucet> | no |
+| `ecash-testnet` | <https://texplorer.e.cash/testnet-faucet> | no |
+
+Where it works it is rate limited, and the public devnet endpoint says so
+plainly when it has run dry. That is a normal answer, not a fault.
+
+### Looking one up
+
+Every account carries the explorer link for the network its own chain is on:
+
+    cwbwallet --json account list | jq -r '.data[].explorer'
+
+The wallet assembles those rather than handing out a base URL, because
+assembling one is not a matter of appending a path — Solana keeps its cluster
+in a query string, so `https://explorer.solana.com/?cluster=devnet` with
+`/address/<addr>` stuck on the end is a *mainnet* link that loads and shows an
+empty account.
 
 ### Finding one
 

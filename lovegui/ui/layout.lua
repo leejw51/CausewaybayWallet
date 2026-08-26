@@ -125,6 +125,47 @@ function layout.compute(width, height)
   -- screen's box and so cannot be answered here.
   L.net = { x = L.margin, y = L.top, w = inner_w, h = content_h }
 
+  -- --------------------------------------------------------- the card's links
+  --
+  -- Two buttons that belong to the card rather than to the wallet: FAUCET asks
+  -- this network for money into this address, and EXPLORER copies the link
+  -- that looks this address up. Both are answers about *the card on screen*,
+  -- which is why they are here and not in the action bar with SAVE and KEYS.
+  --
+  -- They could not go in that bar in any case, and the arithmetic is worth
+  -- writing down because it is what settled the placement: the five verbs are
+  -- 236 pixels of button in a 260-pixel column, and seven labels at this
+  -- font's 8 pixels a character come to 264 before a single pixel of padding.
+  -- One row of seven does not exist at this resolution.
+  --
+  -- So the card gives up the height instead. It keeps its 1.585 ratio and
+  -- shrinks — 247x156 to 212x134 in landscape — which costs a card that is
+  -- still comfortably a card, and buys two controls that are always visible
+  -- rather than behind a menu.
+  local strip_h = L.button_h
+  local strip_gap = 4
+  L.card = {
+    x = L.detail.x,
+    y = L.detail.y,
+    w = L.detail.w,
+    h = L.detail.h - strip_h - strip_gap,
+  }
+  -- Widths fitted to their labels the way the action bar's are: 8 pixels a
+  -- character, and at least seven clear pixels either side.
+  --
+  -- Both are 78 because both labels are eight characters at their longest.
+  -- FAUCET is only six — but it reads `FAUCET >` on the ten networks whose
+  -- faucet is a web page, and a button sized to the shorter of its two labels
+  -- draws the longer one through its own border at both ends. The pair comes
+  -- to 162 of the 254 the narrower orientation has: room to spare, and
+  -- deliberately so, because this strip is the one place a third card verb
+  -- could ever go.
+  local strip_y = L.detail.y + L.detail.h - strip_h
+  L.card_actions = {
+    faucet = { x = L.detail.x, y = strip_y, w = 78, h = strip_h },
+    explorer = { x = L.detail.x + 84, y = strip_y, w = 78, h = strip_h },
+  }
+
   -- ---------------------------------------------------------- the action bar
   --
   -- Landscape: + NEW under the list, the card's verbs under the card, one row.
