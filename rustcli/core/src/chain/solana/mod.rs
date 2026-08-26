@@ -179,7 +179,12 @@ mod tests {
 
         let signature = signer.sign_message(b"hello").unwrap();
         let checked = SolanaChain
-            .recover_message(&crate::network::SOLANA_DEVNET, b"hello", &signature, Some(&derived.address))
+            .recover_message(
+                &crate::network::SOLANA_DEVNET,
+                b"hello",
+                &signature,
+                Some(&derived.address),
+            )
             .unwrap();
         assert!(checked.valid);
         assert_eq!(checked.address.as_deref(), Some(derived.address.as_str()));
@@ -196,7 +201,12 @@ mod tests {
 
         for identity in [derived.address.as_str(), derived.secret.as_str()] {
             let checked = SolanaChain
-                .recover_message(&crate::network::SOLANA_DEVNET, b"hello", &signature, Some(identity))
+                .recover_message(
+                    &crate::network::SOLANA_DEVNET,
+                    b"hello",
+                    &signature,
+                    Some(identity),
+                )
                 .unwrap();
             assert!(checked.valid, "identity {identity} should verify");
             assert_eq!(checked.address.as_deref(), Some(derived.address.as_str()));
@@ -206,7 +216,12 @@ mod tests {
     #[test]
     fn an_identity_that_is_neither_an_address_nor_a_key_is_refused() {
         let err = SolanaChain
-            .recover_message(&crate::network::SOLANA_DEVNET, b"hello", &[0u8; 64], Some("not an address"))
+            .recover_message(
+                &crate::network::SOLANA_DEVNET,
+                b"hello",
+                &[0u8; 64],
+                Some("not an address"),
+            )
             .unwrap_err();
         assert_eq!(err.code, error::Code::InvalidAddress);
     }
@@ -230,7 +245,12 @@ mod tests {
         let signer = SolanaChain.signer(&derived.secret).unwrap();
         let signature = signer.sign_message(b"hello").unwrap();
         let checked = SolanaChain
-            .recover_message(&crate::network::SOLANA_DEVNET, b"different", &signature, Some(&derived.address))
+            .recover_message(
+                &crate::network::SOLANA_DEVNET,
+                b"different",
+                &signature,
+                Some(&derived.address),
+            )
             .unwrap();
         assert!(!checked.valid);
         assert!(checked.address.is_none());

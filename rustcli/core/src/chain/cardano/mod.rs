@@ -107,7 +107,11 @@ impl Chain for CardanoChain {
         Ok(Recovered {
             // Rendered for the network in play: the header nibble makes the
             // testnet and mainnet strings different addresses.
-            address: valid.then(|| account.base_address(CardanoNetwork::of(network)).to_bech32()),
+            address: valid.then(|| {
+                account
+                    .base_address(CardanoNetwork::of(network))
+                    .to_bech32()
+            }),
             valid,
         })
     }
@@ -275,12 +279,22 @@ mod tests {
 
         let signature = signer.sign_message(b"hello").unwrap();
         let checked = CardanoChain
-            .recover_message(&crate::network::CARDANO_PREPROD, b"hello", &signature, Some(&derived.secret))
+            .recover_message(
+                &crate::network::CARDANO_PREPROD,
+                b"hello",
+                &signature,
+                Some(&derived.secret),
+            )
             .unwrap();
         assert!(checked.valid);
 
         let tampered = CardanoChain
-            .recover_message(&crate::network::CARDANO_PREPROD, b"different", &signature, Some(&derived.secret))
+            .recover_message(
+                &crate::network::CARDANO_PREPROD,
+                b"different",
+                &signature,
+                Some(&derived.secret),
+            )
             .unwrap();
         assert!(!tampered.valid);
     }

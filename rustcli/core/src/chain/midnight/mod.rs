@@ -279,13 +279,23 @@ mod tests {
         let signature = signer.sign_message(b"hello").unwrap();
         assert!(
             MidnightChain
-                .recover_message(&crate::network::MIDNIGHT_PREVIEW, b"hello", &signature, Some(&derived.secret))
+                .recover_message(
+                    &crate::network::MIDNIGHT_PREVIEW,
+                    b"hello",
+                    &signature,
+                    Some(&derived.secret)
+                )
                 .unwrap()
                 .valid
         );
         assert!(
             !MidnightChain
-                .recover_message(&crate::network::MIDNIGHT_PREVIEW, b"different", &signature, Some(&derived.secret))
+                .recover_message(
+                    &crate::network::MIDNIGHT_PREVIEW,
+                    b"different",
+                    &signature,
+                    Some(&derived.secret)
+                )
                 .unwrap()
                 .valid
         );
@@ -294,7 +304,12 @@ mod tests {
     #[test]
     fn verifying_with_nothing_to_verify_against_explains_why() {
         let err = MidnightChain
-            .recover_message(&crate::network::MIDNIGHT_PREVIEW, b"hello", &[0u8; 64], None)
+            .recover_message(
+                &crate::network::MIDNIGHT_PREVIEW,
+                b"hello",
+                &[0u8; 64],
+                None,
+            )
             .unwrap_err();
         assert_eq!(err.code, error::Code::Usage);
         assert!(err.message.contains("hash"), "{}", err.message);
